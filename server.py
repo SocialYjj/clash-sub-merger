@@ -5,7 +5,7 @@ import json
 import time
 import secrets
 import hashlib
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 from typing import Optional, Tuple, Dict, List
 from collections import OrderedDict
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header
