@@ -1,0 +1,11 @@
+[project]
+name = "clash-config-merger"
+version = "0.1.0"
+description = "Clash Config Merger Tool"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[tool.uv]
+dev-dependencies = []

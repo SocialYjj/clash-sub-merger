@@ -1,0 +1,12 @@
+services:
+  clash-sub-merger:
+    build: .
+    container_name: clash-sub-merger
+    restart: unless-stopped
+    ports:
+      - "8666:8666"
+    volumes:
+      # 持久化数据目录
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai

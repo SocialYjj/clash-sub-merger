@@ -1,0 +1,30 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+.venv
+*.egg-info
+
+# Node
+frontend/node_modules
+
+# IDE
+.vscode
+.kiro
+
+# Data (will be mounted as volume)
+data/
+uploads/
+
+# Config files (will be in data volume)
+config.json
+subscriptions.json
+custom_nodes.json
+auth.json
+source_order.json
+
+# Build artifacts
+*.log
