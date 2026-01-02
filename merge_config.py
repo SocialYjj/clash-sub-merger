@@ -14,8 +14,17 @@ if current_dir in sys.path:
 import yaml
 import base64
 import json
+import socket
 from urllib.parse import urlparse, unquote
 from typing import Optional
+
+# GeoIP database support
+try:
+    import geoip2.database
+    GEOIP_AVAILABLE = True
+except ImportError:
+    GEOIP_AVAILABLE = False
+    print("Warning: geoip2 not installed. Run: pip install geoip2")
 
 class SubscriptionParser:
     """Parse various subscription formats to Clash config"""
@@ -533,9 +542,9 @@ class NameTransformer:
         return result.strip()
     
     @staticmethod
-    def identify_flag(name: str) -> str:
+    def identify_flag(name: str, server: str = None) -> str:
         """Identify country flag based on node name
-        Priority: 1. Flag emoji at the START of name  2. Any flag emoji in name  3. Keyword matching  4. Default flag
+        Priority: 1. Flag emoji at the START of name  2. Any flag emoji in name  3. Keyword matching  4. GeoIP lookup  5. Default flag
         """
         # Priority 1: Check if name STARTS with a country flag emoji (most reliable)
         for flag in NameTransformer.FLAG_EMOJIS:
@@ -568,7 +577,14 @@ class NameTransformer:
                     if pattern.upper() in name_upper:
                         return flag
         
-        # Priority 4: Return default flag (unknown)
+        # Priority 4: GeoIP lookup (if server address provided)
+        if server and GEOIP_AVAILABLE:
+            geoip = GeoIPLookup.get_instance()
+            flag = geoip.get_flag(server)
+            if flag:
+                return flag
+        
+        # Priority 5: Return default flag (unknown)
         return '🔰'
     
     @staticmethod
@@ -579,9 +595,10 @@ class NameTransformer:
         
         prefix = NameTransformer.SOURCE_PREFIX_MAP.get(source_name, source_name)
         original_name = proxy['name']
+        server = proxy.get('server', '')  # Get server for GeoIP lookup
         
         # 1. Identify flag first (before removal)
-        flag = NameTransformer.identify_flag(original_name)
+        flag = NameTransformer.identify_flag(original_name, server)
         
         # 2. Remove existing flags
         clean_name = NameTransformer.remove_flags(original_name)
@@ -612,6 +629,202 @@ class NameTransformer:
     def transform_proxies(proxies: List[dict], source_name: str) -> List[dict]:
         """Batch transform proxy node names"""
         return [NameTransformer.transform_name(p, source_name) for p in proxies]
+
+
+# ==================== GeoIPLookup ====================
+
+class GeoIPLookup:
+    """GeoIP lookup using MaxMind GeoLite2 database"""
+    
+    # ISO country code to flag emoji mapping
+    COUNTRY_CODE_TO_FLAG = {
+        'HK': '🇭🇰', 'TW': '🇹🇼', 'JP': '🇯🇵', 'US': '🇺🇸', 'SG': '🇸🇬',
+        'KR': '🇰🇷', 'GB': '🇬🇧', 'DE': '🇩🇪', 'CA': '🇨🇦', 'AU': '🇦🇺',
+        'FR': '🇫🇷', 'RU': '🇷🇺', 'IN': '🇮🇳', 'NL': '🇳🇱', 'TR': '🇹🇷',
+        'AQ': '🇦🇶', 'MY': '🇲🇾', 'ES': '🇪🇸', 'VN': '🇻🇳', 'UA': '🇺🇦',
+        'MD': '🇲🇩', 'NG': '🇳🇬', 'BR': '🇧🇷', 'IT': '🇮🇹', 'PL': '🇵🇱',
+        'CH': '🇨🇭', 'AT': '🇦🇹', 'BE': '🇧🇪', 'SE': '🇸🇪', 'NO': '🇳🇴',
+        'DK': '🇩🇰', 'FI': '🇫🇮', 'IE': '🇮🇪', 'PT': '🇵🇹', 'GR': '🇬🇷',
+        'CZ': '🇨🇿', 'HU': '🇭🇺', 'RO': '🇷🇴', 'BG': '🇧🇬', 'HR': '🇭🇷',
+        'SK': '🇸🇰', 'SI': '🇸🇮', 'LT': '🇱🇹', 'LV': '🇱🇻', 'EE': '🇪🇪',
+        'IL': '🇮🇱', 'AE': '🇦🇪', 'SA': '🇸🇦', 'QA': '🇶🇦', 'KW': '🇰🇼',
+        'OM': '🇴🇲', 'BH': '🇧🇭', 'JO': '🇯🇴', 'LB': '🇱🇧', 'EG': '🇪🇬',
+        'ZA': '🇿🇦', 'KE': '🇰🇪', 'NZ': '🇳🇿', 'PH': '🇵🇭', 'TH': '🇹🇭',
+        'ID': '🇮🇩', 'PK': '🇵🇰', 'BD': '🇧🇩', 'LK': '🇱🇰', 'NP': '🇳🇵',
+        'MM': '🇲🇲', 'KH': '🇰🇭', 'LA': '🇱🇦', 'MN': '🇲🇳', 'KZ': '🇰🇿',
+        'UZ': '🇺🇿', 'AZ': '🇦🇿', 'GE': '🇬🇪', 'AM': '🇦🇲', 'CY': '🇨🇾',
+        'MT': '🇲🇹', 'IS': '🇮🇸', 'LU': '🇱🇺', 'MC': '🇲🇨', 'AD': '🇦🇩',
+        'LI': '🇱🇮', 'SM': '🇸🇲', 'VA': '🇻🇦', 'MX': '🇲🇽', 'AR': '🇦🇷',
+        'CL': '🇨🇱', 'CO': '🇨🇴', 'PE': '🇵🇪', 'VE': '🇻🇪', 'EC': '🇪🇨',
+        'BO': '🇧🇴', 'PY': '🇵🇾', 'UY': '🇺🇾', 'CR': '🇨🇷', 'PA': '🇵🇦',
+        'CU': '🇨🇺', 'DO': '🇩🇴', 'PR': '🇵🇷', 'JM': '🇯🇲', 'HT': '🇭🇹',
+        'CN': '🇨🇳',
+    }
+    
+    # ISO country code to Chinese name mapping
+    COUNTRY_CODE_TO_NAME = {
+        'HK': '香港', 'TW': '台湾', 'JP': '日本', 'US': '美国', 'SG': '新加坡',
+        'KR': '韩国', 'GB': '英国', 'DE': '德国', 'CA': '加拿大', 'AU': '澳大利亚',
+        'FR': '法国', 'RU': '俄罗斯', 'IN': '印度', 'NL': '荷兰', 'TR': '土耳其',
+        'AQ': '南极洲', 'MY': '马来西亚', 'ES': '西班牙', 'VN': '越南', 'UA': '乌克兰',
+        'MD': '摩尔多瓦', 'NG': '尼日利亚', 'BR': '巴西', 'IT': '意大利', 'PL': '波兰',
+        'CH': '瑞士', 'AT': '奥地利', 'BE': '比利时', 'SE': '瑞典', 'NO': '挪威',
+        'DK': '丹麦', 'FI': '芬兰', 'IE': '爱尔兰', 'PT': '葡萄牙', 'GR': '希腊',
+        'CZ': '捷克', 'HU': '匈牙利', 'RO': '罗马尼亚', 'BG': '保加利亚', 'HR': '克罗地亚',
+        'SK': '斯洛伐克', 'SI': '斯洛文尼亚', 'LT': '立陶宛', 'LV': '拉脱维亚', 'EE': '爱沙尼亚',
+        'IL': '以色列', 'AE': '阿联酋', 'SA': '沙特', 'QA': '卡塔尔', 'KW': '科威特',
+        'OM': '阿曼', 'BH': '巴林', 'JO': '约旦', 'LB': '黎巴嫩', 'EG': '埃及',
+        'ZA': '南非', 'KE': '肯尼亚', 'NZ': '新西兰', 'PH': '菲律宾', 'TH': '泰国',
+        'ID': '印尼', 'PK': '巴基斯坦', 'BD': '孟加拉', 'LK': '斯里兰卡', 'NP': '尼泊尔',
+        'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'MN': '蒙古', 'KZ': '哈萨克斯坦',
+        'UZ': '乌兹别克', 'AZ': '阿塞拜疆', 'GE': '格鲁吉亚', 'AM': '亚美尼亚', 'CY': '塞浦路斯',
+        'MT': '马耳他', 'IS': '冰岛', 'LU': '卢森堡', 'MC': '摩纳哥', 'AD': '安道尔',
+        'LI': '列支敦士登', 'SM': '圣马力诺', 'VA': '梵蒂冈', 'MX': '墨西哥', 'AR': '阿根廷',
+        'CL': '智利', 'CO': '哥伦比亚', 'PE': '秘鲁', 'VE': '委内瑞拉', 'EC': '厄瓜多尔',
+        'BO': '玻利维亚', 'PY': '巴拉圭', 'UY': '乌拉圭', 'CR': '哥斯达黎加', 'PA': '巴拿马',
+        'CU': '古巴', 'DO': '多米尼加', 'PR': '波多黎各', 'JM': '牙买加', 'HT': '海地',
+        'CN': '中国',
+    }
+    
+    _instance = None
+    _reader = None
+    _dns_cache = {}  # Cache DNS lookups
+    _geoip_cache = {}  # Cache GeoIP lookups
+    
+    @classmethod
+    def get_instance(cls):
+        """Singleton pattern for GeoIP reader"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self._load_database()
+    
+    def _load_database(self):
+        """Load GeoLite2 database"""
+        if not GEOIP_AVAILABLE:
+            return
+        
+        # Try multiple possible database locations
+        import os
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        possible_paths = [
+            os.path.join(base_dir, 'GeoLite2-Country.mmdb'),
+            os.path.join(base_dir, 'data', 'GeoLite2-Country.mmdb'),
+            '/usr/share/GeoIP/GeoLite2-Country.mmdb',
+            '/var/lib/GeoIP/GeoLite2-Country.mmdb',
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                try:
+                    self._reader = geoip2.database.Reader(path)
+                    print(f"GeoIP database loaded: {path}")
+                    return
+                except Exception as e:
+                    print(f"Warning: Failed to load GeoIP database {path}: {e}")
+        
+        print("Warning: GeoLite2-Country.mmdb not found. GeoIP lookup disabled.")
+        print("Download from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data")
+    
+    def resolve_domain(self, domain: str) -> Optional[str]:
+        """Resolve domain to IP address with caching"""
+        if domain in self._dns_cache:
+            return self._dns_cache[domain]
+        
+        try:
+            ip = socket.gethostbyname(domain)
+            self._dns_cache[domain] = ip
+            return ip
+        except socket.gaierror:
+            self._dns_cache[domain] = None
+            return None
+    
+    def _lookup_via_api(self, ip: str) -> Optional[str]:
+        """Fallback: lookup country code via free APIs
+        Priority: ip-api.com -> ipwho.is
+        """
+        import requests
+        
+        # Try ip-api.com first (45 req/min, no key needed)
+        try:
+            resp = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('countryCode'):
+                    return data['countryCode']
+        except Exception:
+            pass
+        
+        # Try ipwho.is (unlimited, no key needed)
+        try:
+            resp = requests.get(f"https://ipwho.is/{ip}?fields=country_code", timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('country_code'):
+                    return data['country_code']
+        except Exception:
+            pass
+        
+        return None
+    
+    def lookup(self, server: str) -> Optional[str]:
+        """Lookup country code for server (IP or domain)
+        Returns ISO country code (e.g., 'US', 'JP') or None
+        Priority: 1. Local GeoLite2 DB  2. ip-api.com  3. ipwho.is
+        """
+        # Check cache first
+        if server in self._geoip_cache:
+            return self._geoip_cache[server]
+        
+        # Determine if server is IP or domain
+        ip = server
+        try:
+            socket.inet_aton(server)  # Check if valid IPv4
+        except socket.error:
+            try:
+                socket.inet_pton(socket.AF_INET6, server)  # Check if valid IPv6
+            except socket.error:
+                # It's a domain, resolve it
+                ip = self.resolve_domain(server)
+                if not ip:
+                    self._geoip_cache[server] = None
+                    return None
+        
+        country_code = None
+        
+        # Priority 1: Try local GeoIP database
+        if self._reader:
+            try:
+                response = self._reader.country(ip)
+                country_code = response.country.iso_code
+            except Exception:
+                pass
+        
+        # Priority 2 & 3: Fallback to APIs if local DB failed
+        if not country_code:
+            country_code = self._lookup_via_api(ip)
+        
+        self._geoip_cache[server] = country_code
+        return country_code
+    
+    def get_country_group(self, server: str) -> Optional[str]:
+        """Get country group name (e.g., '🇺🇸 美国') for server"""
+        country_code = self.lookup(server)
+        if not country_code:
+            return None
+        
+        flag = self.COUNTRY_CODE_TO_FLAG.get(country_code, '🔰')
+        name = self.COUNTRY_CODE_TO_NAME.get(country_code, country_code)
+        return f"{flag} {name}"
+    
+    def get_flag(self, server: str) -> Optional[str]:
+        """Get flag emoji for server"""
+        country_code = self.lookup(server)
+        if not country_code:
+            return None
+        return self.COUNTRY_CODE_TO_FLAG.get(country_code)
 
 
 # ==================== CountryGrouper ====================
@@ -647,9 +860,9 @@ class CountryGrouper:
     }
     
     @staticmethod
-    def identify_country(proxy_name: str) -> str:
+    def identify_country(proxy_name: str, proxy_server: str = None) -> str:
         """Identify country/region of proxy node
-        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching  4. Unknown
+        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching  4. GeoIP lookup  5. Unknown
         """
         # Priority 1: Check if name STARTS with a flag emoji (most reliable)
         for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
@@ -682,6 +895,20 @@ class CountryGrouper:
                     if pattern.upper() in proxy_name.upper():
                         return country
         
+        # Priority 4: GeoIP lookup (if server address provided)
+        if proxy_server and GEOIP_AVAILABLE:
+            geoip = GeoIPLookup.get_instance()
+            country_group = geoip.get_country_group(proxy_server)
+            if country_group:
+                # Add to COUNTRY_PATTERNS if not exists (for future lookups)
+                if country_group not in CountryGrouper.COUNTRY_PATTERNS:
+                    # Extract flag from country_group
+                    parts = country_group.split(' ', 1)
+                    if len(parts) == 2:
+                        flag, name = parts
+                        CountryGrouper.COUNTRY_PATTERNS[country_group] = [flag, name]
+                return country_group
+        
         return '🔰 未知'
     
     @staticmethod
@@ -691,7 +918,8 @@ class CountryGrouper:
         
         for proxy in proxies:
             name = proxy.get('name', '')
-            country = CountryGrouper.identify_country(name)
+            server = proxy.get('server', '')  # Get server address for GeoIP lookup
+            country = CountryGrouper.identify_country(name, server)
             
             if country not in groups:
                 groups[country] = []

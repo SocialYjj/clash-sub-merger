@@ -1653,6 +1653,65 @@ def get_merged_subscription(
         # Get custom config name
         sub_name = auth.get('sub_name', 'Aggregated')
         
+        # Generate traffic info nodes for each subscription
+        def format_bytes(b):
+            if not b or b == 0:
+                return '0B'
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if b < 1024:
+                    return f'{b:.1f}{unit}' if b != int(b) else f'{int(b)}{unit}'
+                b /= 1024
+            return f'{b:.1f}PB'
+        
+        def format_expire(ts):
+            if not ts or ts == 0:
+                return '永久'
+            from datetime import datetime
+            return datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+        
+        traffic_info_nodes = []
+        traffic_info_names = []
+        for sub in enabled_subs:
+            used = (sub.get('upload', 0) or 0) + (sub.get('download', 0) or 0)
+            total = sub.get('total', 0) or 0
+            expire = sub.get('expire', 0) or 0
+            
+            # Create info node name: "机场名 | 已用/总量 | 到期时间"
+            if total > 0:
+                info_name = f"📊 {sub['name']} | {format_bytes(used)}/{format_bytes(total)} | {format_expire(expire)}"
+            else:
+                info_name = f"📊 {sub['name']} | {format_expire(expire)}"
+            
+            traffic_info_names.append(info_name)
+            # Create a dummy HTTP node (looks valid but won't work, just for display)
+            traffic_info_nodes.append({
+                'name': info_name,
+                'type': 'http',
+                'server': '1.0.0.1',
+                'port': 65535
+            })
+        
+        # Prepend traffic info nodes to proxies
+        proxies = traffic_info_nodes + proxies
+        
+        # Add traffic info nodes to manual select group (🚀 手动选择)
+        if traffic_info_names:
+            for group in proxy_groups:
+                if group.get('name') == '🚀 手动选择':
+                    # Insert traffic info at the beginning of proxies list
+                    group['proxies'] = traffic_info_names + group.get('proxies', [])
+                    break
+        
+        # Calcuxy_groups.insert(0, traffic_info_group)
+        
+        # Calculate total traffic info from all subscriptions
+        total_upload = sum(s.get('upload', 0) or 0 for s in enabled_subs)
+        total_download = sum(s.get('download', 0) or 0 for s in enabled_subs)
+        total_traffic = sum(s.get('total', 0) or 0 for s in enabled_subs)
+        # Use the earliest expire time (or 0 if any is permanent)
+        expire_times = [s.get('expire', 0) or 0 for s in enabled_subs]
+        total_expire = min(expire_times) if expire_times and all(t > 0 for t in expire_times) else 0
+        
         # Base64 format output
         if format == 'base64':
             links = []
@@ -1673,7 +1732,7 @@ def get_merged_subscription(
                     "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
                     "profile-title": encoded_name,
                     "profile-update-interval": "24",
-                    "subscription-userinfo": "upload=0; download=0; total=0; expire=0",
+                    "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
                 }
             )
         
@@ -1706,7 +1765,7 @@ def get_merged_subscription(
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}",
                 "profile-title": encoded_name,
                 "profile-update-interval": "24",
-                "subscription-userinfo": f"upload=0; download=0; total=0; expire=0",
+                "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
             }
         )
     except Exception as e:
