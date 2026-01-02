@@ -1910,20 +1910,31 @@ def get_merged_subscription(
                         if included:
                             break
                 
-                # Check custom nodes
+                # Check custom nodes - need to verify it's actually a custom node
+                # Custom nodes have "Custom" in their name after transformation (e.g., "🇸🇬 Custom SG")
                 if not included and 'custom_nodes' in user_allocations:
-                    allocated_custom = user_allocations['custom_nodes']
-                    if allocated_custom == ['*']:
-                        # Check if it's a custom node
-                        for cn in config.get('custom_nodes', []):
-                            if cn['name'] in proxy_name:
-                                included = True
+                    # Only check if this is actually a custom node (contains "Custom" provider name)
+                    if 'Custom' in proxy_name:
+                        allocated_custom = user_allocations['custom_nodes']
+                        # Get the list of custom node names from config
+                        all_custom_node_names = [cn['name'] for cn in config.get('custom_nodes', [])]
+                        
+                        # Find which custom node this proxy matches
+                        # Sort by length descending to match longer names first (e.g., "SG-azure" before "SG")
+                        matching_custom_name = None
+                        for cn_name in sorted(all_custom_node_names, key=len, reverse=True):
+                            # Proxy name format: "🇸🇬 Custom SG" where "SG" is the custom node name
+                            # Use exact end match to avoid "SG" matching "SG-azure"
+                            expected_suffix = f"Custom {cn_name}"
+                            if proxy_name.endswith(expected_suffix):
+                                matching_custom_name = cn_name
                                 break
-                    else:
-                        for alloc_node in allocated_custom:
-                            if alloc_node in proxy_name:
+                        
+                        if matching_custom_name:
+                            if allocated_custom == ['*']:
                                 included = True
-                                break
+                            elif matching_custom_name in allocated_custom:
+                                included = True
                 
                 if included:
                     filtered_proxies.append(proxy)

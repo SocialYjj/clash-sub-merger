@@ -113,8 +113,19 @@ function App() {
   const [availableNodes, setAvailableNodes] = useState({});
   const [userAllocations, setUserAllocations] = useState({});
   const [expandedSubs, setExpandedSubs] = useState({});
+  // Toast notification state
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+  // User editing state
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [editingUserName, setEditingUserName] = useState('');
   const addMenuRef = useRef(null);
   const templateFileRef = useRef(null);
+
+  // Toast helper function
+  const showToast = (message, type = 'success') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 2000);
+  };
 
   // 检查认证状态
   useEffect(() => {
@@ -491,8 +502,9 @@ function App() {
       setNewUserExpire('');
       setShowAddUserModal(false);
       fetchUsers();
+      showToast('用户创建成功');
     } catch (err) {
-      alert('创建失败: ' + (err.response?.data?.detail || err.message));
+      showToast('创建失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
       setLoading(false);
     }
@@ -503,8 +515,9 @@ function App() {
     try {
       await axios.delete(`${API_BASE}/users/${userId}`);
       fetchUsers();
+      showToast('用户已删除');
     } catch (err) {
-      alert('删除失败');
+      showToast('删除失败', 'error');
     }
   };
 
@@ -512,8 +525,34 @@ function App() {
     try {
       await axios.put(`${API_BASE}/users/${userId}`, { enabled: !currentEnabled });
       fetchUsers();
+      showToast(currentEnabled ? '用户已禁用' : '用户已启用');
     } catch (err) {
-      alert('操作失败');
+      showToast('操作失败', 'error');
+    }
+  };
+
+  const updateUserName = async (userId) => {
+    if (!editingUserName.trim()) return;
+    try {
+      await axios.put(`${API_BASE}/users/${userId}`, { name: editingUserName.trim() });
+      setEditingUserId(null);
+      setEditingUserName('');
+      fetchUsers();
+      showToast('用户名已更新');
+    } catch (err) {
+      showToast('更新失败', 'error');
+    }
+  };
+
+  const copyUserSubUrl = async (user) => {
+    try {
+      // Get full user info to get token
+      const res = await axios.get(`${API_BASE}/users/${user.id}`);
+      const url = `${window.location.origin}/sub?token=${res.data.user.token}`;
+      navigator.clipboard.writeText(url);
+      showToast('订阅地址已复制');
+    } catch (err) {
+      showToast('复制失败', 'error');
     }
   };
 
@@ -525,9 +564,9 @@ function App() {
         setSelectedUser({ ...selectedUser, token: res.data.token });
       }
       fetchUsers();
-      alert('Token 已重新生成');
+      showToast('Token 已重新生成');
     } catch (err) {
-      alert('生成失败');
+      showToast('生成失败', 'error');
     }
   };
 
@@ -547,7 +586,7 @@ function App() {
       setExpandedSubs({});
       setShowUserDetailModal(true);
     } catch (err) {
-      alert('获取用户信息失败');
+      showToast('获取用户信息失败', 'error');
     }
   };
 
@@ -555,9 +594,9 @@ function App() {
     if (!selectedUser) return;
     try {
       await axios.put(`${API_BASE}/users/${selectedUser.id}/allocations`, { subscriptions: userAllocations });
-      alert('分配已保存');
+      showToast('分配已保存');
     } catch (err) {
-      alert('保存失败: ' + (err.response?.data?.detail || err.message));
+      showToast('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -1881,11 +1920,33 @@ function App() {
                           className={`flex items-center justify-between p-4 bg-white/5 rounded-lg group cursor-pointer hover:bg-white/10 ${!user.enabled || isExpired ? 'opacity-60' : ''}`}
                           onClick={() => openUserDetail(user)}
                         >
-                          <div className="flex items-center gap-3">
-                            <div className={`w-2 h-2 rounded-full ${user.enabled && !isExpired ? 'bg-green-400' : 'bg-gray-500'}`} />
-                            <div>
-                              <div className="font-medium">{user.name}</div>
-                              <div className="text-xs text-white/40 font-mono">
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${user.enabled && !isExpired ? 'bg-green-400' : 'bg-gray-500'}`} />
+                            <div className="min-w-0 flex-1">
+                              {editingUserId === user.id ? (
+                                <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                                  <input
+                                    type="text"
+                                    value={editingUserName}
+                                    onChange={e => setEditingUserName(e.target.value)}
+                                    className="glass-input text-sm py-1 px-2 w-32"
+                                    autoFocus
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') updateUserName(user.id);
+                                      if (e.key === 'Escape') { setEditingUserId(null); setEditingUserName(''); }
+                                    }}
+                                  />
+                                  <button onClick={() => updateUserName(user.id)} className="text-green-400 hover:text-green-300">
+                                    <Check className="w-4 h-4" />
+                                  </button>
+                                  <button onClick={() => { setEditingUserId(null); setEditingUserName(''); }} className="text-white/40 hover:text-white">
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="font-medium truncate">{user.name}</div>
+                              )}
+                              <div className="text-xs text-white/40 font-mono truncate">
                                 Token: {user.token}
                               </div>
                               <div className="text-xs text-white/30 mt-1">
@@ -1896,7 +1957,21 @@ function App() {
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                          <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                            <button 
+                              onClick={() => { setEditingUserId(user.id); setEditingUserName(user.name); }}
+                              className="p-2 rounded hover:bg-white/10"
+                              title="修改名字"
+                            >
+                              <Edit2 className="w-4 h-4 text-blue-400" />
+                            </button>
+                            <button 
+                              onClick={() => copyUserSubUrl(user)}
+                              className="p-2 rounded hover:bg-white/10"
+                              title="复制订阅地址"
+                            >
+                              <Copy className="w-4 h-4 text-cyan-400" />
+                            </button>
                             <button 
                               onClick={() => toggleUser(user.id, user.enabled)}
                               className="p-2 rounded hover:bg-white/10"
@@ -2291,6 +2366,22 @@ function App() {
         </AnimatePresence>
 
       </div>
+
+      {/* Toast Notification - Fixed at bottom center */}
+      <AnimatePresence>
+        {toast.show && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-lg shadow-lg ${
+              toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'
+            } text-white text-sm font-medium`}
+          >
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
