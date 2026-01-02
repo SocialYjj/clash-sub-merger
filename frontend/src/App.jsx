@@ -202,9 +202,9 @@ function App() {
       const res = await axios.post(`${API_BASE}/auth/change-password`, { password: newPassword });
       localStorage.setItem('session', res.data.session);
       setNewPassword('');
-      alert('密码修改成功');
+      showToast('密码修改成功');
     } catch (err) {
-      alert('修改失败: ' + (err.response?.data?.detail || err.message));
+      showToast('修改失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -213,9 +213,9 @@ function App() {
     try {
       const res = await axios.post(`${API_BASE}/auth/regenerate-token`);
       setSubToken(res.data.sub_token);
-      alert('订阅 token 已重新生成');
+      showToast('订阅 token 已重新生成');
     } catch (err) {
-      alert('生成失败: ' + (err.response?.data?.detail || err.message));
+      showToast('生成失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -224,9 +224,9 @@ function App() {
     try {
       const res = await axios.post(`${API_BASE}/auth/sub-filename`, { filename: subFilename.trim() });
       setSubFilename(res.data.sub_filename);
-      alert('文件名已更新');
+      showToast('文件名已更新');
     } catch (err) {
-      alert('更新失败: ' + (err.response?.data?.detail || err.message));
+      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -235,9 +235,9 @@ function App() {
     try {
       const res = await axios.post(`${API_BASE}/auth/sub-name`, { name: subName.trim() });
       setSubName(res.data.sub_name);
-      alert('配置名称已更新');
+      showToast('配置名称已更新');
     } catch (err) {
-      alert('更新失败: ' + (err.response?.data?.detail || err.message));
+      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -301,7 +301,7 @@ function App() {
       setNewNodeName('');
       fetchCustomNodes();
     } catch (err) {
-      alert('添加失败: ' + (err.response?.data?.detail || err.message));
+      showToast('添加失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
       setLoading(false);
     }
@@ -312,7 +312,7 @@ function App() {
       await axios.delete(`${API_BASE}/custom-nodes/${nodeId}`);
       fetchCustomNodes();
     } catch (err) {
-      alert('删除失败');
+      showToast('删除失败', 'error');
     }
   };
 
@@ -324,7 +324,7 @@ function App() {
       setEditingNodeName('');
       fetchCustomNodes();
     } catch (err) {
-      alert('更新失败');
+      showToast('更新失败', 'error');
     }
   };
 
@@ -391,7 +391,7 @@ function App() {
       setEditingCustomNodeId(null);
       fetchCustomNodes();
     } catch (err) {
-      alert('保存失败: ' + (err.response?.data?.detail || err.message));
+      showToast('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -702,7 +702,7 @@ function App() {
       const res = await axios.get(`${API_BASE}/subscriptions/${selectedSub.id}/nodes`);
       setSubNodes(res.data.nodes || []);
     } catch (err) {
-      alert('更新失败: ' + (err.response?.data?.detail || err.message));
+      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -717,7 +717,7 @@ function App() {
       // 更新订阅信息
       fetchSubscriptions();
     } catch (err) {
-      alert('删除失败: ' + (err.response?.data?.detail || err.message));
+      showToast('删除失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -766,7 +766,7 @@ function App() {
       const res = await axios.get(`${API_BASE}/subscriptions/${selectedSub.id}/nodes`);
       setSubNodes(res.data.nodes || []);
     } catch (err) {
-      alert('保存失败: ' + (err.response?.data?.detail || err.message));
+      showToast('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -780,7 +780,7 @@ function App() {
       setShowAddModal(false);
       fetchSubscriptions();
     } catch (err) {
-      alert('添加失败: ' + (err.response?.data?.detail || err.message));
+      showToast('添加失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
       setLoading(false);
     }
@@ -792,7 +792,7 @@ function App() {
       await axios.delete(`${API_BASE}/subscriptions/${id}`);
       fetchSubscriptions();
     } catch (err) {
-      alert('删除失败');
+      showToast('删除失败', 'error');
     }
   };
 
@@ -801,7 +801,7 @@ function App() {
       await axios.put(`${API_BASE}/subscriptions/${id}/toggle`);
       fetchSubscriptions();
     } catch (err) {
-      alert('操作失败');
+      showToast('操作失败', 'error');
     }
   };
 
@@ -811,7 +811,7 @@ function App() {
       await axios.post(`${API_BASE}/subscriptions/${id}/refresh`);
       fetchSubscriptions();
     } catch (err) {
-      alert('刷新失败: ' + (err.response?.data?.detail || err.message));
+      showToast('刷新失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
       setLoading(false);
     }
@@ -823,7 +823,7 @@ function App() {
       await axios.post(`${API_BASE}/subscriptions/refresh-all`);
       fetchSubscriptions();
     } catch (err) {
-      alert('刷新失败');
+      showToast('刷新失败', 'error');
     } finally {
       setLoading(false);
     }
@@ -887,7 +887,7 @@ function App() {
         setLoadingNodes(false);
       }
     } catch (err) {
-      alert('更新失败: ' + (err.response?.data?.detail || err.message));
+      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -904,7 +904,7 @@ function App() {
       const res = await axios.post(`${API_BASE}/template/parse`, formData);
       setTemplateContent(res.data.content);
     } catch (err) {
-      alert('解析模板失败: ' + (err.response?.data?.detail || err.message));
+      showToast('解析模板失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
     
     // 清空 input 以便重复上传同一文件
@@ -2108,7 +2108,7 @@ function App() {
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(`${window.location.origin}/sub?token=${selectedUser.token}`);
-                        alert('已复制订阅链接');
+                        showToast('已复制订阅链接');
                       }}
                       className="glass-btn px-3"
                     >
@@ -2264,7 +2264,7 @@ function App() {
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(subToken);
-                          alert('Token 已复制');
+                          showToast('Token 已复制');
                         }}
                         className="glass-btn px-3"
                         title="复制"
