@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, RefreshCw, Trash2, Settings, Copy, Check, Power, Plane, Database, Clock, Server, Link2, Cpu, ChevronRight, ChevronDown, ChevronUp, Upload, X, Edit2, FileEdit, Lock, Eye, EyeOff, Key, LogOut, GripVertical, QrCode, ExternalLink } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Settings, Copy, Check, Power, Plane, Database, Clock, Server, Link2, Cpu, ChevronRight, ChevronDown, ChevronUp, Upload, X, Edit2, FileEdit, Lock, Eye, EyeOff, Key, LogOut, GripVertical, QrCode, ExternalLink, Users, UserPlus, User, Calendar, ToggleLeft, ToggleRight } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
@@ -101,6 +101,18 @@ function App() {
   const [editingCustomNodeContent, setEditingCustomNodeContent] = useState('');
   const [cardList, setCardList] = useState([]);
   const [showSubModal, setShowSubModal] = useState(false);
+  // User Management States
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserExpire, setNewUserExpire] = useState('');
+  const [editingUser, setEditingUser] = useState(null);
+  const [showUserDetailModal, setShowUserDetailModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [availableNodes, setAvailableNodes] = useState({});
+  const [userAllocations, setUserAllocations] = useState({});
+  const [expandedSubs, setExpandedSubs] = useState({});
   const addMenuRef = useRef(null);
   const templateFileRef = useRef(null);
 
@@ -448,6 +460,155 @@ function App() {
     } catch {
       setSourceOrder([]);
     }
+  };
+
+  // User Management Functions
+  const fetchUsers = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/users`);
+      setUsers(res.data.users || []);
+    } catch (err) {
+      console.error('Failed to fetch users', err);
+    }
+  };
+
+  const fetchAvailableNodes = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/available-nodes`);
+      setAvailableNodes(res.data.sources || {});
+    } catch (err) {
+      console.error('Failed to fetch available nodes', err);
+    }
+  };
+
+  const createUser = async () => {
+    if (!newUserName.trim()) return;
+    setLoading(true);
+    try {
+      const expireTime = newUserExpire ? Math.floor(new Date(newUserExpire).getTime() / 1000) : 0;
+      await axios.post(`${API_BASE}/users`, { name: newUserName.trim(), expire_time: expireTime });
+      setNewUserName('');
+      setNewUserExpire('');
+      setShowAddUserModal(false);
+      fetchUsers();
+    } catch (err) {
+      alert('创建失败: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteUser = async (userId) => {
+    if (!window.confirm('确定要删除这个用户吗？')) return;
+    try {
+      await axios.delete(`${API_BASE}/users/${userId}`);
+      fetchUsers();
+    } catch (err) {
+      alert('删除失败');
+    }
+  };
+
+  const toggleUser = async (userId, currentEnabled) => {
+    try {
+      await axios.put(`${API_BASE}/users/${userId}`, { enabled: !currentEnabled });
+      fetchUsers();
+    } catch (err) {
+      alert('操作失败');
+    }
+  };
+
+  const regenerateUserToken = async (userId) => {
+    if (!window.confirm('重新生成 token 后，旧的订阅地址将失效，确定继续？')) return;
+    try {
+      const res = await axios.post(`${API_BASE}/users/${userId}/regenerate-token`);
+      if (selectedUser && selectedUser.id === userId) {
+        setSelectedUser({ ...selectedUser, token: res.data.token });
+      }
+      fetchUsers();
+      alert('Token 已重新生成');
+    } catch (err) {
+      alert('生成失败');
+    }
+  };
+
+  const openUserDetail = async (user) => {
+    try {
+      // Get full user info including token
+      const userRes = await axios.get(`${API_BASE}/users/${user.id}`);
+      setSelectedUser(userRes.data.user);
+      
+      // Get user allocations
+      const allocRes = await axios.get(`${API_BASE}/users/${user.id}/allocations`);
+      setUserAllocations(allocRes.data.allocations || {});
+      
+      // Get available nodes
+      await fetchAvailableNodes();
+      
+      setExpandedSubs({});
+      setShowUserDetailModal(true);
+    } catch (err) {
+      alert('获取用户信息失败');
+    }
+  };
+
+  const saveUserAllocations = async () => {
+    if (!selectedUser) return;
+    try {
+      await axios.put(`${API_BASE}/users/${selectedUser.id}/allocations`, { subscriptions: userAllocations });
+      alert('分配已保存');
+    } catch (err) {
+      alert('保存失败: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const toggleSubAllocation = (subId) => {
+    setUserAllocations(prev => {
+      const newAlloc = { ...prev };
+      if (newAlloc[subId]) {
+        delete newAlloc[subId];
+      } else {
+        newAlloc[subId] = ['*']; // Default to all nodes
+      }
+      return newAlloc;
+    });
+  };
+
+  const toggleNodeAllocation = (subId, nodeName) => {
+    setUserAllocations(prev => {
+      const newAlloc = { ...prev };
+      if (!newAlloc[subId]) {
+        newAlloc[subId] = [nodeName];
+      } else if (newAlloc[subId].includes('*')) {
+        // Switch from all to specific
+        const allNodes = availableNodes[subId]?.nodes || [];
+        newAlloc[subId] = allNodes.filter(n => n !== nodeName);
+      } else if (newAlloc[subId].includes(nodeName)) {
+        newAlloc[subId] = newAlloc[subId].filter(n => n !== nodeName);
+        if (newAlloc[subId].length === 0) {
+          delete newAlloc[subId];
+        }
+      } else {
+        newAlloc[subId] = [...newAlloc[subId], nodeName];
+        // Check if all nodes selected
+        const allNodes = availableNodes[subId]?.nodes || [];
+        if (newAlloc[subId].length === allNodes.length) {
+          newAlloc[subId] = ['*'];
+        }
+      }
+      return newAlloc;
+    });
+  };
+
+  const selectAllNodes = (subId) => {
+    setUserAllocations(prev => ({ ...prev, [subId]: ['*'] }));
+  };
+
+  const deselectAllNodes = (subId) => {
+    setUserAllocations(prev => {
+      const newAlloc = { ...prev };
+      delete newAlloc[subId];
+      return newAlloc;
+    });
   };
 
   const fetchAllData = async () => {
@@ -831,6 +992,9 @@ function App() {
             <p className="text-white/40 text-sm mt-1">聚合订阅管理面板</p>
           </div>
           <div className="flex items-center gap-3">
+            <button onClick={() => { setShowUserModal(true); fetchUsers(); }} className="glass-btn flex items-center gap-2 text-sm">
+              <Users className="w-4 h-4" /> 用户管理
+            </button>
             <button onClick={() => setShowSettingsModal(true)} className="glass-btn flex items-center gap-2 text-sm">
               <Key className="w-4 h-4" /> 安全设置
             </button>
@@ -1663,6 +1827,324 @@ function App() {
                   >
                     关闭
                   </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* User Management Modal */}
+        <AnimatePresence>
+          {showUserModal && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                exit={{ scale: 0.9 }}
+                className="glass-panel w-full max-w-2xl max-h-[80vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between p-4 border-b border-white/10">
+                  <div className="flex items-center gap-3">
+                    <Users className="w-5 h-5 text-green-400" />
+                    <h2 className="text-xl font-bold">用户管理</h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setShowAddUserModal(true)} 
+                      className="glass-btn text-sm bg-green-600 hover:bg-green-500 flex items-center gap-1"
+                    >
+                      <UserPlus className="w-4 h-4" /> 添加用户
+                    </button>
+                    <button onClick={() => setShowUserModal(false)} className="text-white/60 hover:text-white">✕</button>
+                  </div>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {users.length === 0 ? (
+                    <div className="text-center py-10 text-white/30">
+                      <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                      <p>还没有添加用户</p>
+                      <p className="text-sm mt-1">点击"添加用户"创建子账户</p>
+                    </div>
+                  ) : (
+                    users.map(user => {
+                      const isExpired = user.expire_time > 0 && user.expire_time < Date.now() / 1000;
+                      return (
+                        <div 
+                          key={user.id} 
+                          className={`flex items-center justify-between p-4 bg-white/5 rounded-lg group cursor-pointer hover:bg-white/10 ${!user.enabled || isExpired ? 'opacity-60' : ''}`}
+                          onClick={() => openUserDetail(user)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${user.enabled && !isExpired ? 'bg-green-400' : 'bg-gray-500'}`} />
+                            <div>
+                              <div className="font-medium">{user.name}</div>
+                              <div className="text-xs text-white/40 font-mono">
+                                Token: {user.token}
+                              </div>
+                              <div className="text-xs text-white/30 mt-1">
+                                {user.expire_time > 0 
+                                  ? (isExpired ? '已过期' : `到期: ${new Date(user.expire_time * 1000).toLocaleDateString('zh-CN')}`)
+                                  : '永久有效'
+                                }
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            <button 
+                              onClick={() => toggleUser(user.id, user.enabled)}
+                              className="p-2 rounded hover:bg-white/10"
+                              title={user.enabled ? '禁用' : '启用'}
+                            >
+                              {user.enabled ? <ToggleRight className="w-5 h-5 text-green-400" /> : <ToggleLeft className="w-5 h-5 text-gray-500" />}
+                            </button>
+                            <button 
+                              onClick={() => deleteUser(user.id)}
+                              className="p-2 rounded hover:bg-white/10"
+                              title="删除"
+                            >
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-white/10 flex justify-between items-center">
+                  <span className="text-white/40 text-sm">共 {users.length} 个用户</span>
+                  <button onClick={() => setShowUserModal(false)} className="glass-btn text-sm">关闭</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Add User Modal */}
+        <AnimatePresence>
+          {showAddUserModal && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                exit={{ scale: 0.9 }}
+                className="glass-panel p-6 w-full max-w-md space-y-4"
+                onClick={e => e.stopPropagation()}
+              >
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <UserPlus className="w-5 h-5 text-green-400" /> 添加用户
+                </h2>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm text-white/60 block mb-1">用户名称</label>
+                    <input
+                      type="text"
+                      value={newUserName}
+                      onChange={e => setNewUserName(e.target.value)}
+                      placeholder="如：小明"
+                      className="glass-input w-full"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-white/60 block mb-1">到期时间（可选）</label>
+                    <input
+                      type="date"
+                      value={newUserExpire}
+                      onChange={e => setNewUserExpire(e.target.value)}
+                      className="glass-input w-full"
+                    />
+                    <p className="text-white/30 text-xs mt-1">留空表示永久有效</p>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => { setShowAddUserModal(false); setNewUserName(''); setNewUserExpire(''); }} className="glass-btn">取消</button>
+                  <button onClick={createUser} disabled={loading || !newUserName.trim()} className="glass-btn bg-green-600 hover:bg-green-500">
+                    {loading ? '创建中...' : '创建'}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* User Detail Modal */}
+        <AnimatePresence>
+          {showUserDetailModal && selectedUser && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                exit={{ scale: 0.9 }}
+                className="glass-panel w-full max-w-3xl max-h-[85vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between p-4 border-b border-white/10">
+                  <div className="flex items-center gap-3">
+                    <User className="w-5 h-5 text-green-400" />
+                    <div>
+                      <h2 className="text-xl font-bold">{selectedUser.name}</h2>
+                      <p className="text-white/40 text-xs">
+                        {selectedUser.expire_time > 0 
+                          ? `到期: ${new Date(selectedUser.expire_time * 1000).toLocaleDateString('zh-CN')}`
+                          : '永久有效'
+                        }
+                      </p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowUserDetailModal(false)} className="text-white/60 hover:text-white">✕</button>
+                </div>
+                
+                {/* User Subscription Link */}
+                <div className="p-4 border-b border-white/10 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-white/60">用户订阅链接</label>
+                    <button
+                      onClick={() => regenerateUserToken(selectedUser.id)}
+                      className="text-xs text-yellow-400 hover:text-yellow-300"
+                    >
+                      <RefreshCw className="w-3 h-3 inline mr-1" />重新生成
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={`${window.location.origin}/sub?token=${selectedUser.token}`}
+                      readOnly
+                      className="glass-input flex-1 font-mono text-xs"
+                    />
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${window.location.origin}/sub?token=${selectedUser.token}`);
+                        alert('已复制订阅链接');
+                      }}
+                      className="glass-btn px-3"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Node Allocation */}
+                <div className="flex-1 overflow-y-auto p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-medium text-white/80">节点分配</h3>
+                    <p className="text-xs text-white/40">勾选要分配给该用户的订阅和节点</p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {Object.entries(availableNodes).map(([subId, subInfo]) => {
+                      const isAllocated = !!userAllocations[subId];
+                      const isAllNodes = userAllocations[subId]?.includes('*');
+                      const allocatedCount = isAllNodes ? subInfo.nodes.length : (userAllocations[subId]?.length || 0);
+                      const isExpanded = expandedSubs[subId];
+                      
+                      return (
+                        <div key={subId} className="bg-white/5 rounded-lg overflow-hidden">
+                          {/* Subscription Header */}
+                          <div className="flex items-center justify-between p-3 hover:bg-white/5">
+                            <div className="flex items-center gap-3 flex-1">
+                              <input
+                                type="checkbox"
+                                checked={isAllocated}
+                                onChange={() => toggleSubAllocation(subId)}
+                                className="w-4 h-4 rounded border-white/30 bg-white/10 text-green-500 focus:ring-green-500"
+                              />
+                              <div 
+                                className="flex-1 cursor-pointer"
+                                onClick={() => setExpandedSubs(prev => ({ ...prev, [subId]: !prev[subId] }))}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">{subInfo.name}</span>
+                                  <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-white/50">
+                                    {allocatedCount}/{subInfo.nodes.length} 节点
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {isAllocated && (
+                                <>
+                                  <button
+                                    onClick={() => selectAllNodes(subId)}
+                                    className="text-xs text-blue-400 hover:text-blue-300 px-2"
+                                  >
+                                    全选
+                                  </button>
+                                  <button
+                                    onClick={() => deselectAllNodes(subId)}
+                                    className="text-xs text-red-400 hover:text-red-300 px-2"
+                                  >
+                                    清空
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                onClick={() => setExpandedSubs(prev => ({ ...prev, [subId]: !prev[subId] }))}
+                                className="p-1 hover:bg-white/10 rounded"
+                              >
+                                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+                          
+                          {/* Node List */}
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 border-t border-white/5">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-1 max-h-48 overflow-y-auto">
+                                {subInfo.nodes.map(nodeName => {
+                                  const isNodeAllocated = isAllNodes || userAllocations[subId]?.includes(nodeName);
+                                  return (
+                                    <label 
+                                      key={nodeName}
+                                      className={`flex items-center gap-2 p-2 rounded text-xs cursor-pointer hover:bg-white/5 ${isNodeAllocated ? 'bg-green-500/10' : ''}`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={isNodeAllocated}
+                                        onChange={() => toggleNodeAllocation(subId, nodeName)}
+                                        className="w-3 h-3 rounded border-white/30 bg-white/10 text-green-500 focus:ring-green-500"
+                                      />
+                                      <span className="truncate" title={nodeName}>{nodeName}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="p-4 border-t border-white/10 flex justify-between items-center">
+                  <div className="text-white/40 text-sm">
+                    已分配 {Object.keys(userAllocations).length} 个订阅源
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setShowUserDetailModal(false)} className="glass-btn text-sm">取消</button>
+                    <button onClick={saveUserAllocations} className="glass-btn bg-green-600 hover:bg-green-500 text-sm">
+                      保存分配
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             </motion.div>

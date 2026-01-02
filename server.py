@@ -43,7 +43,8 @@ def load_config() -> dict:
         'auth': {},
         'subscriptions': [],
         'custom_nodes': [],
-        'source_order': []
+        'source_order': [],
+        'users': []  # New: user management
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -170,6 +171,19 @@ class UpdateSubNode(BaseModel):
 
 class UpdateSubNodeFull(BaseModel):
     node: dict
+
+# User management models
+class CreateUser(BaseModel):
+    name: str
+    expire_time: Optional[int] = 0  # 0 = never expire, timestamp for expiry
+
+class UpdateUser(BaseModel):
+    name: Optional[str] = None
+    expire_time: Optional[int] = None
+    enabled: Optional[bool] = None
+
+class UserNodeAllocation(BaseModel):
+    subscriptions: Dict[str, List[str]]  # {sub_id: [node_names] or ["*"] for all}
 
 # ==================== Auth API ====================
 
@@ -1433,6 +1447,144 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
             return {"status": "success", "node": node}
     raise HTTPException(status_code=404, detail="Node not found")
 
+# ==================== User Management API ====================
+
+@app.get("/api/users")
+def list_users(_: bool = Depends(verify_session)):
+    """List all users"""
+    config = load_config()
+    users = config.get('users', [])
+    # Don't expose tokens in list view
+    return {"users": [{**u, 'token': u['token'][:8] + '...'} for u in users]}
+
+@app.get("/api/users/{user_id}")
+def get_user(user_id: str, _: bool = Depends(verify_session)):
+    """Get user details including full token"""
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            return {"user": user}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.post("/api/users")
+def create_user(data: CreateUser, _: bool = Depends(verify_session)):
+    """Create a new user"""
+    config = load_config()
+    
+    user_id = f"user_{int(time.time() * 1000)}"
+    user = {
+        'id': user_id,
+        'name': data.name,
+        'token': generate_token(),
+        'enabled': True,
+        'expire_time': data.expire_time,  # 0 = never expire
+        'created_at': int(time.time()),
+        'allocations': {}  # {sub_id: [node_names] or ["*"] for all}
+    }
+    
+    if 'users' not in config:
+        config['users'] = []
+    config['users'].append(user)
+    save_config(config)
+    
+    return {"status": "success", "user": user}
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session)):
+    """Update user info"""
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            if data.name is not None:
+                user['name'] = data.name
+            if data.expire_time is not None:
+                user['expire_time'] = data.expire_time
+            if data.enabled is not None:
+                user['enabled'] = data.enabled
+            save_config(config)
+            return {"status": "success", "user": user}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: str, _: bool = Depends(verify_session)):
+    """Delete a user"""
+    config = load_config()
+    users = config.get('users', [])
+    config['users'] = [u for u in users if u['id'] != user_id]
+    save_config(config)
+    return {"status": "success"}
+
+@app.post("/api/users/{user_id}/regenerate-token")
+def regenerate_user_token(user_id: str, _: bool = Depends(verify_session)):
+    """Regenerate user's subscription token"""
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            user['token'] = generate_token()
+            save_config(config)
+            return {"status": "success", "token": user['token']}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.put("/api/users/{user_id}/allocations")
+def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = Depends(verify_session)):
+    """Update user's node allocations
+    
+    data.subscriptions format:
+    {
+        "sub_id_1": ["*"],  # All nodes from this subscription
+        "sub_id_2": ["node_name_1", "node_name_2"],  # Specific nodes
+        "custom_nodes": ["node_name_3"]  # Custom nodes
+    }
+    """
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            user['allocations'] = data.subscriptions
+            save_config(config)
+            return {"status": "success", "allocations": user['allocations']}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.get("/api/users/{user_id}/allocations")
+def get_user_allocations(user_id: str, _: bool = Depends(verify_session)):
+    """Get user's current node allocations"""
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            return {"allocations": user.get('allocations', {})}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.get("/api/available-nodes")
+def get_available_nodes(_: bool = Depends(verify_session)):
+    """Get all available nodes grouped by subscription for allocation UI"""
+    config = load_config()
+    result = {}
+    
+    # Get nodes from each subscription
+    for sub in config.get('subscriptions', []):
+        if sub.get('enabled'):
+            filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = yaml.safe_load(f)
+                    nodes = data.get('proxies', []) if data else []
+                    result[sub['id']] = {
+                        'name': sub['name'],
+                        'nodes': [n.get('name', f"node_{i}") for i, n in enumerate(nodes)]
+                    }
+                except:
+                    result[sub['id']] = {'name': sub['name'], 'nodes': []}
+    
+    # Get custom nodes
+    custom_nodes = config.get('custom_nodes', [])
+    if custom_nodes:
+        result['custom_nodes'] = {
+            'name': '自定义节点',
+            'nodes': [n['name'] for n in custom_nodes]
+        }
+    
+    return {"sources": result}
+
 # ==================== Subscription Output API ====================
 
 # ==================== Node to Link Conversion ====================
@@ -1608,12 +1760,49 @@ def get_merged_subscription(
     config = load_config()
     auth = config.get('auth', {})
     
-    if auth.get('sub_token') and token != auth['sub_token']:
-        raise HTTPException(status_code=401, detail="Invalid subscription token")
+    # Check if token is admin token or user token
+    is_admin = False
+    user_info = None
+    user_allocations = None
+    
+    if auth.get('sub_token') and token == auth['sub_token']:
+        # Admin token - full access
+        is_admin = True
+    else:
+        # Check user tokens
+        for user in config.get('users', []):
+            if user.get('token') == token:
+                # Check if user is enabled
+                if not user.get('enabled', True):
+                    raise HTTPException(status_code=403, detail="User account is disabled")
+                # Check if user is expired
+                expire_time = user.get('expire_time', 0)
+                if expire_time > 0 and expire_time < time.time():
+                    raise HTTPException(status_code=403, detail="Subscription expired")
+                user_info = user
+                user_allocations = user.get('allocations', {})
+                break
+        
+        if not is_admin and not user_info:
+            raise HTTPException(status_code=401, detail="Invalid subscription token")
     
     subs = config.get('subscriptions', [])
     enabled_subs = [s for s in subs if s['enabled']]
     custom_nodes = config.get('custom_nodes', [])
+    
+    # Filter subscriptions based on user allocations
+    if user_allocations is not None:
+        # User mode: only show allocated subscriptions
+        allocated_sub_ids = set(user_allocations.keys()) - {'custom_nodes'}
+        enabled_subs = [s for s in enabled_subs if s['id'] in allocated_sub_ids]
+        
+        # Filter custom nodes if allocated
+        if 'custom_nodes' in user_allocations:
+            allocated_custom = user_allocations['custom_nodes']
+            if allocated_custom != ['*']:
+                custom_nodes = [n for n in custom_nodes if n['name'] in allocated_custom]
+        else:
+            custom_nodes = []  # No custom nodes allocated
     
     if not enabled_subs and not custom_nodes:
         raise HTTPException(status_code=404, detail="No enabled subscriptions or custom nodes")
@@ -1638,7 +1827,9 @@ def get_merged_subscription(
         if source['type'] == 'custom' and custom_nodes:
             file_aliases['custom_nodes.yaml'] = 'Custom'
         elif source['type'] == 'subscription' and source['data']['enabled']:
-            file_aliases[f"{source['data']['id']}.yaml"] = source['data']['name']
+            # Only include if admin or allocated to user
+            if is_admin or source['data']['id'] in (user_allocations or {}):
+                file_aliases[f"{source['data']['id']}.yaml"] = source['data']['name']
     
     merger = ConfigMerger(
         yaml_dir=YAML_SOURCE_DIR, output_file=OUTPUT_FILE,
@@ -1650,8 +1841,82 @@ def get_merged_subscription(
         proxies = cfg.get('proxies', [])
         proxy_groups = cfg.get('proxy-groups', [])
         
+        # Filter proxies based on user allocations (specific nodes)
+        if user_allocations is not None:
+            # Import NameTransformer for flag removal
+            from merge_config import NameTransformer
+            
+            filtered_proxies = []
+            for proxy in proxies:
+                proxy_name = proxy.get('name', '')
+                # Determine which subscription this proxy belongs to
+                # The proxy name format is: "Flag Provider NodeName"
+                # We need to check against allocations
+                included = False
+                
+                for sub_id, allocated_nodes in user_allocations.items():
+                    if sub_id == 'custom_nodes':
+                        continue  # Custom nodes handled separately
+                    
+                    # Find the subscription name
+                    sub_name_match = None
+                    for s in config.get('subscriptions', []):
+                        if s['id'] == sub_id:
+                            sub_name_match = s['name']
+                            break
+                    
+                    if sub_name_match and sub_name_match in proxy_name:
+                        if allocated_nodes == ['*']:
+                            # All nodes from this subscription
+                            included = True
+                            break
+                        else:
+                            # Check if this specific node is allocated
+                            # Original node name might have flags, e.g., "🇭🇰HK@xxx"
+                            # Transformed name is "🇭🇰 风萧萧 HK@xxx"
+                            # We need to match the core part (without flags)
+                            for alloc_node in allocated_nodes:
+                                # Remove flags from allocated node name for matching
+                                alloc_node_clean = NameTransformer.remove_flags(alloc_node)
+                                if alloc_node_clean and alloc_node_clean in proxy_name:
+                                    included = True
+                                    break
+                                # Also try direct match (in case no transformation)
+                                if alloc_node in proxy_name:
+                                    included = True
+                                    break
+                        if included:
+                            break
+                
+                # Check custom nodes
+                if not included and 'custom_nodes' in user_allocations:
+                    allocated_custom = user_allocations['custom_nodes']
+                    if allocated_custom == ['*']:
+                        # Check if it's a custom node
+                        for cn in config.get('custom_nodes', []):
+                            if cn['name'] in proxy_name:
+                                included = True
+                                break
+                    else:
+                        for alloc_node in allocated_custom:
+                            if alloc_node in proxy_name:
+                                included = True
+                                break
+                
+                if included:
+                    filtered_proxies.append(proxy)
+            
+            proxies = filtered_proxies
+            
+            # Regenerate proxy groups based on filtered proxies
+            from merge_config import CountryGrouper, ProxyGroupGenerator
+            country_groups = CountryGrouper.group_by_country(proxies)
+            proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
+        
         # Get custom config name
         sub_name = auth.get('sub_name', 'Aggregated')
+        if user_info:
+            sub_name = f"{sub_name} - {user_info['name']}"
         
         # Generate traffic info nodes for each subscription
         def format_bytes(b):
