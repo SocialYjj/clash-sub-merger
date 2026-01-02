@@ -1822,14 +1822,36 @@ def get_merged_subscription(
     header = ConfigMerger.TEMPLATES['header']
     suffix = ConfigMerger.TEMPLATES['suffix']
     
+    # Build file_aliases based on filtered subscriptions (not all sources)
     file_aliases = OrderedDict()
-    for source in get_ordered_sources():
-        if source['type'] == 'custom' and custom_nodes:
+    
+    # Get order from source_order config
+    config_order = config.get('source_order', [])
+    
+    # Add custom nodes first if allocated
+    if custom_nodes:
+        if 'custom_nodes' in config_order:
+            # Will be added in order below
+            pass
+        else:
             file_aliases['custom_nodes.yaml'] = 'Custom'
-        elif source['type'] == 'subscription' and source['data']['enabled']:
-            # Only include if admin or allocated to user
-            if is_admin or source['data']['id'] in (user_allocations or {}):
-                file_aliases[f"{source['data']['id']}.yaml"] = source['data']['name']
+    
+    # Add sources in order
+    for source_id in config_order:
+        if source_id == 'custom_nodes' and custom_nodes:
+            file_aliases['custom_nodes.yaml'] = 'Custom'
+        else:
+            # Check if this subscription is in enabled_subs (already filtered for user)
+            for sub in enabled_subs:
+                if sub['id'] == source_id:
+                    file_aliases[f"{sub['id']}.yaml"] = sub['name']
+                    break
+    
+    # Add any remaining enabled_subs not in order
+    for sub in enabled_subs:
+        filename = f"{sub['id']}.yaml"
+        if filename not in file_aliases:
+            file_aliases[filename] = sub['name']
     
     merger = ConfigMerger(
         yaml_dir=YAML_SOURCE_DIR, output_file=OUTPUT_FILE,
