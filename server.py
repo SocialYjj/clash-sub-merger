@@ -1671,6 +1671,23 @@ def get_merged_subscription(
         
         traffic_info_nodes = []
         traffic_info_names = []
+        
+        # Calculate aggregated total first
+        agg_used = sum((s.get('upload', 0) or 0) + (s.get('download', 0) or 0) for s in enabled_subs)
+        agg_total = sum(s.get('total', 0) or 0 for s in enabled_subs)
+        
+        # Add aggregated total node first (only traffic, no time)
+        if agg_total > 0:
+            agg_name = f"📊 总计 | {format_bytes(agg_used)}/{format_bytes(agg_total)}"
+            traffic_info_names.append(agg_name)
+            traffic_info_nodes.append({
+                'name': agg_name,
+                'type': 'http',
+                'server': '1.0.0.1',
+                'port': 65535
+            })
+        
+        # Add individual subscription traffic info
         for sub in enabled_subs:
             used = (sub.get('upload', 0) or 0) + (sub.get('download', 0) or 0)
             total = sub.get('total', 0) or 0
@@ -1701,8 +1718,6 @@ def get_merged_subscription(
                     # Insert traffic info at the beginning of proxies list
                     group['proxies'] = traffic_info_names + group.get('proxies', [])
                     break
-        
-        # Calcuxy_groups.insert(0, traffic_info_group)
         
         # Calculate total traffic info from all subscriptions
         total_upload = sum(s.get('upload', 0) or 0 for s in enabled_subs)
