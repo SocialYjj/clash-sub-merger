@@ -4,13 +4,38 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, RefreshCw, Trash2, Settings, Copy, Check, Power, Plane, Database, Clock, Server, Link2, Cpu, ChevronRight, ChevronDown, ChevronUp, Upload, X, Edit2, FileEdit, Lock, Eye, EyeOff, Key, LogOut, GripVertical, QrCode, ExternalLink, Users, UserPlus, User, Calendar, ToggleLeft, ToggleRight } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
-import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, rectSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
 const API_BASE = '/api';
 
 // 可排序卡片组件
 function SortableCard({ id, children }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : 'auto',
+    opacity: isDragging ? 0.8 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      {children(listeners, isDragging)}
+    </div>
+  );
+}
+
+// 可排序节点项组件
+function SortableNodeItem({ id, children }) {
   const {
     attributes,
     listeners,
@@ -313,6 +338,24 @@ function App() {
       fetchCustomNodes();
     } catch (err) {
       showToast('删除失败', 'error');
+    }
+  };
+
+  // 自建节点拖拽排序
+  const handleCustomNodeDragEnd = async (event) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIndex = customNodes.findIndex(n => n.id === active.id);
+      const newIndex = customNodes.findIndex(n => n.id === over.id);
+      const newNodes = arrayMove(customNodes, oldIndex, newIndex);
+      setCustomNodes(newNodes);
+      
+      try {
+        await axios.put(`${API_BASE}/custom-nodes/reorder`, { order: newNodes.map(n => n.id) });
+      } catch (err) {
+        showToast('排序保存失败', 'error');
+        fetchCustomNodes();
+      }
     }
   };
 
@@ -691,6 +734,7 @@ function App() {
     setCardList(items);
   }, [subscriptions, customNodes, sourceOrder, isDragging]);
 
+  // 订阅节点拖拽排序
   // 订阅节点编辑/删除
   const updateSubNode = async (idx) => {
     if (!editingSubNodeName.trim() || !selectedSub) return;
@@ -1431,7 +1475,7 @@ function App() {
                       <Plus className="w-4 h-4" />
                     </button>
                   </div>
-                  <p className="text-white/30 text-xs">支持 vless/vmess/ss/trojan/tuic/hysteria2 等格式</p>
+                  <p className="text-white/30 text-xs">支持 vless/vmess/ss/trojan/tuic/hysteria2 等格式，拖拽可排序</p>
                 </div>
 
                 {/* 节点列表 */}
@@ -1442,69 +1486,80 @@ function App() {
                       <p>还没有添加自建节点</p>
                     </div>
                   ) : (
-                    customNodes.map(node => (
-                      <div key={node.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg group">
-                        <div className="flex-1 min-w-0">
-                          {editingNodeId === node.id ? (
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="text"
-                                value={editingNodeName}
-                                onChange={e => setEditingNodeName(e.target.value)}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') updateCustomNodeName(node.id);
-                                  if (e.key === 'Escape') { setEditingNodeId(null); setEditingNodeName(''); }
-                                }}
-                                className="glass-input text-sm flex-1"
-                                autoFocus
-                              />
-                              <button onClick={() => updateCustomNodeName(node.id)} className="p-1.5 rounded hover:bg-white/10">
-                                <Check className="w-4 h-4 text-green-400" />
-                              </button>
-                              <button onClick={() => { setEditingNodeId(null); setEditingNodeName(''); }} className="p-1.5 rounded hover:bg-white/10">
-                                <X className="w-4 h-4 text-white/60" />
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <div className="flex items-center gap-2">
-                                <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                                <span className="font-medium truncate">{node.name}</span>
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-white/10 text-white/50">{node.type}</span>
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCustomNodeDragEnd}>
+                      <SortableContext items={customNodes.map(n => n.id)} strategy={verticalListSortingStrategy}>
+                        {customNodes.map(node => (
+                          <SortableNodeItem key={node.id} id={node.id}>
+                            {(listeners, isDragging) => (
+                              <div className={`flex items-center justify-between p-3 bg-white/5 rounded-lg group ${isDragging ? 'ring-2 ring-cyan-400' : ''}`}>
+                                <div className="flex items-center gap-2 cursor-grab active:cursor-grabbing" {...listeners}>
+                                  <GripVertical className="w-4 h-4 text-white/30" />
+                                </div>
+                                <div className="flex-1 min-w-0 ml-2">
+                                  {editingNodeId === node.id ? (
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="text"
+                                        value={editingNodeName}
+                                        onChange={e => setEditingNodeName(e.target.value)}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') updateCustomNodeName(node.id);
+                                          if (e.key === 'Escape') { setEditingNodeId(null); setEditingNodeName(''); }
+                                        }}
+                                        className="glass-input text-sm flex-1"
+                                        autoFocus
+                                      />
+                                      <button onClick={() => updateCustomNodeName(node.id)} className="p-1.5 rounded hover:bg-white/10">
+                                        <Check className="w-4 h-4 text-green-400" />
+                                      </button>
+                                      <button onClick={() => { setEditingNodeId(null); setEditingNodeName(''); }} className="p-1.5 rounded hover:bg-white/10">
+                                        <X className="w-4 h-4 text-white/60" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                                        <span className="font-medium truncate">{node.name}</span>
+                                        <span className="text-xs px-1.5 py-0.5 rounded bg-white/10 text-white/50">{node.type}</span>
+                                      </div>
+                                      <div className="text-xs text-white/30 mt-1 truncate font-mono">
+                                        {node.server}:{node.port}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                                {editingNodeId !== node.id && (
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={() => startEditNode(node)}
+                                      className="p-2 rounded hover:bg-white/10"
+                                      title="重命名"
+                                    >
+                                      <Edit2 className="w-4 h-4 text-white/60" />
+                                    </button>
+                                    <button 
+                                      onClick={() => openCustomNodeEditModal(node)}
+                                      className="p-2 rounded hover:bg-white/10"
+                                      title="编辑配置"
+                                    >
+                                      <FileEdit className="w-4 h-4 text-blue-400" />
+                                    </button>
+                                    <button 
+                                      onClick={() => deleteCustomNode(node.id)}
+                                      className="p-2 rounded hover:bg-white/10"
+                                      title="删除"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-red-400" />
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                              <div className="text-xs text-white/30 mt-1 truncate font-mono">
-                                {node.server}:{node.port}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                        {editingNodeId !== node.id && (
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={() => startEditNode(node)}
-                              className="p-2 rounded hover:bg-white/10"
-                              title="重命名"
-                            >
-                              <Edit2 className="w-4 h-4 text-white/60" />
-                            </button>
-                            <button 
-                              onClick={() => openCustomNodeEditModal(node)}
-                              className="p-2 rounded hover:bg-white/10"
-                              title="编辑配置"
-                            >
-                              <FileEdit className="w-4 h-4 text-blue-400" />
-                            </button>
-                            <button 
-                              onClick={() => deleteCustomNode(node.id)}
-                              className="p-2 rounded hover:bg-white/10"
-                              title="删除"
-                            >
-                              <Trash2 className="w-4 h-4 text-red-400" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))
+                            )}
+                          </SortableNodeItem>
+                        ))}
+                      </SortableContext>
+                    </DndContext>
                   )}
                 </div>
 
@@ -1607,7 +1662,9 @@ function App() {
 
                 {/* 节点列表 */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                  <div className="text-white/40 text-sm mb-2">节点列表</div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white/40 text-sm">节点列表</span>
+                  </div>
                   {loadingNodes ? (
                     <div className="text-center py-10 text-white/30">
                       <RefreshCw className="w-8 h-8 mx-auto mb-3 animate-spin opacity-30" />

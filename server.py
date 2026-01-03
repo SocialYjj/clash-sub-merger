@@ -1358,6 +1358,11 @@ def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(ver
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class ReorderSubNodes(BaseModel):
+    order: List  # List of node indices in new order (accept any type, convert to int)
+
+# Subscription node reorder API removed - only custom nodes support reordering
+
 # ==================== Custom Node API ====================
 
 @app.get("/api/custom-nodes")
@@ -1395,6 +1400,34 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
 def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     config = load_config()
     config['custom_nodes'] = [n for n in config['custom_nodes'] if n['id'] != node_id]
+    save_config(config)
+    update_custom_nodes_yaml()
+    return {"status": "success"}
+
+class ReorderNodes(BaseModel):
+    order: List[str]  # List of node IDs in new order
+
+@app.put("/api/custom-nodes/reorder")
+def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
+    """Reorder custom nodes"""
+    config = load_config()
+    nodes = config.get('custom_nodes', [])
+    
+    # Create a map of id -> node
+    node_map = {n['id']: n for n in nodes}
+    
+    # Reorder based on the provided order
+    new_nodes = []
+    for node_id in data.order:
+        if node_id in node_map:
+            new_nodes.append(node_map[node_id])
+    
+    # Add any nodes not in the order list at the end
+    for node in nodes:
+        if node['id'] not in data.order:
+            new_nodes.append(node)
+    
+    config['custom_nodes'] = new_nodes
     save_config(config)
     update_custom_nodes_yaml()
     return {"status": "success"}
