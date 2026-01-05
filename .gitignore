@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info
+.venv/
+venv/
+
+# Node
+node_modules/
+submerger/node_modules/
+
+# Build Components (Frontend)
+submerger/dist/
+submerger/.vite/
+
+# User Data & Secrets
+uploads/
+data/
+config.json
+myconfig.yaml
+*.yaml
+!docker-compose.yml
+!submerger/src/**/*.yaml
+
+# GeoIP
+*.mmdb
+GeoLite2*
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+.kiro/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Misc
+uv.lock

@@ -1,0 +1,19 @@
+[project]
+name = "submerger"
+version = "1.0.0"
+description = "Modern subscription aggregation management panel for Clash/Mihomo"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "pyyaml>=6.0",
+    "requests>=2.32.0",
+    "python-multipart>=0.0.20",
+    "geoip2>=4.8.0",
+    "apscheduler>=3.10.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]

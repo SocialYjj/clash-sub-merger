@@ -1,0 +1,11 @@
+services:
+  submerger:
+    build: .
+    container_name: submerger
+    restart: unless-stopped
+    ports:
+      - "8666:8666"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
