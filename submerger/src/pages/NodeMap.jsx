@@ -213,13 +213,10 @@ export default function NodeMap() {
 
           if (params.name === 'CN' || (params.data && params.data.name === 'CN')) {
             const cnCount = rawData['CN'] || 0;
-            return `<div class="flex items-center gap-2">
-                       <span class="text-2xl not-italic">🇨🇳</span>
-                       <span class="font-bold text-white">CN (本地区域)</span>
-                    </div>
-                    ${cnCount > 0 ? `<div class="mt-2 text-xs flex justify-between w-32">
-                       <span>节点数量</span>
-                       <span class="font-bold text-yellow-400">${cnCount}</span>
+            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">中国 (本地区域)</div>
+                    ${cnCount > 0 ? `<div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
+                       <span style="color: #9ca3af;">节点数量</span>
+                       <span style="font-weight: bold; color: #facc15;">${cnCount}</span>
                     </div>` : ''}`;
           }
 
@@ -227,16 +224,15 @@ export default function NodeMap() {
           if (!valCode) return '';
 
           const count = params.value[2];
-          const flagEmoji = getFlagEmoji(valCode);
+          // Get full country name from countryData
+          const countryInfo = countryData.find(c => c.code === valCode);
+          const countryName = countryInfo?.name || valCode;
 
-          return `<div class="flex items-center gap-2">
-                    <span class="text-2xl not-italic">${flagEmoji}</span>
-                    <span class="font-bold text-white">${valCode}</span>
-                 </div>
-                 <div class="mt-2 text-xs flex justify-between w-32">
-                    <span>节点数量</span>
-                    <span class="font-bold text-cyan-400">${count}</span>
-                 </div>`;
+          return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
+                  <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
+                    <span style="color: #9ca3af;">节点数量</span>
+                    <span style="font-weight: bold; color: #22d3ee;">${count}</span>
+                  </div>`;
         }
       },
       geo: {
@@ -302,9 +298,10 @@ export default function NodeMap() {
             position: 'right',
             formatter: (params) => {
               const code = params.value[3];
-              return getFlagEmoji(code);
+              return code;  // Just show country code, emoji doesn't render well
             },
-            fontSize: 14,
+            fontSize: 12,
+            color: '#fff',
             distance: 5
           },
           symbolSize: (val) => Math.max(6, Math.min(20, Math.log2(val[2] + 1) * 5)),
@@ -322,14 +319,11 @@ export default function NodeMap() {
           itemStyle: { color: '#fbbf24' },
           label: {
             show: true,
-            formatter: '🇨🇳 CN',
-            position: 'top',
-            fontWeight: 'bold',
-            color: '#fbbf24',
-            fontSize: 14,
-            backgroundColor: 'rgba(0,0,0,0.5)',
-            padding: [4, 6],
-            borderRadius: 4
+            formatter: 'CN',
+            position: 'right',
+            fontSize: 12,
+            color: '#fff',
+            distance: 5
           },
           data: [targetPoint]
         }] : [])

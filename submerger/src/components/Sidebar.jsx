@@ -111,10 +111,10 @@ export default function Sidebar({ collapsed, setCollapsed }) {
       <div className="p-4 border-t border-gray-800">
         {!collapsed ? (
           <div className="text-xs text-gray-500 text-center">
-            Clash Sub Merger v1.0
+            Clash Sub Merger v2.0.0
           </div>
         ) : (
-          <div className="text-xs text-gray-500 text-center">v1</div>
+          <div className="text-xs text-gray-500 text-center">v2</div>
         )}
       </div>
     </div>

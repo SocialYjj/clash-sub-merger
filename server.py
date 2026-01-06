@@ -11,12 +11,12 @@ from urllib.parse import urlparse, parse_qs, unquote, quote
 from typing import Optional, Tuple, Dict, List
 from collections import OrderedDict
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, BackgroundTasks
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse   
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from merge_config import ConfigMerger
+from merge_config import ConfigMerger, NameTransformer, CountryGrouper
 from geoip_service import get_geoip_service, download_geoip_database, init_geoip_service, get_latest_version_info, get_local_version_info, check_update_available
 from scheduler_service import get_scheduler, init_scheduler, CRON_PRESETS, get_cron_description
 from speedtest_service import (
@@ -52,7 +52,9 @@ def load_config() -> dict:
         'subscriptions': [],
         'custom_nodes': [],
         'source_order': [],
-        'users': []  # New: user management
+        'users': [],  # User management
+        'templates': [],  # Multi-template management
+        'admin_tokens': []  # Admin multi-token management
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -106,8 +108,52 @@ def migrate_old_config():
     save_config(config)
     print("Config migration completed")
 
+def migrate_legacy_sub_token():
+    """Migrate legacy auth.sub_token to admin_tokens if not already migrated"""
+    config = load_config()
+    auth = config.get('auth', {})
+    admin_tokens = config.get('admin_tokens', [])
+    
+    # Check if legacy sub_token exists
+    legacy_token = auth.get('sub_token')
+    if not legacy_token:
+        return  # No legacy token to migrate
+    
+    # Check if already migrated (token value exists in admin_tokens)
+    already_migrated = any(t.get('token') == legacy_token for t in admin_tokens)
+    if already_migrated:
+        return  # Already migrated
+    
+    # Create new admin token from legacy settings
+    migrated_token = {
+        'id': f"tpl_{int(time.time() * 1000)}",
+        'name': auth.get('sub_name', '默认'),  # Use original config name
+        'token': legacy_token,  # Keep the same token value for backward compatibility
+        'template_id': 'builtin',
+        'sub_filename': auth.get('sub_filename', ''),
+        'sub_name': auth.get('sub_name', ''),
+        'enabled': True,
+        'created_at': int(time.time())
+    }
+    
+    if 'admin_tokens' not in config:
+        config['admin_tokens'] = []
+    config['admin_tokens'].insert(0, migrated_token)  # Add at beginning
+    
+    # Remove legacy fields after migration
+    if 'sub_token' in config['auth']:
+        del config['auth']['sub_token']
+    if 'sub_filename' in config['auth']:
+        del config['auth']['sub_filename']
+    if 'sub_name' in config['auth']:
+        del config['auth']['sub_name']
+    
+    save_config(config)
+    print(f"Legacy sub_token migrated to admin_tokens: {legacy_token[:8]}...")
+
 # Run migration on startup
 migrate_old_config()
+migrate_legacy_sub_token()
 
 # ==================== Country Detection from Node Name ====================
 
@@ -185,9 +231,76 @@ COUNTRY_NAMES = {
     'PK': '巴基斯坦', 'BD': '孟加拉', 'CL': '智利', 'AQ': '南极洲', 'CN': '中国'
 }
 
-def extract_country_from_name(node_name: str) -> Optional[Dict]:
+# Placeholder to country code mapping for template processing
+PLACEHOLDER_COUNTRY_MAP = {
+    '{{HK}}': 'HK', '{{TW}}': 'TW', '{{JP}}': 'JP', '{{KR}}': 'KR', '{{SG}}': 'SG',
+    '{{US}}': 'US', '{{GB}}': 'GB', '{{DE}}': 'DE', '{{FR}}': 'FR', '{{NL}}': 'NL',
+    '{{RU}}': 'RU', '{{CA}}': 'CA', '{{AU}}': 'AU', '{{IN}}': 'IN', '{{TR}}': 'TR',
+    '{{MY}}': 'MY', '{{TH}}': 'TH', '{{VN}}': 'VN', '{{ID}}': 'ID', '{{PH}}': 'PH',
+    '{{BR}}': 'BR', '{{AR}}': 'AR', '{{MX}}': 'MX', '{{ZA}}': 'ZA', '{{AE}}': 'AE',
+    '{{IL}}': 'IL', '{{UA}}': 'UA', '{{PL}}': 'PL', '{{CH}}': 'CH', '{{SE}}': 'SE',
+    '{{NO}}': 'NO', '{{FI}}': 'FI', '{{DK}}': 'DK', '{{IT}}': 'IT', '{{ES}}': 'ES',
+}
+
+def process_template_proxy_groups(template_groups: List[dict], all_proxies: List[str], 
+                                   country_groups: Dict[str, List[str]], 
+                                   sorted_country_names: List[str]) -> List[dict]:
     """
-    Extract country info from node name using flag emoji or keywords.
+    Process template proxy-groups by replacing placeholders with actual values.
+    
+    Placeholders:
+    - {{ALL_PROXIES}}: All proxy node names
+    - {{COUNTRY_GROUPS}}: All country group names (e.g., ['🇭🇰 香港', '🇺🇸 美国', ...])
+    - {{XX}}: Proxies from specific country (e.g., {{US}} for US proxies, {{HK}} for HK proxies)
+    """
+    processed_groups = []
+    
+    for group in template_groups:
+        if not isinstance(group, dict):
+            continue
+        
+        new_group = dict(group)
+        proxies = group.get('proxies', [])
+        
+        if not isinstance(proxies, list):
+            processed_groups.append(new_group)
+            continue
+        
+        new_proxies = []
+        for item in proxies:
+            if not isinstance(item, str):
+                new_proxies.append(item)
+                continue
+            
+            if item == '{{ALL_PROXIES}}':
+                # Replace with all proxy names
+                new_proxies.extend(all_proxies)
+            elif item == '{{COUNTRY_GROUPS}}':
+                # Replace with all country group names
+                new_proxies.extend(sorted_country_names)
+            elif item in PLACEHOLDER_COUNTRY_MAP:
+                # Replace with proxies from specific country
+                country_code = PLACEHOLDER_COUNTRY_MAP[item]
+                # Find the country group name that matches this code
+                for country_name in sorted_country_names:
+                    # Country name format: "🇺🇸 美国" - need to check if code matches
+                    if country_code in country_name or COUNTRY_NAMES.get(country_code, '') in country_name:
+                        if country_name in country_groups:
+                            new_proxies.extend(country_groups[country_name])
+                        break
+            else:
+                # Keep as-is (DIRECT, REJECT, group references, etc.)
+                new_proxies.append(item)
+        
+        new_group['proxies'] = new_proxies
+        processed_groups.append(new_group)
+    
+    return processed_groups
+
+def extract_country_from_name(node_name: str, server: str = None) -> Optional[Dict]:
+    """
+    Extract country info from node name using flag emoji, keywords, or GeoIP.
+    Priority: 1. Flag emoji  2. Keywords  3. GeoIP lookup  4. None
     Returns: {'country': str, 'country_code': str, 'flag': str} or None
     """
     if not node_name:
@@ -236,6 +349,19 @@ def extract_country_from_name(node_name: str) -> Optional[Dict]:
             'country_code': best_match_code,
             'flag': GeoIPService.iso_to_flag(best_match_code)
         }
+    
+    # 3. GeoIP lookup as fallback (if server address provided)
+    if server:
+        geoip = get_geoip_service()
+        if geoip and geoip.is_available():
+            result = geoip.get_country(server)
+            if result and result.get('iso_code'):
+                code = result['iso_code']
+                return {
+                    'country': COUNTRY_NAMES.get(code, result.get('country_name', code)),
+                    'country_code': code,
+                    'flag': result.get('flag', GeoIPService.iso_to_flag(code))
+                }
     
     return None
 
@@ -319,9 +445,18 @@ class UpdateUser(BaseModel):
     name: Optional[str] = None
     expire_time: Optional[int] = None
     enabled: Optional[bool] = None
+    template_id: Optional[str] = None  # Template to use for this user
 
 class UserNodeAllocation(BaseModel):
     subscriptions: Dict[str, List[str]]  # {sub_id: [node_names] or ["*"] for all}
+
+# Port mapping models
+class PortMappingCreate(BaseModel):
+    final_name: str  # The final transformed node name
+    port: int  # Port number to map (e.g., 52001)
+
+class PortMappingUpdate(BaseModel):
+    port: int  # New port number
 
 # ==================== Auth API ====================
 
@@ -1399,11 +1534,69 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Subscription file not found")
     
+    # Get subscription name for NameTransformer
+    config = load_config()
+    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+    source_name = sub['name'] if sub else 'Unknown'
+    port_mappings = config.get('port_mappings', {})  # {final_name: port}
+    
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
         proxies = cfg.get('proxies', []) if cfg else []
-        return {"nodes": proxies, "count": len(proxies)}
+        
+        # Enhance each node with final_name and region
+        enhanced_nodes = []
+        for proxy in proxies:
+            node_data = dict(proxy)  # Copy original data
+            server = proxy.get('server', '')
+            original_name = proxy.get('name', '')
+            
+            # Generate final name using NameTransformer
+            transformed = NameTransformer.transform_name(proxy, source_name)
+            final_name = transformed.get('name', original_name)
+            node_data['final_name'] = final_name
+            
+            # Generate display name (clean name without flag for UI display)
+            display_name = NameTransformer.remove_flags(original_name)
+            node_data['display_name'] = display_name
+            
+            # Get region info - STRICT priority:
+            # 1. Flag emoji in ORIGINAL name (机场提供的旗帜标识) - most reliable
+            # 2. Keywords in original name
+            # 3. Saved geoip cache (from region testing)  
+            # 4. GeoIP lookup (fallback)
+            
+            # First, check for flag in original name only (no server GeoIP)
+            flag_from_name = NameTransformer.identify_flag(original_name, None)  # Don't use server for GeoIP
+            
+            if flag_from_name and flag_from_name != '🔰':
+                # Found flag/keyword in original name - use it!
+                code = GeoIPService.flag_to_iso(flag_from_name)
+                if code:
+                    node_data['region'] = {
+                        'country': COUNTRY_NAMES.get(code, code),
+                        'country_code': code,
+                        'flag': flag_from_name
+                    }
+            else:
+                # No flag in name, check geoip cache (from region testing)
+                saved_geoip = proxy.get('geoip')
+                if saved_geoip and saved_geoip.get('country_code'):
+                    node_data['region'] = {
+                        'country': saved_geoip.get('country', saved_geoip['country_code']),
+                        'country_code': saved_geoip['country_code'],
+                        'flag': saved_geoip.get('flag', '')
+                    }
+                    node_data['detected_region'] = True  # Mark as detected (not from name)
+            
+            # Add port mapping info if exists
+            if final_name in port_mappings:
+                node_data['mapped_port'] = port_mappings[final_name]
+            
+            enhanced_nodes.append(node_data)
+        
+        return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1507,7 +1700,59 @@ class ReorderSubNodes(BaseModel):
 def get_custom_nodes(_: bool = Depends(verify_session)):
     config = load_config()
     nodes = config.get('custom_nodes', [])
-    return {"nodes": nodes, "count": len(nodes)}
+    port_mappings = config.get('port_mappings', {})  # {final_name: port}
+    
+    # Enhance each node with final_name and region
+    enhanced_nodes = []
+    for node in nodes:
+        node_data = dict(node)  # Copy original data
+        server = node.get('server', '')
+        original_name = node.get('name', '')
+        
+        # Generate final name using NameTransformer (use 'Custom' as source)
+        transformed = NameTransformer.transform_name(node, 'Custom')
+        final_name = transformed.get('name', original_name)
+        node_data['final_name'] = final_name
+        
+        # Generate display name (clean name without flag for UI display)
+        display_name = NameTransformer.remove_flags(original_name)
+        node_data['display_name'] = display_name
+        
+        # Get region info - STRICT priority:
+        # 1. Flag emoji in ORIGINAL name - most reliable
+        # 2. Keywords in original name
+        # 3. Saved geoip cache (from region testing)
+        
+        # First, check for flag in original name only (no server GeoIP)
+        flag_from_name = NameTransformer.identify_flag(original_name, None)
+        
+        if flag_from_name and flag_from_name != '🔰':
+            # Found flag/keyword in original name - use it!
+            code = GeoIPService.flag_to_iso(flag_from_name)
+            if code:
+                node_data['region'] = {
+                    'country': COUNTRY_NAMES.get(code, code),
+                    'country_code': code,
+                    'flag': flag_from_name
+                }
+        else:
+            # No flag in name, check geoip cache
+            saved_geoip = node.get('geoip')
+            if saved_geoip and saved_geoip.get('country_code'):
+                node_data['region'] = {
+                    'country': saved_geoip.get('country', saved_geoip['country_code']),
+                    'country_code': saved_geoip['country_code'],
+                    'flag': saved_geoip.get('flag', '')
+                }
+                node_data['detected_region'] = True
+        
+        # Add port mapping info if exists
+        if final_name in port_mappings:
+            node_data['mapped_port'] = port_mappings[final_name]
+        
+        enhanced_nodes.append(node_data)
+    
+    return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 @app.post("/api/custom-nodes")
 def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
@@ -1661,6 +1906,129 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
             return {"status": "success", "node": node}
     raise HTTPException(status_code=404, detail="Node not found")
 
+# ==================== Port Mapping API ====================
+
+def get_all_final_node_names() -> set:
+    """Get a set of all current final node names (for validation)"""
+    config = load_config()
+    names = set()
+    
+    # Get subscription nodes
+    for sub in config.get('subscriptions', []):
+        if sub.get('enabled', True):
+            filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        cfg = yaml.safe_load(f)
+                    for proxy in cfg.get('proxies', []) if cfg else []:
+                        transformed = NameTransformer.transform_name(proxy, sub['name'])
+                        names.add(transformed.get('name', ''))
+                except:
+                    pass
+    
+    # Get custom nodes
+    for node in config.get('custom_nodes', []):
+        transformed = NameTransformer.transform_name(node, 'Custom')
+        names.add(transformed.get('name', ''))
+    
+    return names
+
+@app.get("/api/port-mappings")
+def get_port_mappings(_: bool = Depends(verify_session)):
+    """Get all port mappings with status (active/orphan)"""
+    config = load_config()
+    mappings = config.get('port_mappings', {})  # {final_name: port}
+    
+    # Get current valid node names
+    valid_names = get_all_final_node_names()
+    
+    result = []
+    for final_name, port in mappings.items():
+        result.append({
+            "final_name": final_name,
+            "port": port,
+            "active": final_name in valid_names  # True if node still exists
+        })
+    
+    # Sort by port
+    result.sort(key=lambda x: x['port'])
+    return {"mappings": result}
+
+@app.post("/api/port-mappings")
+def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_session)):
+    """Create or update a port mapping. Implements 'takeover' logic for orphan ports."""
+    config = load_config()
+    if 'port_mappings' not in config:
+        config['port_mappings'] = {}
+    
+    mappings = config['port_mappings']
+    valid_names = get_all_final_node_names()
+    
+    # Validate port range
+    if data.port < 1024 or data.port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1024 and 65535")
+    
+    # Check if port is already used
+    existing_name = None
+    for name, port in mappings.items():
+        if port == data.port:
+            existing_name = name
+            break
+    
+    if existing_name:
+        # Port is already mapped
+        if existing_name == data.final_name:
+            # Same mapping, no change needed
+            return {"status": "success", "message": "Mapping already exists", "final_name": data.final_name, "port": data.port}
+        elif existing_name not in valid_names:
+            # Old node doesn't exist anymore - takeover allowed
+            del mappings[existing_name]
+        else:
+            # Old node still exists - reject
+            raise HTTPException(status_code=409, detail=f"Port {data.port} is already mapped to '{existing_name}'")
+    
+    # Check if this node already has a mapping (update case)
+    if data.final_name in mappings:
+        old_port = mappings[data.final_name]
+        mappings[data.final_name] = data.port
+        save_config(config)
+        return {"status": "success", "message": f"Updated port from {old_port} to {data.port}", "final_name": data.final_name, "port": data.port}
+    
+    # Create new mapping
+    mappings[data.final_name] = data.port
+    save_config(config)
+    return {"status": "success", "message": "Mapping created", "final_name": data.final_name, "port": data.port}
+
+@app.delete("/api/port-mappings/{port}")
+def delete_port_mapping_by_port(port: int, _: bool = Depends(verify_session)):
+    """Delete a port mapping by port number"""
+    config = load_config()
+    mappings = config.get('port_mappings', {})
+    
+    # Find and delete
+    for final_name, p in list(mappings.items()):
+        if p == port:
+            del mappings[final_name]
+            save_config(config)
+            return {"status": "success", "deleted_name": final_name, "deleted_port": port}
+    
+    raise HTTPException(status_code=404, detail=f"No mapping found for port {port}")
+
+@app.delete("/api/port-mappings/by-name/{final_name:path}")
+def delete_port_mapping_by_name(final_name: str, _: bool = Depends(verify_session)):
+    """Delete a port mapping by node name"""
+    config = load_config()
+    mappings = config.get('port_mappings', {})
+    
+    if final_name in mappings:
+        port = mappings[final_name]
+        del mappings[final_name]
+        save_config(config)
+        return {"status": "success", "deleted_name": final_name, "deleted_port": port}
+    
+    raise HTTPException(status_code=404, detail=f"No mapping found for node '{final_name}'")
+
 # ==================== User Management API ====================
 
 @app.get("/api/users")
@@ -1693,7 +2061,8 @@ def create_user(data: CreateUser, _: bool = Depends(verify_session)):
         'enabled': True,
         'expire_time': data.expire_time,  # 0 = never expire
         'created_at': int(time.time()),
-        'allocations': {}  # {sub_id: [node_names] or ["*"] for all}
+        'allocations': {},  # {sub_id: [node_names] or ["*"] for all}
+        'template_id': 'builtin'  # Default to built-in template
     }
     
     if 'users' not in config:
@@ -1715,6 +2084,13 @@ def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session
                 user['expire_time'] = data.expire_time
             if data.enabled is not None:
                 user['enabled'] = data.enabled
+            if data.template_id is not None:
+                # Validate template exists
+                if data.template_id != 'builtin':
+                    templates = config.get('templates', [])
+                    if not any(t['id'] == data.template_id for t in templates):
+                        raise HTTPException(status_code=400, detail="Template not found")
+                user['template_id'] = data.template_id
             save_config(config)
             return {"status": "success", "user": user}
     raise HTTPException(status_code=404, detail="User not found")
@@ -1804,6 +2180,126 @@ def get_available_nodes(_: bool = Depends(verify_session)):
         }
     
     return {"sources": result}
+
+# ==================== Admin Token Management API ====================
+
+class CreateAdminToken(BaseModel):
+    name: str
+    template_id: Optional[str] = 'builtin'
+    custom_token: Optional[str] = None  # If provided, use this; otherwise generate random
+    sub_filename: Optional[str] = None  # Custom filename for this token
+    sub_name: Optional[str] = None  # Custom config name for this token
+
+@app.get("/api/admin-tokens")
+def list_admin_tokens(_: bool = Depends(verify_session)):
+    """List all admin subscription tokens"""
+    config = load_config()
+    tokens = config.get('admin_tokens', [])
+    # Mask token values for list view
+    return {"tokens": [{**t, 'token': t['token'][:8] + '...' if len(t['token']) > 8 else t['token']} for t in tokens]}
+
+@app.get("/api/admin-tokens/{token_id}")
+def get_admin_token(token_id: str, _: bool = Depends(verify_session)):
+    """Get admin token details including full token"""
+    config = load_config()
+    for t in config.get('admin_tokens', []):
+        if t['id'] == token_id:
+            return {"token": t}
+    raise HTTPException(status_code=404, detail="Token not found")
+
+@app.post("/api/admin-tokens")
+def create_admin_token(data: CreateAdminToken, _: bool = Depends(verify_session)):
+    """Create a new admin subscription token"""
+    config = load_config()
+    
+    # Validate template
+    if data.template_id and data.template_id != 'builtin':
+        templates = config.get('templates', [])
+        if not any(t['id'] == data.template_id for t in templates):
+            raise HTTPException(status_code=400, detail="Template not found")
+    
+    # Generate or use custom token
+    if data.custom_token and len(data.custom_token.strip()) >= 8:
+        token_value = data.custom_token.strip()
+    else:
+        token_value = generate_token()
+    
+    token_id = f"atok_{int(time.time() * 1000)}"
+    admin_token = {
+        'id': token_id,
+        'name': data.name,
+        'token': token_value,
+        'template_id': data.template_id or 'builtin',
+        'sub_filename': data.sub_filename or '',
+        'sub_name': data.sub_name or '',
+        'enabled': True,
+        'created_at': int(time.time())
+    }
+    
+    if 'admin_tokens' not in config:
+        config['admin_tokens'] = []
+    config['admin_tokens'].append(admin_token)
+    save_config(config)
+    
+    return {"status": "success", "token": admin_token}
+
+class UpdateAdminToken(BaseModel):
+    name: Optional[str] = None
+    template_id: Optional[str] = None
+    enabled: Optional[bool] = None
+    sub_filename: Optional[str] = None
+    sub_name: Optional[str] = None
+
+@app.put("/api/admin-tokens/{token_id}")
+def update_admin_token(token_id: str, data: UpdateAdminToken, _: bool = Depends(verify_session)):
+    """Update admin token"""
+    config = load_config()
+    for t in config.get('admin_tokens', []):
+        if t['id'] == token_id:
+            if data.name is not None:
+                t['name'] = data.name
+            if data.template_id is not None:
+                # Validate template
+                if data.template_id != 'builtin':
+                    templates = config.get('templates', [])
+                    if not any(tpl['id'] == data.template_id for tpl in templates):
+                        raise HTTPException(status_code=400, detail="Template not found")
+                t['template_id'] = data.template_id
+            if data.enabled is not None:
+                t['enabled'] = data.enabled
+            if data.sub_filename is not None:
+                t['sub_filename'] = data.sub_filename
+            if data.sub_name is not None:
+                t['sub_name'] = data.sub_name
+            save_config(config)
+            return {"status": "success", "token": t}
+    raise HTTPException(status_code=404, detail="Token not found")
+
+@app.delete("/api/admin-tokens/{token_id}")
+def delete_admin_token(token_id: str, _: bool = Depends(verify_session)):
+    """Delete admin token"""
+    config = load_config()
+    tokens = config.get('admin_tokens', [])
+    config['admin_tokens'] = [t for t in tokens if t['id'] != token_id]
+    save_config(config)
+    return {"status": "success"}
+
+class RegenerateAdminTokenRequest(BaseModel):
+    custom_token: Optional[str] = None
+
+@app.post("/api/admin-tokens/{token_id}/regenerate")
+def regenerate_admin_token(token_id: str, data: RegenerateAdminTokenRequest = None, _: bool = Depends(verify_session)):
+    """Regenerate admin token value"""
+    config = load_config()
+    for t in config.get('admin_tokens', []):
+        if t['id'] == token_id:
+            if data and data.custom_token and len(data.custom_token.strip()) >= 8:
+                t['token'] = data.custom_token.strip()
+            else:
+                t['token'] = generate_token()
+            save_config(config)
+            return {"status": "success", "token": t['token']}
+    raise HTTPException(status_code=404, detail="Token not found")
 
 # ==================== Subscription Output API ====================
 
@@ -1984,24 +2480,41 @@ def get_merged_subscription(
     is_admin = False
     user_info = None
     user_allocations = None
+    template_id = 'builtin'  # Default template
+    admin_token_info = None  # Store matched admin token for its settings
     
+    # 1. Check legacy admin token (backward compatibility)
     if auth.get('sub_token') and token == auth['sub_token']:
-        # Admin token - full access
         is_admin = True
+        # Legacy admin uses current saved template (if any)
+        if 'template' in config:
+            template_id = 'legacy'  # Special marker for legacy template
     else:
-        # Check user tokens
-        for user in config.get('users', []):
-            if user.get('token') == token:
-                # Check if user is enabled
-                if not user.get('enabled', True):
-                    raise HTTPException(status_code=403, detail="User account is disabled")
-                # Check if user is expired
-                expire_time = user.get('expire_time', 0)
-                if expire_time > 0 and expire_time < time.time():
-                    raise HTTPException(status_code=403, detail="Subscription expired")
-                user_info = user
-                user_allocations = user.get('allocations', {})
+        # 2. Check new admin tokens
+        for admin_token in config.get('admin_tokens', []):
+            if admin_token.get('token') == token:
+                if not admin_token.get('enabled', True):
+                    raise HTTPException(status_code=403, detail="Token is disabled")
+                is_admin = True
+                template_id = admin_token.get('template_id', 'builtin')
+                admin_token_info = admin_token  # Save for later use
                 break
+        
+        # 3. Check user tokens
+        if not is_admin:
+            for user in config.get('users', []):
+                if user.get('token') == token:
+                    # Check if user is enabled
+                    if not user.get('enabled', True):
+                        raise HTTPException(status_code=403, detail="User account is disabled")
+                    # Check if user is expired
+                    expire_time = user.get('expire_time', 0)
+                    if expire_time > 0 and expire_time < time.time():
+                        raise HTTPException(status_code=403, detail="Subscription expired")
+                    user_info = user
+                    user_allocations = user.get('allocations', {})
+                    template_id = user.get('template_id', 'builtin')
+                    break
         
         if not is_admin and not user_info:
             raise HTTPException(status_code=401, detail="Invalid subscription token")
@@ -2039,8 +2552,29 @@ def get_merged_subscription(
             # V2RayN, V2RayNG, Nekoray etc use Base64
             format = 'base64'
     
-    header = ConfigMerger.TEMPLATES['header']
-    suffix = ConfigMerger.TEMPLATES['suffix']
+    # Get template based on template_id
+    template_proxy_groups = None  # Will store template's proxy-groups if available
+    
+    if template_id == 'legacy':
+        # Use legacy saved template
+        tpl = config.get('template', {})
+        header = tpl.get('header', ConfigMerger.TEMPLATES['header'])
+        suffix = tpl.get('suffix', ConfigMerger.TEMPLATES['suffix'])
+    elif template_id == 'builtin':
+        header = ConfigMerger.TEMPLATES['header']
+        suffix = ConfigMerger.TEMPLATES['suffix']
+    else:
+        # Find template by ID
+        template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if template:
+            header = template['header']
+            suffix = template['suffix']
+            # Check if template has custom proxy-groups
+            template_proxy_groups = template.get('proxy_groups')
+        else:
+            # Fallback to built-in
+            header = ConfigMerger.TEMPLATES['header']
+            suffix = ConfigMerger.TEMPLATES['suffix']
     
     # Build file_aliases based on filtered subscriptions (not all sources)
     file_aliases = OrderedDict()
@@ -2166,8 +2700,49 @@ def get_merged_subscription(
             country_groups = CountryGrouper.group_by_country(proxies)
             proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
         
+        # If using custom template with proxy-groups, process placeholders
+        if template_proxy_groups and isinstance(template_proxy_groups, list) and len(template_proxy_groups) > 0:
+            # Generate country groups for placeholder replacement
+            from merge_config import CountryGrouper
+            if 'country_groups' not in dir():
+                country_groups = CountryGrouper.group_by_country(proxies)
+            
+            # Get all proxy names
+            all_proxy_names = [p['name'] for p in proxies]
+            
+            # Get sorted country group names
+            sorted_country_names = sorted(
+                [c for c in country_groups.keys() if country_groups[c]],
+                key=lambda c: len(country_groups[c]),
+                reverse=True
+            )
+            
+            # Process template proxy-groups (replace placeholders)
+            custom_groups = process_template_proxy_groups(
+                template_proxy_groups, 
+                all_proxy_names, 
+                country_groups, 
+                sorted_country_names
+            )
+            
+            # Add country groups after custom groups
+            for country_name in sorted_country_names:
+                if country_name in country_groups and country_groups[country_name]:
+                    country_group = {
+                        'name': country_name,
+                        'type': 'select',
+                        'proxies': country_groups[country_name]
+                    }
+                    custom_groups.append(country_group)
+            
+            proxy_groups = custom_groups
         # Get custom config name
-        sub_name = auth.get('sub_name', 'Aggregated')
+        # Priority: admin_token_info's sub_name > global sub_name
+        if admin_token_info and admin_token_info.get('sub_name'):
+            sub_name = admin_token_info['sub_name']
+        else:
+            sub_name = auth.get('sub_name', 'Aggregated')
+        
         if user_info:
             sub_name = f"{sub_name} - {user_info['name']}"
         
@@ -2272,7 +2847,32 @@ def get_merged_subscription(
         # Clash YAML format output (default)
         # Remove trailing empty lines from header and add name field at the beginning
         header_clean = header.rstrip()
-        output_parts = [f'name: {sub_name}\n' + header_clean, '\nproxies:']
+        output_parts = [f'name: {sub_name}\n' + header_clean]
+        
+        # Generate listeners based on port mappings
+        port_mappings = config.get('port_mappings', {})
+        if port_mappings:
+            # Get current proxy names for validation
+            proxy_names = {p.get('name', '') for p in proxies}
+            
+            # Build listeners for valid mappings only
+            listeners = []
+            for node_name, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                if node_name in proxy_names:
+                    listener = {
+                        'name': f'mixed-{port}',
+                        'type': 'mixed',
+                        'port': port,
+                        'proxy': node_name
+                    }
+                    listeners.append(listener)
+            
+            if listeners:
+                output_parts.append('\nlisteners:')
+                for listener in listeners:
+                    output_parts.append(f'  - {json.dumps(listener, ensure_ascii=False, separators=(",",":"))}')
+        
+        output_parts.append('\nproxies:')
         for proxy in proxies:
             output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
         output_parts.append('\nproxy-groups:')
@@ -2304,7 +2904,188 @@ def get_merged_subscription(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Template API ====================
+# ==================== Multi-Template Management API ====================
+
+def get_builtin_template():
+    """Get the built-in default template"""
+    header = ConfigMerger.TEMPLATES['header']
+    suffix = ConfigMerger.TEMPLATES['suffix']
+    return {
+        'id': 'builtin',
+        'name': '内置模版',
+        'header': header,
+        'suffix': suffix,
+        'is_builtin': True,
+        'created_at': 0
+    }
+
+def get_all_templates_list():
+    """Get all templates including built-in"""
+    config = load_config()
+    templates = [get_builtin_template()]
+    
+    # Add custom templates from config
+    for t in config.get('templates', []):
+        t['is_builtin'] = False
+        templates.append(t)
+    
+    return templates
+
+@app.get("/api/templates")
+def list_templates(_: bool = Depends(verify_session)):
+    """List all templates including built-in"""
+    templates = get_all_templates_list()
+    # Return summary without full content for list view
+    result = []
+    for t in templates:
+        result.append({
+            'id': t['id'],
+            'name': t['name'],
+            'is_builtin': t.get('is_builtin', False),
+            'created_at': t.get('created_at', 0)
+        })
+    return {"templates": result, "count": len(result)}
+
+class CreateTemplateRequest(BaseModel):
+    name: str
+    content: str  # Full template YAML content
+
+@app.post("/api/templates")
+def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_session)):
+    """Create a new template"""
+    config = load_config()
+    
+    # Parse and validate content
+    try:
+        parsed = yaml.safe_load(data.content)
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="Invalid template format")
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
+    
+    # Extract proxy-groups for placeholder processing
+    template_proxy_groups = parsed.get('proxy-groups', [])
+    
+    # Split into header and suffix
+    header, suffix = split_template(data.content)
+    
+    template_id = f"tpl_{int(time.time() * 1000)}"
+    template = {
+        'id': template_id,
+        'name': data.name,
+        'header': header,
+        'suffix': suffix,
+        'proxy_groups': template_proxy_groups,  # Save proxy-groups for placeholder processing
+        'created_at': int(time.time())
+    }
+    
+    if 'templates' not in config:
+        config['templates'] = []
+    config['templates'].append(template)
+    save_config(config)
+    
+    return {"status": "success", "template": {
+        'id': template_id,
+        'name': data.name,
+        'is_builtin': False,
+        'created_at': template['created_at']
+    }}
+
+@app.get("/api/templates/{template_id}")
+def get_template(template_id: str, _: bool = Depends(verify_session)):
+    """Get a specific template with full content"""
+    if template_id == 'builtin':
+        t = get_builtin_template()
+    else:
+        config = load_config()
+        t = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if not t:
+            raise HTTPException(status_code=404, detail="Template not found")
+        t['is_builtin'] = False
+    
+    # Reconstruct full content including proxy-groups
+    proxy_groups = t.get('proxy_groups', [])
+    if proxy_groups and isinstance(proxy_groups, list) and len(proxy_groups) > 0:
+        # Include saved proxy-groups in content
+        proxy_groups_yaml = yaml.dump({'proxy-groups': proxy_groups}, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        proxy_groups_section = proxy_groups_yaml.strip()
+    else:
+        proxy_groups_section = "proxy-groups: []"
+    
+    content = t['header'].strip() + "\n\nproxies: []\n\n" + proxy_groups_section + "\n\n" + t['suffix'].strip()
+    
+    return {
+        "id": t['id'],
+        "name": t['name'],
+        "content": content,
+        "is_builtin": t.get('is_builtin', False),
+        "created_at": t.get('created_at', 0)
+    }
+
+class UpdateTemplateRequest(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+
+@app.put("/api/templates/{template_id}")
+def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Depends(verify_session)):
+    """Update a template"""
+    if template_id == 'builtin':
+        raise HTTPException(status_code=400, detail="Cannot modify built-in template")
+    
+    config = load_config()
+    template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    if data.name:
+        template['name'] = data.name
+    
+    if data.content:
+        try:
+            parsed = yaml.safe_load(data.content)
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="Invalid template format")
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
+        
+        # Extract proxy-groups for placeholder processing
+        template['proxy_groups'] = parsed.get('proxy-groups', [])
+        
+        header, suffix = split_template(data.content)
+        template['header'] = header
+        template['suffix'] = suffix
+    
+    save_config(config)
+    return {"status": "success", "message": "Template updated"}
+
+@app.delete("/api/templates/{template_id}")
+def delete_template(template_id: str, _: bool = Depends(verify_session)):
+    """Delete a template"""
+    if template_id == 'builtin':
+        raise HTTPException(status_code=400, detail="Cannot delete built-in template")
+    
+    config = load_config()
+    templates = config.get('templates', [])
+    idx = next((i for i, t in enumerate(templates) if t['id'] == template_id), None)
+    
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Check if any user is using this template
+    for user in config.get('users', []):
+        if user.get('template_id') == template_id:
+            raise HTTPException(status_code=400, detail=f"Template is in use by user: {user['name']}")
+    
+    # Check if any admin token is using this template
+    for token in config.get('admin_tokens', []):
+        if token.get('template_id') == template_id:
+            raise HTTPException(status_code=400, detail=f"Template is in use by admin token: {token['name']}")
+    
+    templates.pop(idx)
+    save_config(config)
+    return {"status": "success", "message": "Template deleted"}
+
+# ==================== Template API (Legacy - single template) ====================
 
 def split_template(full_content: str) -> Tuple[str, str]:
     lines = full_content.splitlines(keepends=True)
@@ -2374,8 +3155,11 @@ async def parse_template_file(file: UploadFile = File(...), current_template: st
         
         merged = {}
         for key in base_config:
-            if key in ['proxies', 'proxy-groups']:
+            if key == 'proxies':
                 merged[key] = []
+            elif key == 'proxy-groups':
+                # Preserve from uploaded config if exists
+                continue
             elif key in uploaded_config:
                 merged[key] = uploaded_config[key]
             else:
@@ -2383,10 +3167,44 @@ async def parse_template_file(file: UploadFile = File(...), current_template: st
         
         for key in uploaded_config:
             if key not in merged:
-                merged[key] = [] if key in ['proxies', 'proxy-groups'] else uploaded_config[key]
+                if key == 'proxies':
+                    merged[key] = []
+                elif key == 'proxy-groups':
+                    # Process proxy-groups: keep structure, clean proxy nodes
+                    pass
+                else:
+                    merged[key] = uploaded_config[key]
         
         merged['proxies'] = []
-        merged['proxy-groups'] = []
+        
+        # Process proxy-groups: keep structure, clean proxy node names
+        uploaded_groups = uploaded_config.get('proxy-groups', [])
+        if uploaded_groups and isinstance(uploaded_groups, list):
+            # Get all group names defined in the config
+            group_names = set()
+            for group in uploaded_groups:
+                if isinstance(group, dict) and group.get('name'):
+                    group_names.add(group['name'])
+            
+            # Special entries to preserve
+            preserved_entries = {'DIRECT', 'REJECT', 'GLOBAL', 'PASS'}
+            preserved_entries.update(group_names)
+            
+            cleaned_groups = []
+            for group in uploaded_groups:
+                if not isinstance(group, dict):
+                    continue
+                cleaned_group = dict(group)
+                proxies = group.get('proxies', [])
+                if isinstance(proxies, list):
+                    # Keep only DIRECT, REJECT, and other group references
+                    cleaned_proxies = [p for p in proxies if p in preserved_entries]
+                    cleaned_group['proxies'] = cleaned_proxies
+                cleaned_groups.append(cleaned_group)
+            
+            merged['proxy-groups'] = cleaned_groups
+        else:
+            merged['proxy-groups'] = []
         
         new_content = yaml.dump(merged, allow_unicode=True, sort_keys=False, default_flow_style=False, width=float("inf"))
         section_keys = ['dns:', 'sniffer:', 'tun:', 'proxies:', 'proxy-groups:', 'rules:', 'rule-providers:', 'script:', 'url-rewrite:']
@@ -3064,13 +3882,16 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                 node['last_latency_time'] = int(time.time())
                 need_save = True
             except asyncio.TimeoutError:
-                result["latency"] = None  # Timeout
-                node['last_latency'] = None
+                result["latency"] = -1  # Timeout - use -1 to distinguish from untested (None)
+                node['last_latency'] = -1  # -1 means timeout
                 node['last_latency_time'] = int(time.time())
                 need_save = True
             except Exception as e:
                 result["error"] = str(e)
-                result["latency"] = None
+                result["latency"] = -2  # Error - use -2 to distinguish from timeout
+                node['last_latency'] = -2  # -2 means error
+                node['last_latency_time'] = int(time.time())
+                need_save = True
         except Exception as e:
             result["error"] = str(e)
     
@@ -3408,46 +4229,42 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         node_copy['_source'] = '自建节点'
         all_nodes.append(node_copy)
     
-    for node in all_nodes:
-        server = node.get('server', '')
-        cached_geoip = node.get('geoip')  # Check for cached geoip data
-        
-        country_info = None
-        
-        # Priority: cached geoip > live lookup
-        if cached_geoip and cached_geoip.get('country'):
-            country_info = {
-                'iso_code': cached_geoip.get('country_code', 'Unknown'),
-                'country_name': cached_geoip.get('country', 'Unknown'),
-                'flag': cached_geoip.get('flag', '🌐')
-            }
-        elif server:
-            country = geoip.get_country(server)
-            if country:
-                country_info = country
-        
-        if country_info:
-            code = country_info.get('iso_code', 'Unknown')
-            name = country_info.get('country_name', 'Unknown')
-            flag = country_info.get('flag', '')
-            key = code
-            if key not in country_counts:
-                country_counts[key] = {
-                    "code": code,
-                    "name": name,
-                    "flag": flag,
-                    "count": 0
-                }
-            country_counts[key]["count"] += 1
+    # Use CountryGrouper logic
+    grouped_nodes = CountryGrouper.group_by_country(all_nodes)
+    
+    processed_stats = []
+    
+    for group_name, nodes in grouped_nodes.items():
+        if not nodes:
+            continue
+            
+        # Parse flag and name from group_name (e.g., "🇺🇸 美国")
+        parts = group_name.split(' ', 1)
+        if len(parts) == 2:
+            flag, name = parts
         else:
-            if "Unknown" not in country_counts:
-                country_counts["Unknown"] = {"code": "Unknown", "name": "未知", "flag": "🌐", "count": 0}
-            country_counts["Unknown"]["count"] += 1
+            flag, name = '🇺🇳', group_name
+            
+        count = len(nodes)
+        
+        # Try to find code in COUNTRY_NAMES for chart usage
+        code = 'XX'
+        for c, n in COUNTRY_NAMES.items():
+            if n == name:
+                code = c
+                break
+        
+        processed_stats.append({
+            'name': name,
+            'flag': flag,
+            'code': code,
+            'count': count
+        })
     
-    # Sort by count
-    sorted_countries = sorted(country_counts.values(), key=lambda x: x['count'], reverse=True)
+    # Sort by count desc
+    processed_stats.sort(key=lambda x: x['count'], reverse=True)
     
-    return {"countries": sorted_countries, "total": len(all_nodes)}
+    return {"countries": processed_stats, "total": len(all_nodes)}
 
 @app.get("/api/stats/nodes-by-country/{country_code}")
 def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_session)):

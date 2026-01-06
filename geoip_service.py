@@ -261,23 +261,20 @@ class GeoIPService:
         Convert flag emoji back to ISO country code
         Example: "🇺🇸" -> "US"
         """
-        if not flag or len(flag) < 2:
+        if not flag or len(flag) < 1:
             return None
         
         try:
             # Each flag emoji is 2 regional indicator symbols
-            # Each regional indicator is 4 bytes in UTF-8
-            chars = list(flag)
-            if len(chars) < 2:
-                # Handle surrogate pairs
-                code_points = [ord(c) for c in flag]
-                if len(code_points) >= 2:
-                    iso = ""
-                    for cp in code_points:
-                        if 0x1F1E6 <= cp <= 0x1F1FF:
-                            iso += chr(ord('A') + cp - 0x1F1E6)
-                    if len(iso) == 2:
-                        return iso
+            # Regional indicator 🇦 (U+1F1E6) to 🇿 (U+1F1FF)
+            iso = ""
+            for char in flag:
+                cp = ord(char)
+                if 0x1F1E6 <= cp <= 0x1F1FF:
+                    iso += chr(ord('A') + cp - 0x1F1E6)
+            
+            if len(iso) == 2:
+                return iso
             return None
         except:
             return None
@@ -540,14 +537,14 @@ def check_update_available(db_path: str = None) -> Dict:
                     "update_available": True,
                     "local_version": local_info,
                     "latest_version": latest_info,
-                    "message": f"New version available: {latest_tag}"
+                    "message": f"发现新版本: {latest_tag}"
                 }
             else:
                 return {
                     "update_available": False,
                     "local_version": local_info,
                     "latest_version": latest_info,
-                    "message": "Already latest version"
+                    "message": "已是最新版本"
                 }
     except Exception:
         pass
@@ -569,7 +566,7 @@ def check_update_available(db_path: str = None) -> Dict:
                     "update_available": True,
                     "local_version": local_info,
                     "latest_version": latest_info,
-                    "message": "New version available"
+                    "message": "发现新版本"
                 }
     except Exception:
         pass
@@ -578,5 +575,5 @@ def check_update_available(db_path: str = None) -> Dict:
         "update_available": False,
         "local_version": local_info,
         "latest_version": latest_info,
-        "message": "Already latest version"
+        "message": "已是最新版本"
     }

@@ -1,16 +1,517 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Database, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, Download, AlertCircle, CheckCircle, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Settings as SettingsIcon, Database, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, Download, AlertCircle, CheckCircle, ToggleLeft, ToggleRight, Plus, Trash2, Edit2, X, FileCode, Shuffle } from 'lucide-react';
 import axios from 'axios';
 
 const API_BASE = '/api';
 
-export default function Settings({ 
-  subToken, 
-  subFilename, 
-  subName,
-  onUpdateFilename,
-  onUpdateSubName,
-  onRegenerateToken,
+// Admin Token Management Component
+const AdminTokenSection = ({ showToast }) => {
+  const [tokens, setTokens] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingToken, setEditingToken] = useState(null);
+  const [newTokenName, setNewTokenName] = useState('');
+  const [newTokenValue, setNewTokenValue] = useState('');
+  const [newTokenTemplate, setNewTokenTemplate] = useState('builtin');
+  const [newSubFilename, setNewSubFilename] = useState('');
+  const [newSubName, setNewSubName] = useState('');
+  const [useCustomToken, setUseCustomToken] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);  // Token ID to delete
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [tokensRes, templatesRes] = await Promise.all([
+        axios.get(`${API_BASE}/admin-tokens`),
+        axios.get(`${API_BASE}/templates`)
+      ]);
+      setTokens(tokensRes.data.tokens || []);
+      setTemplates(templatesRes.data.templates || []);
+    } catch (err) {
+      console.error('Failed to fetch data', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createToken = async () => {
+    if (!newTokenName.trim()) {
+      showToast?.('请输入名称', 'error');
+      return;
+    }
+    if (useCustomToken && newTokenValue.trim().length < 8) {
+      showToast?.('自定义 Token 至少需要 8 个字符', 'error');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await axios.post(`${API_BASE}/admin-tokens`, {
+        name: newTokenName.trim(),
+        template_id: newTokenTemplate,
+        custom_token: useCustomToken ? newTokenValue.trim() : null,
+        sub_filename: newSubFilename.trim() || null,
+        sub_name: newSubName.trim() || null
+      });
+      showToast?.('Token 创建成功');
+      resetForm();
+      setShowCreateModal(false);
+      fetchData();
+    } catch (err) {
+      showToast?.('创建失败: ' + (err.response?.data?.detail || err.message), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteToken = async (tokenId) => {
+    try {
+      await axios.delete(`${API_BASE}/admin-tokens/${tokenId}`);
+      showToast?.('Token 已删除');
+      fetchData();
+    } catch (err) {
+      showToast?.('删除失败', 'error');
+    }
+    setDeleteConfirm(null);
+  };
+
+  const toggleTokenStatus = async (token) => {
+    try {
+      await axios.put(`${API_BASE}/admin-tokens/${token.id}`, {
+        enabled: !(token.enabled !== false)
+      });
+      fetchData();
+      showToast?.(token.enabled !== false ? 'Token 已禁用' : 'Token 已启用');
+    } catch (err) {
+      showToast?.('状态更新失败', 'error');
+    }
+  };
+
+  const regenerateToken = async (tokenId) => {
+    try {
+      const res = await axios.post(`${API_BASE}/admin-tokens/${tokenId}/regenerate`);
+      showToast?.('Token 已重新生成');
+      fetchData();
+      // Copy new token to clipboard
+      navigator.clipboard.writeText(res.data.token);
+      showToast?.('新 Token 已复制到剪贴板');
+    } catch (err) {
+      showToast?.('重新生成失败', 'error');
+    }
+  };
+
+  const copySubUrl = async (tokenId) => {
+    try {
+      // Fetch full token from API
+      const res = await axios.get(`${API_BASE}/admin-tokens/${tokenId}`);
+      const fullToken = res.data.token.token;
+      const url = `${window.location.origin}/sub?token=${fullToken}`;
+      navigator.clipboard.writeText(url);
+      setCopiedId(tokenId);
+      setTimeout(() => setCopiedId(null), 2000);
+      showToast?.('订阅地址已复制');
+    } catch (err) {
+      showToast?.('复制失败', 'error');
+    }
+  };
+
+  const resetForm = () => {
+    setNewTokenName('');
+    setNewTokenValue('');
+    setNewTokenTemplate('builtin');
+    setNewSubFilename('');
+    setNewSubName('');
+    setUseCustomToken(false);
+    setEditingToken(null);
+  };
+
+  const generateRandomToken = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let token = '';
+    for (let i = 0; i < 32; i++) {
+      token += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewTokenValue(token);
+  };
+
+  const getTemplateName = (templateId) => {
+    if (!templateId || templateId === 'builtin') return '内置模版';
+    const template = templates.find(t => t.id === templateId);
+    return template ? template.name : templateId;
+  };
+
+  const openEditModal = async (token) => {
+    // Fetch full token details
+    try {
+      const res = await axios.get(`${API_BASE}/admin-tokens/${token.id}`);
+      const fullToken = res.data.token;
+      setEditingToken(fullToken);
+      setNewTokenName(fullToken.name || '');
+      setNewTokenTemplate(fullToken.template_id || 'builtin');
+      setNewSubFilename(fullToken.sub_filename || '');
+      setNewSubName(fullToken.sub_name || '');
+      setShowEditModal(true);
+    } catch (err) {
+      showToast?.('获取 Token 详情失败', 'error');
+    }
+  };
+
+  const updateToken = async () => {
+    if (!editingToken) return;
+
+    setSaving(true);
+    try {
+      await axios.put(`${API_BASE}/admin-tokens/${editingToken.id}`, {
+        name: newTokenName.trim(),
+        template_id: newTokenTemplate,
+        sub_filename: newSubFilename.trim() || '',
+        sub_name: newSubName.trim() || ''
+      });
+      showToast?.('Token 更新成功');
+      resetForm();
+      setShowEditModal(false);
+      fetchData();
+    } catch (err) {
+      showToast?.('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          <Key size={20} />
+          管理员订阅 Token
+        </h2>
+        <button
+          onClick={() => {
+            resetForm();
+            setShowCreateModal(true);
+          }}
+          className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors"
+        >
+          <Plus size={16} />
+          新建 Token
+        </button>
+      </div>
+
+      <p className="text-xs text-gray-500 mb-4">
+        创建多个管理员订阅 Token，每个可以使用不同的模版。
+      </p>
+
+      {loading ? (
+        <div className="text-center py-4 text-gray-500">加载中...</div>
+      ) : tokens.length === 0 ? (
+        <div className="text-center py-8 text-gray-500">
+          <Key size={32} className="mx-auto mb-2 opacity-50" />
+          <p>还没有创建管理员 Token</p>
+          <p className="text-xs mt-1">点击"新建 Token"开始</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {tokens.map((token) => (
+            <div
+              key={token.id}
+              className="bg-gray-700/50 rounded-lg p-4 flex items-center justify-between"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-white font-medium">{token.name}</span>
+                  <span
+                    onClick={() => toggleTokenStatus(token)}
+                    className={`px-2 py-0.5 text-xs rounded cursor-pointer select-none transition-colors ${token.enabled !== false
+                      ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                      : 'bg-gray-600/20 text-gray-500 hover:bg-gray-600/30'
+                      }`}
+                  >
+                    {token.enabled !== false ? '启用' : '禁用'}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  <span className="font-mono">{token.token}</span>
+                </div>
+                <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                  <FileCode size={12} />
+                  模版: {getTemplateName(token.template_id)}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 ml-4">
+                <button
+                  onClick={() => copySubUrl(token.id)}
+                  className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                  title="复制订阅地址"
+                >
+                  {copiedId === token.id ? <Check size={16} /> : <Copy size={16} />}
+                </button>
+                <button
+                  onClick={() => openEditModal(token)}
+                  className="p-2 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
+                  title="编辑设置"
+                >
+                  <Edit2 size={16} />
+                </button>
+                <button
+                  onClick={() => regenerateToken(token.id)}
+                  className="p-2 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
+                  title="重新生成 Token"
+                >
+                  <RefreshCw size={16} />
+                </button>
+                <button
+                  onClick={() => setDeleteConfirm(token.id)}
+                  className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  title="删除"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Create Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">新建管理员 Token</h3>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">名称</label>
+                <input
+                  type="text"
+                  value={newTokenName}
+                  onChange={(e) => setNewTokenName(e.target.value)}
+                  placeholder="例如：测试设备"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">使用模版</label>
+                <select
+                  value={newTokenTemplate}
+                  onChange={(e) => setNewTokenTemplate(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="checkbox"
+                    id="useCustomToken"
+                    checked={useCustomToken}
+                    onChange={(e) => setUseCustomToken(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600"
+                  />
+                  <label htmlFor="useCustomToken" className="text-sm text-gray-400">
+                    自定义 Token 值
+                  </label>
+                </div>
+
+                {useCustomToken && (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newTokenValue}
+                      onChange={(e) => setNewTokenValue(e.target.value)}
+                      placeholder="至少 8 个字符"
+                      className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={generateRandomToken}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-400 rounded-lg transition-colors"
+                      title="生成随机值"
+                    >
+                      <Shuffle size={18} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-gray-700 pt-4">
+                <p className="text-xs text-gray-500 mb-3">订阅设置（可选，留空使用全局设置）</p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                    <input
+                      type="text"
+                      value={newSubName}
+                      onChange={(e) => setNewSubName(e.target.value)}
+                      placeholder="客户端显示的配置名称"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                    <input
+                      type="text"
+                      value={newSubFilename}
+                      onChange={(e) => setNewSubFilename(e.target.value)}
+                      placeholder="下载时的文件名"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={createToken}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {saving ? '创建中...' : '创建'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {showEditModal && editingToken && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">编辑管理员 Token</h3>
+              <button
+                onClick={() => { setShowEditModal(false); resetForm(); }}
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">名称</label>
+                <input
+                  type="text"
+                  value={newTokenName}
+                  onChange={(e) => setNewTokenName(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">使用模版</label>
+                <select
+                  value={newTokenTemplate}
+                  onChange={(e) => setNewTokenTemplate(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="border-t border-gray-700 pt-4">
+                <p className="text-xs text-gray-500 mb-3">订阅设置（留空使用全局设置）</p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                    <input
+                      type="text"
+                      value={newSubName}
+                      onChange={(e) => setNewSubName(e.target.value)}
+                      placeholder="客户端显示的配置名称"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                    <input
+                      type="text"
+                      value={newSubFilename}
+                      onChange={(e) => setNewSubFilename(e.target.value)}
+                      placeholder="下载时的文件名"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+              <button
+                onClick={() => { setShowEditModal(false); resetForm(); }}
+                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={updateToken}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {saving ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-xl p-6 max-w-sm mx-4">
+            <h3 className="text-lg font-bold text-white mb-2">确认删除</h3>
+            <p className="text-gray-400 text-sm mb-4">确定要删除这个 Token 吗？删除后无法恢复。</p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => deleteToken(deleteConfirm)}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default function Settings({
   onChangePassword,
   showToast
 }) {
@@ -24,9 +525,6 @@ export default function Settings({
   const [speedtestConfig, setSpeedtestConfig] = useState({});
   const [newPassword, setNewPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [editFilename, setEditFilename] = useState(subFilename);
-  const [editSubName, setEditSubName] = useState(subName);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     fetchGeoipStatus();
@@ -34,11 +532,6 @@ export default function Settings({
     checkGeoipUpdate();
     fetchGeoipAutoUpdateSetting();
   }, []);
-
-  useEffect(() => {
-    setEditFilename(subFilename);
-    setEditSubName(subName);
-  }, [subFilename, subName]);
 
   const fetchGeoipStatus = async () => {
     try {
@@ -134,84 +627,8 @@ export default function Settings({
         <p className="text-gray-400 text-sm mt-1">配置系统参数</p>
       </div>
 
-      {/* Subscription Settings */}
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <Globe size={20} />
-          订阅设置
-        </h2>
-        
-        <div className="space-y-4">
-          {/* Sub URL */}
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">订阅地址</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                readOnly
-                value={subToken ? `${window.location.origin}/sub?token=${subToken}` : '未设置'}
-                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-300 text-sm"
-              />
-              <button
-                onClick={copySubUrl}
-                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
-              >
-                {copied ? <Check size={18} /> : <Copy size={18} />}
-              </button>
-            </div>
-          </div>
-
-          {/* Filename */}
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">订阅文件名</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={editFilename}
-                onChange={(e) => setEditFilename(e.target.value)}
-                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              />
-              <button
-                onClick={() => onUpdateFilename(editFilename)}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
-              >
-                <Save size={18} />
-              </button>
-            </div>
-          </div>
-
-          {/* Config Name */}
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">配置名称（客户端显示）</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={editSubName}
-                onChange={(e) => setEditSubName(e.target.value)}
-                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              />
-              <button
-                onClick={() => onUpdateSubName(editSubName)}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
-              >
-                <Save size={18} />
-              </button>
-            </div>
-          </div>
-
-          {/* Regenerate Token */}
-          <div>
-            <button
-              onClick={onRegenerateToken}
-              className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg transition-colors"
-            >
-              <Key size={18} />
-              重新生成订阅 Token
-            </button>
-            <p className="text-xs text-gray-500 mt-1">重新生成后旧的订阅地址将失效</p>
-          </div>
-        </div>
-      </div>
+      {/* Admin Token Management */}
+      <AdminTokenSection showToast={showToast} />
 
       {/* GeoIP Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
@@ -219,7 +636,7 @@ export default function Settings({
           <Database size={20} />
           GeoIP 数据库
         </h2>
-        
+
         <div className="space-y-4">
           {/* Auto Update Toggle */}
           <div className="flex items-center justify-between bg-gray-700/50 rounded-lg p-4">
@@ -293,13 +710,12 @@ export default function Settings({
 
           {/* Update Status */}
           {updateCheck && (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${
-              updateCheck.update_available === true 
-                ? 'bg-blue-500/10 text-blue-400' 
-                : updateCheck.update_available === false 
-                  ? 'bg-green-500/10 text-green-400'
-                  : 'bg-yellow-500/10 text-yellow-400'
-            }`}>
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${updateCheck.update_available === true
+              ? 'bg-blue-500/10 text-blue-400'
+              : updateCheck.update_available === false
+                ? 'bg-green-500/10 text-green-400'
+                : 'bg-yellow-500/10 text-yellow-400'
+              }`}>
               {updateCheck.update_available === true ? (
                 <Download size={16} />
               ) : updateCheck.update_available === false ? (
@@ -321,7 +737,7 @@ export default function Settings({
               <RefreshCw size={18} className={checkingUpdate ? 'animate-spin' : ''} />
               检查更新
             </button>
-            
+
             <button
               onClick={() => updateGeoipDatabase(false)}
               disabled={geoipLoading}
@@ -353,7 +769,7 @@ export default function Settings({
           <Key size={20} />
           安全设置
         </h2>
-        
+
         <div className="space-y-4">
           <div>
             <label className="block text-sm text-gray-400 mb-2">修改密码</label>

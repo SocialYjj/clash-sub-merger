@@ -1,8 +1,109 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle } from 'lucide-react';
+import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode } from 'lucide-react';
 
 const API_BASE = '/api';
+
+// User Settings Modal - for editing template and other settings
+const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
+  const [templates, setTemplates] = useState([]);
+  const [selectedTemplate, setSelectedTemplate] = useState(user.template_id || 'builtin');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetchTemplates();
+  }, []);
+
+  const fetchTemplates = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/templates`);
+      setTemplates(res.data.templates || []);
+    } catch (err) {
+      console.error('Failed to fetch templates', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await axios.put(`${API_BASE}/users/${user.id}`, {
+        template_id: selectedTemplate
+      });
+      showToast?.('用户设置已保存');
+      onSuccess?.();
+      onClose();
+    } catch (err) {
+      showToast?.('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <Settings className="text-purple-400" size={20} />
+            用户设置
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <X size={20} />
+          </button>
+        </div>
+
+        <p className="text-sm text-gray-400 mb-4">
+          用户: <span className="text-white font-medium">{user.name}</span>
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-2 flex items-center gap-2">
+              <FileCode size={14} />
+              配置模版
+            </label>
+            {loading ? (
+              <div className="text-gray-500 text-sm">加载中...</div>
+            ) : (
+              <select
+                value={selectedTemplate}
+                onChange={(e) => setSelectedTemplate(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              >
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} {t.is_builtin ? '(内置)' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="text-xs text-gray-500 mt-1">选择该用户使用的配置模版</p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 mt-6">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+          >
+            {saving && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // Token Modal Component
 const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
@@ -363,6 +464,7 @@ export default function Users({
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [tokenUser, setTokenUser] = useState(null);
+  const [settingsUser, setSettingsUser] = useState(null);  // For user settings modal
   const [newName, setNewName] = useState('');
   const [newExpire, setNewExpire] = useState('');
 
@@ -412,16 +514,16 @@ export default function Users({
               <div className="p-4 border-b border-gray-700/30">
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${user.enabled !== false
-                      ? 'bg-gradient-to-br from-green-400 to-emerald-500 text-white'
-                      : 'bg-gray-600 text-gray-400'
+                    ? 'bg-gradient-to-br from-green-400 to-emerald-500 text-white'
+                    : 'bg-gray-600 text-gray-400'
                     }`}>
                     {user.name.charAt(0).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="font-semibold text-white truncate">{user.name}</h3>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${user.enabled !== false
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-gray-600/20 text-gray-500'
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-gray-600/20 text-gray-500'
                       }`}>
                       {user.enabled !== false ? '启用' : '禁用'}
                     </span>
@@ -447,8 +549,8 @@ export default function Users({
                     <Calendar size={12} /> 到期时间
                   </span>
                   <span className={`text-xs font-medium ${user.expire_time && user.expire_time !== 0 && new Date(user.expire_time * 1000) < new Date()
-                      ? 'text-red-400'
-                      : 'text-gray-300'
+                    ? 'text-red-400'
+                    : 'text-gray-300'
                     }`}>
                     {formatExpire(user.expire_time)}
                   </span>
@@ -461,6 +563,14 @@ export default function Users({
                   </span>
                   <span className="text-xs text-gray-400">
                     {user.created_at ? new Date(user.created_at * 1000).toLocaleDateString('zh-CN') : '-'}
+                  </span>
+                </div>
+
+                {/* Template */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">使用模版</span>
+                  <span className="text-xs text-purple-400">
+                    {user.template_id === 'builtin' || !user.template_id ? '内置模版' : user.template_id}
                   </span>
                 </div>
 
@@ -488,8 +598,8 @@ export default function Users({
                   <button
                     onClick={() => onToggle(user.id, user.enabled !== false)}
                     className={`p-2 rounded-lg transition-colors ${user.enabled !== false
-                        ? 'text-green-400 hover:bg-green-500/10'
-                        : 'text-gray-500 hover:bg-gray-700'
+                      ? 'text-green-400 hover:bg-green-500/10'
+                      : 'text-gray-500 hover:bg-gray-700'
                       }`}
                     title={user.enabled !== false ? '禁用' : '启用'}
                   >
@@ -508,6 +618,13 @@ export default function Users({
                     title="编辑分配"
                   >
                     <Edit2 size={16} />
+                  </button>
+                  <button
+                    onClick={() => setSettingsUser(user)}
+                    className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                    title="用户设置"
+                  >
+                    <Settings size={16} />
                   </button>
                 </div>
                 <button
@@ -593,6 +710,16 @@ export default function Users({
         <TokenModal
           user={tokenUser}
           onClose={() => setTokenUser(null)}
+          showToast={showToast || ((msg) => alert(msg))}
+          onSuccess={() => onRefreshUsers && onRefreshUsers()}
+        />
+      )}
+
+      {/* User Settings Modal */}
+      {settingsUser && (
+        <UserSettingsModal
+          user={settingsUser}
+          onClose={() => setSettingsUser(null)}
           showToast={showToast || ((msg) => alert(msg))}
           onSuccess={() => onRefreshUsers && onRefreshUsers()}
         />

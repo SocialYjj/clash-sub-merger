@@ -167,7 +167,7 @@ export default function Dashboard() {
               <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400">
                 <Globe size={18} />
               </div>
-              <h3 className="text-lg font-bold text-white">节点国家分布</h3>
+              <h3 className="text-lg font-bold text-white">节点地区分布</h3>
             </div>
             <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">Top 10</span>
           </div>
@@ -228,7 +228,9 @@ export default function Dashboard() {
                     ))}
                   </Pie>
                   <RechartsTooltip
-                    contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', color: '#fff', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: '#1f2937', borderColor: '#4b5563', color: '#fff', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                    itemStyle={{ color: '#fff' }}
                   />
                 </PieChart>
               </ResponsiveContainer>

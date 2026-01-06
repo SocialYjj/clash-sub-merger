@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe } from 'lucide-react';
+import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2 } from 'lucide-react';
 import axios from 'axios';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
@@ -34,7 +34,9 @@ const getLatencyColor = (latency) => {
 // Latency status badge
 const getLatencyBadge = (latency, error) => {
   if (error) return { text: '失败', color: 'bg-red-500/20 text-red-400' };
-  if (latency === null) return { text: '超时', color: 'bg-orange-500/20 text-orange-400' };
+  if (latency === -2) return { text: '失败', color: 'bg-red-500/20 text-red-400' };  // Error
+  if (latency === -1) return { text: '超时', color: 'bg-orange-500/20 text-orange-400' };  // Timeout
+  if (latency === null) return { text: '超时', color: 'bg-orange-500/20 text-orange-400' };  // Legacy timeout
   if (latency === undefined) return { text: '未测', color: 'bg-gray-500/20 text-gray-400' };
   if (latency < 200) return { text: '优秀', color: 'bg-green-500/20 text-green-400' };
   if (latency < 500) return { text: '良好', color: 'bg-lime-500/20 text-lime-400' };
@@ -70,6 +72,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [testRegion, setTestRegion] = useState(false);
   const [showBatchTestMenu, setShowBatchTestMenu] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
+
+  // Port mapping state
+  const [portMappingNode, setPortMappingNode] = useState(null);  // Node being configured
+  const [portMappingValue, setPortMappingValue] = useState('');  // Port input value
+  const [showPortMappingList, setShowPortMappingList] = useState(false);  // Show all mappings modal
+  const [allPortMappings, setAllPortMappings] = useState([]);  // All port mappings from backend
+  const [localPortMappings, setLocalPortMappings] = useState({});  // Local cache: {final_name: port}
+  const [portMappingsLoaded, setPortMappingsLoaded] = useState(false);  // Has initial fetch completed?
 
 
   // Fetch nodes from subscription files
@@ -155,37 +165,30 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       subNodeList.forEach((node, idx) => {
         if (isInfoNode(node)) return;
 
-        const geo = geoipData[node.server];
         const nodeKey = `${subId}-${idx}`;
         const testResult = nodeTestResults[nodeKey];
-        const cachedGeoip = node.geoip;  // Cached geoip from config
 
-        // Priority: testResult > cachedGeoip > geoipData lookup
+        // Priority for region: testResult > backend's node.region > geoipData lookup
         let region = '';
         let flag = '';
         let country = '';
-        let city = '';
 
         if (testResult?.region) {
           region = testResult.region.display || testResult.region.country;
           flag = testResult.region.flag || '';
           country = testResult.region.country || '';
-          city = testResult.region.city || '';
-        } else if (cachedGeoip) {
-          country = cachedGeoip.country || '';
-          city = cachedGeoip.city || '';
-          flag = cachedGeoip.flag || '';
-          region = country;
-          if (city) {
-            region = region ? `${region} ${city}` : city;
-          }
-        } else if (geo) {
-          country = geo.country_name || '';
-          city = geo.city || '';
-          flag = geo.flag || '';
-          region = country;
-          if (city) {
-            region = region ? `${region} ${city}` : city;
+        } else if (node.region) {
+          // Use backend's region (from extract_country_from_name)
+          region = node.region.country || '';
+          flag = node.region.flag || '';
+          country = node.region.country_code || '';
+        } else {
+          // Fallback to geoipData lookup
+          const geo = geoipData[node.server];
+          if (geo) {
+            country = geo.country_name || '';
+            flag = geo.flag || '';
+            region = country;
           }
         }
 
@@ -199,11 +202,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           flag: flag,
           region: region,
           country: country,
-          city: city,
           latency: testResult?.latency ?? node.last_latency,
           testError: testResult?.error,
           detectedRegion: testResult?.region,
-          cachedGeoip: cachedGeoip,
         });
       });
     });
@@ -211,37 +212,30 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     customNodes?.forEach((node, idx) => {
       if (isInfoNode(node)) return;
 
-      const geo = geoipData[node.server];
       const nodeKey = `custom-${node.id || idx}`;
       const testResult = nodeTestResults[nodeKey];
-      const cachedGeoip = node.geoip;  // Cached geoip from config
 
-      // Priority: testResult > cachedGeoip > geoipData lookup
+      // Priority for region: testResult > backend's node.region > geoipData lookup
       let region = '';
       let flag = '';
       let country = '';
-      let city = '';
 
       if (testResult?.region) {
         region = testResult.region.display || testResult.region.country;
         flag = testResult.region.flag || '';
         country = testResult.region.country || '';
-        city = testResult.region.city || '';
-      } else if (cachedGeoip) {
-        country = cachedGeoip.country || '';
-        city = cachedGeoip.city || '';
-        flag = cachedGeoip.flag || '';
-        region = country;
-        if (city) {
-          region = region ? `${region} ${city}` : city;
-        }
-      } else if (geo) {
-        country = geo.country_name || '';
-        city = geo.city || '';
-        flag = geo.flag || '';
-        region = country;
-        if (city) {
-          region = region ? `${region} ${city}` : city;
+      } else if (node.region) {
+        // Use backend's region (from extract_country_from_name)
+        region = node.region.country || '';
+        flag = node.region.flag || '';
+        country = node.region.country_code || '';
+      } else {
+        // Fallback to geoipData lookup
+        const geo = geoipData[node.server];
+        if (geo) {
+          country = geo.country_name || '';
+          flag = geo.flag || '';
+          region = country;
         }
       }
 
@@ -255,11 +249,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         flag: flag,
         region: region,
         country: country,
-        city: city,
         latency: testResult?.latency ?? node.last_latency,
         testError: testResult?.error,
         detectedRegion: testResult?.region,
-        cachedGeoip: cachedGeoip,
       });
     });
 
@@ -305,8 +297,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       result = result.filter(n => {
         const badge = getLatencyBadge(n.latency, n.testError);
         if (filterLatencyStatus === 'untested') return n.latency === undefined && !n.testError;
-        if (filterLatencyStatus === 'success') return n.latency !== undefined && n.latency !== null && !n.testError;
-        if (filterLatencyStatus === 'failed') return n.testError || n.latency === null;
+        if (filterLatencyStatus === 'success') return n.latency !== undefined && n.latency > 0 && !n.testError;
+        if (filterLatencyStatus === 'timeout') return n.latency === -1 || n.latency === null;
+        if (filterLatencyStatus === 'failed') return n.testError || n.latency === -2;
         return true;
       });
     }
@@ -576,6 +569,107 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
   };
 
+  // Port mapping functions
+  const openPortMapping = (node) => {
+    // After initial load, use localPortMappings as single source of truth
+    // This ensures deletions from management panel are immediately reflected
+    const currentPort = portMappingsLoaded
+      ? localPortMappings[node.final_name]
+      : (localPortMappings[node.final_name] ?? node.mapped_port);
+    setPortMappingNode({ ...node, mapped_port: currentPort });
+    setPortMappingValue(currentPort ? String(currentPort) : '');
+  };
+
+  const fetchAllPortMappings = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/port-mappings`);
+      setAllPortMappings(res.data.mappings || []);
+      // Build local cache
+      const cache = {};
+      (res.data.mappings || []).forEach(m => {
+        cache[m.final_name] = m.port;
+      });
+      setLocalPortMappings(cache);
+      setPortMappingsLoaded(true);  // Mark as loaded
+    } catch (err) {
+      console.error('Failed to fetch port mappings', err);
+      setPortMappingsLoaded(true);  // Even on error, mark as loaded to prevent fallback issues
+    }
+  };
+
+  // Fetch port mappings on mount
+  useEffect(() => {
+    fetchAllPortMappings();
+  }, []);
+
+  const savePortMapping = async () => {
+    if (!portMappingNode) return;
+
+    const port = parseInt(portMappingValue);
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      showToast?.('端口号必须在 1024-65535 之间', 'error');
+      return;
+    }
+
+    try {
+      await axios.post(`${API_BASE}/port-mappings`, {
+        final_name: portMappingNode.final_name,
+        port: port
+      });
+      showToast?.(`已将端口 ${port} 绑定到节点`);
+
+      // Update local cache (no page refresh needed)
+      setLocalPortMappings(prev => ({
+        ...prev,
+        [portMappingNode.final_name]: port
+      }));
+
+      setPortMappingNode(null);
+      setPortMappingValue('');
+    } catch (err) {
+      const msg = err.response?.data?.detail || '绑定失败';
+      showToast?.(msg, 'error');
+    }
+  };
+
+  const removePortMapping = async () => {
+    if (!portMappingNode?.mapped_port) return;
+
+    try {
+      await axios.delete(`${API_BASE}/port-mappings/${portMappingNode.mapped_port}`);
+      showToast?.('已解除端口绑定');
+
+      // Update local cache (no page refresh needed)
+      setLocalPortMappings(prev => {
+        const newCache = { ...prev };
+        delete newCache[portMappingNode.final_name];
+        return newCache;
+      });
+
+      setPortMappingNode(null);
+      setPortMappingValue('');
+    } catch (err) {
+      showToast?.('解绑失败', 'error');
+    }
+  };
+
+  const deletePortMappingFromList = async (port, finalName) => {
+    try {
+      await axios.delete(`${API_BASE}/port-mappings/${port}`);
+      showToast?.('已删除端口映射');
+
+      // Update both states
+      setAllPortMappings(prev => prev.filter(m => m.port !== port));
+      setLocalPortMappings(prev => {
+        const newCache = { ...prev };
+        delete newCache[finalName];
+        return newCache;
+      });
+    } catch (err) {
+      showToast?.('删除失败', 'error');
+    }
+  };
+
   // Stats
   const testedCount = allNodes.filter(n => n.latency !== undefined).length;
   const successCount = allNodes.filter(n => n.latency !== undefined && n.latency !== null && !n.testError).length;
@@ -602,6 +696,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <p className="text-gray-400 text-sm mt-1">查看和管理所有节点</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => { fetchAllPortMappings(); setShowPortMappingList(true); }}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+          >
+            <Link2 size={18} />
+            端口映射
+            {Object.keys(localPortMappings).length > 0 && (
+              <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">
+                {Object.keys(localPortMappings).length}
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setShowAddModal(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
@@ -709,6 +815,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <option value="all">延迟状态</option>
           <option value="untested">未测试</option>
           <option value="success">测试成功</option>
+          <option value="timeout">超时</option>
           <option value="failed">测试失败</option>
         </select>
       </div>
@@ -817,6 +924,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     const displayedLatency = testResult?.latency !== undefined ? testResult.latency : node.latency;
                     const displayedError = testResult?.error !== undefined ? testResult.error : node.testError;
                     const latencyBadge = getLatencyBadge(displayedLatency, displayedError);
+                    // Use local cache for port mapping (updates instantly without page refresh)
+                    const currentMappedPort = localPortMappings[node.final_name] ?? node.mapped_port;
 
                     return (
                       <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''}`}>
@@ -839,10 +948,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            {node.flag && <span className="text-lg">{node.flag}</span>}
-                            <span className="text-white truncate max-w-[200px]" title={node.name}>
-                              {node.name || '未命名'}
+                            <span className="text-white truncate max-w-[280px]" title={node.final_name}>
+                              {node.display_name || node.name || '未命名'}
                             </span>
+                            {currentMappedPort && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 text-xs font-mono">
+                                :{currentMappedPort}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -905,6 +1018,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               ) : (
                                 <Globe size={16} />
                               )}
+                            </button>
+                            <button
+                              onClick={() => openPortMapping(node)}
+                              className={`p-1.5 rounded transition-colors ${currentMappedPort
+                                ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10'
+                                : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                                }`}
+                              title={currentMappedPort ? `已绑定端口 ${currentMappedPort}` : '绑定端口'}
+                            >
+                              <Link2 size={16} />
                             </button>
                             {node.sourceType === 'custom' && (
                               <>
@@ -1070,6 +1193,141 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           onSave={() => onRefreshCustomNodes?.()}
           showToast={showToast}
         />
+      )}
+
+      {/* Port Mapping Modal */}
+      {portMappingNode && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl w-full max-w-md border border-gray-700">
+            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="font-semibold text-white">端口绑定</h3>
+              <button onClick={() => setPortMappingNode(null)} className="text-gray-400 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">节点名称</label>
+                <p className="text-white text-sm bg-gray-700/50 px-3 py-2 rounded-lg truncate" title={portMappingNode.final_name}>
+                  {portMappingNode.final_name}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">监听端口</label>
+                <input
+                  type="number"
+                  value={portMappingValue}
+                  onChange={(e) => setPortMappingValue(e.target.value)}
+                  placeholder="如: 52001"
+                  min={1024}
+                  max={65535}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-green-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">端口范围: 1024-65535</p>
+              </div>
+              {portMappingNode.mapped_port && (
+                <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
+                  <p className="text-green-400 text-sm">
+                    当前已绑定端口: <span className="font-mono">{portMappingNode.mapped_port}</span>
+                  </p>
+                </div>
+              )}
+            </div>
+            <div className="px-4 py-3 border-t border-gray-700 flex justify-between">
+              <div>
+                {portMappingNode.mapped_port && (
+                  <button
+                    onClick={removePortMapping}
+                    className="px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors"
+                  >
+                    解除绑定
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setPortMappingNode(null)}
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={savePortMapping}
+                  disabled={!portMappingValue}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+                >
+                  绑定
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Port Mapping List Modal */}
+      {showPortMappingList && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl w-full max-w-2xl border border-gray-700 max-h-[80vh] flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="font-semibold text-white">端口映射管理</h3>
+              <button onClick={() => setShowPortMappingList(false)} className="text-gray-400 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1">
+              {allPortMappings.length === 0 ? (
+                <div className="text-center text-gray-500 py-8">
+                  暂无端口映射
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 px-3 py-2">
+                    <div className="col-span-2">端口</div>
+                    <div className="col-span-7">节点名称</div>
+                    <div className="col-span-2">状态</div>
+                    <div className="col-span-1">操作</div>
+                  </div>
+                  {allPortMappings.map((mapping) => (
+                    <div
+                      key={mapping.port}
+                      className={`grid grid-cols-12 gap-2 items-center px-3 py-2 rounded-lg ${mapping.active ? 'bg-gray-700/50' : 'bg-red-500/10 border border-red-500/30'
+                        }`}
+                    >
+                      <div className="col-span-2">
+                        <span className="font-mono text-green-400">{mapping.port}</span>
+                      </div>
+                      <div className="col-span-7">
+                        <span className={`text-sm truncate block ${mapping.active ? 'text-white' : 'text-gray-500'}`} title={mapping.final_name}>
+                          {mapping.final_name}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
+                        {mapping.active ? (
+                          <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">活跃</span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">失效</span>
+                        )}
+                      </div>
+                      <div className="col-span-1">
+                        <button
+                          onClick={() => deletePortMappingFromList(mapping.port, mapping.final_name)}
+                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                          title="删除"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="px-4 py-3 border-t border-gray-700 text-sm text-gray-500">
+              <p>活跃：节点存在于当前订阅中，生成配置时会包含 listener</p>
+              <p>失效：节点已不存在，可删除或等节点恢复后自动生效</p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
