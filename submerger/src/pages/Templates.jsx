@@ -63,6 +63,7 @@ export default function Templates({ showToast }) {
   const fileInputRef = useRef(null);
   const createFileInputRef = useRef(null);
   const [showPlaceholderHelp, setShowPlaceholderHelp] = useState(true);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {
     fetchTemplates();
@@ -96,11 +97,6 @@ export default function Templates({ showToast }) {
   const saveTemplate = async () => {
     if (!selectedTemplate) return;
 
-    if (selectedTemplate.is_builtin) {
-      showToast?.('内置模版不可修改', 'error');
-      return;
-    }
-
     setSaving(true);
     try {
       await axios.put(`${API_BASE}/templates/${selectedTemplate.id}`, {
@@ -114,6 +110,18 @@ export default function Templates({ showToast }) {
       showToast?.('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const resetBuiltinTemplate = async () => {
+    try {
+      await axios.post(`${API_BASE}/templates/builtin/reset`);
+      showToast?.('内置模版已重置为默认');
+      setShowResetConfirm(false);
+      setShowEditModal(false);
+      fetchTemplates();
+    } catch (err) {
+      showToast?.('重置失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -252,8 +260,12 @@ export default function Templates({ showToast }) {
                   <h3 className="text-white font-medium">{template.name}</h3>
                   {template.is_builtin && (
                     <span className="px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded">
-                      <Lock size={10} className="inline mr-1" />
                       内置
+                    </span>
+                  )}
+                  {template.is_modified && (
+                    <span className="px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 rounded">
+                      已修改
                     </span>
                   )}
                 </div>
@@ -279,8 +291,17 @@ export default function Templates({ showToast }) {
                   className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
                 >
                   <Edit3 size={14} />
-                  {template.is_builtin ? '查看' : '编辑'}
+                  编辑
                 </button>
+                {template.is_builtin && (
+                  <button
+                    onClick={() => setShowResetConfirm(true)}
+                    className="px-3 py-2 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-400 rounded-lg transition-colors"
+                    title="重置为默认"
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
                 {!template.is_builtin && (
                   <button
                     onClick={() => deleteTemplate(template)}
@@ -392,11 +413,11 @@ export default function Templates({ showToast }) {
             <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <h2 className="text-xl font-bold text-white">
-                  {selectedTemplate.is_builtin ? '查看模版' : '编辑模版'}
+                  编辑模版
                 </h2>
                 {selectedTemplate.is_builtin && (
-                  <span className="px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded">
-                    内置模版 (只读)
+                  <span className={`px-2 py-0.5 text-xs rounded ${selectedTemplate.is_modified ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                    {selectedTemplate.is_modified ? '内置模版 (已修改)' : '内置模版'}
                   </span>
                 )}
               </div>
@@ -419,7 +440,8 @@ export default function Templates({ showToast }) {
                       value={templateName}
                       onChange={(e) => setTemplateName(e.target.value)}
                       disabled={selectedTemplate.is_builtin}
-                      className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                      className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      placeholder={selectedTemplate.is_builtin ? '内置模版名称不可修改' : ''}
                     />
                   </div>
 
@@ -428,83 +450,111 @@ export default function Templates({ showToast }) {
                     <textarea
                       value={templateContent}
                       onChange={(e) => setTemplateContent(e.target.value)}
-                      disabled={selectedTemplate.is_builtin}
-                      className="w-full h-[400px] px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                      className="w-full h-[400px] px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
                       spellCheck={false}
                     />
                   </div>
                 </div>
 
-                {/* Right: Placeholder Help (always visible for non-builtin) */}
-                {!selectedTemplate.is_builtin && (
-                  <div className="w-52 shrink-0">
-                    <div className="sticky top-0 bg-gray-800/50 border border-blue-500/30 rounded-lg p-4">
-                      <div className="flex items-center gap-2 text-blue-400 text-sm mb-3">
-                        <Info size={16} />
-                        <span className="font-medium">占位符</span>
-                      </div>
-                      <div className="space-y-2 text-xs">
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{ALL_PROXIES}}`}</code>
-                          <span className="text-gray-500">所有代理节点</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{COUNTRY_GROUPS}}`}</code>
-                          <span className="text-gray-500">所有国家分组</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{HK}}`}</code>
-                          <span className="text-gray-500">香港节点</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{US}}`}</code>
-                          <span className="text-gray-500">美国节点</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{JP}}`}</code>
-                          <span className="text-gray-500">日本节点</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{SG}}`}</code>
-                          <span className="text-gray-500">新加坡节点</span>
-                        </div>
-                        <div className="bg-gray-900 px-3 py-2 rounded">
-                          <code className="text-cyan-400 block">{`{{TW}} {{KR}} ...`}</code>
-                          <span className="text-gray-500">其他国家代码</span>
-                        </div>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-3 italic">
-                        在 proxies 列表中使用
-                      </p>
+                {/* Right: Placeholder Help */}
+                <div className="w-52 shrink-0">
+                  <div className="sticky top-0 bg-gray-800/50 border border-blue-500/30 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-blue-400 text-sm mb-3">
+                      <Info size={16} />
+                      <span className="font-medium">占位符</span>
                     </div>
+                    <div className="space-y-2 text-xs">
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{ALL_PROXIES}}`}</code>
+                        <span className="text-gray-500">所有代理节点</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{COUNTRY_GROUPS}}`}</code>
+                        <span className="text-gray-500">所有国家分组</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{HK}}`}</code>
+                        <span className="text-gray-500">香港节点</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{US}}`}</code>
+                        <span className="text-gray-500">美国节点</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{JP}}`}</code>
+                        <span className="text-gray-500">日本节点</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{SG}}`}</code>
+                        <span className="text-gray-500">新加坡节点</span>
+                      </div>
+                      <div className="bg-gray-900 px-3 py-2 rounded">
+                        <code className="text-cyan-400 block">{`{{TW}} {{KR}} ...`}</code>
+                        <span className="text-gray-500">其他国家代码</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-3 italic">
+                      在 proxies 列表中使用
+                    </p>
                   </div>
-                )}
+                </div>
               </div>
             </div>
 
             <div className="px-6 py-4 border-t border-gray-700 flex justify-between">
               <div className="text-xs text-gray-500">
                 {selectedTemplate.is_builtin
-                  ? '内置模版自动按国家分组'
+                  ? '修改后可保存为自定义配置，也可随时重置为默认'
                   : '在 proxy-groups 中使用占位符，proxies 部分会自动填充'}
               </div>
               <div className="flex gap-3">
+                {selectedTemplate.is_builtin && (
+                  <button
+                    onClick={() => setShowResetConfirm(true)}
+                    className="px-4 py-2 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-400 rounded-lg transition-colors flex items-center gap-2"
+                  >
+                    <RotateCcw size={14} />
+                    重置
+                  </button>
+                )}
                 <button
                   onClick={() => setShowEditModal(false)}
                   className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
                 >
-                  {selectedTemplate.is_builtin ? '关闭' : '取消'}
+                  取消
                 </button>
-                {!selectedTemplate.is_builtin && (
-                  <button
-                    onClick={saveTemplate}
-                    disabled={saving}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {saving ? '保存中...' : '保存'}
-                  </button>
-                )}
+                <button
+                  onClick={saveTemplate}
+                  disabled={saving}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : '保存'}
+                </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Confirmation Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-xl p-6 max-w-sm mx-4">
+            <h3 className="text-lg font-bold text-white mb-2">确认重置</h3>
+            <p className="text-gray-400 text-sm mb-4">确定要重置内置模版为默认状态吗？您的自定义修改将丢失。</p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={resetBuiltinTemplate}
+                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg transition-colors"
+              >
+                重置
+              </button>
             </div>
           </div>
         </div>

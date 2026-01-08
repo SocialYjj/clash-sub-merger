@@ -2561,8 +2561,15 @@ def get_merged_subscription(
         header = tpl.get('header', ConfigMerger.TEMPLATES['header'])
         suffix = tpl.get('suffix', ConfigMerger.TEMPLATES['suffix'])
     elif template_id == 'builtin':
-        header = ConfigMerger.TEMPLATES['header']
-        suffix = ConfigMerger.TEMPLATES['suffix']
+        # Check for user customization of builtin template
+        override = config.get('builtin_template_override')
+        if override:
+            header = override.get('header', ConfigMerger.TEMPLATES['header'])
+            suffix = override.get('suffix', ConfigMerger.TEMPLATES['suffix'])
+            template_proxy_groups = override.get('proxy_groups', [])
+        else:
+            header = ConfigMerger.TEMPLATES['header']
+            suffix = ConfigMerger.TEMPLATES['suffix']
     else:
         # Find template by ID
         template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
@@ -2907,15 +2914,31 @@ def get_merged_subscription(
 # ==================== Multi-Template Management API ====================
 
 def get_builtin_template():
-    """Get the built-in default template"""
-    header = ConfigMerger.TEMPLATES['header']
-    suffix = ConfigMerger.TEMPLATES['suffix']
+    """Get the built-in default template (with user overrides if any)"""
+    config = load_config()
+    override = config.get('builtin_template_override')
+    
+    if override:
+        # User has customized the builtin template
+        header = override.get('header', ConfigMerger.TEMPLATES['header'])
+        suffix = override.get('suffix', ConfigMerger.TEMPLATES['suffix'])
+        proxy_groups = override.get('proxy_groups', [])
+        is_modified = True
+    else:
+        # Use default builtin template
+        header = ConfigMerger.TEMPLATES['header']
+        suffix = ConfigMerger.TEMPLATES['suffix']
+        proxy_groups = []
+        is_modified = False
+    
     return {
         'id': 'builtin',
         'name': '内置模版',
         'header': header,
         'suffix': suffix,
+        'proxy_groups': proxy_groups,
         'is_builtin': True,
+        'is_modified': is_modified,  # Indicates if user has customized it
         'created_at': 0
     }
 
@@ -2942,6 +2965,7 @@ def list_templates(_: bool = Depends(verify_session)):
             'id': t['id'],
             'name': t['name'],
             'is_builtin': t.get('is_builtin', False),
+            'is_modified': t.get('is_modified', False),
             'created_at': t.get('created_at', 0)
         })
     return {"templates": result, "count": len(result)}
@@ -3019,6 +3043,7 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
         "name": t['name'],
         "content": content,
         "is_builtin": t.get('is_builtin', False),
+        "is_modified": t.get('is_modified', False),
         "created_at": t.get('created_at', 0)
     }
 
@@ -3029,10 +3054,33 @@ class UpdateTemplateRequest(BaseModel):
 @app.put("/api/templates/{template_id}")
 def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Depends(verify_session)):
     """Update a template"""
-    if template_id == 'builtin':
-        raise HTTPException(status_code=400, detail="Cannot modify built-in template")
-    
     config = load_config()
+    
+    # Handle builtin template specially - save to override
+    if template_id == 'builtin':
+        if not data.content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        try:
+            parsed = yaml.safe_load(data.content)
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="Invalid template format")
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
+        
+        header, suffix = split_template(data.content)
+        proxy_groups = parsed.get('proxy-groups', [])
+        
+        # Save as override
+        config['builtin_template_override'] = {
+            'header': header,
+            'suffix': suffix,
+            'proxy_groups': proxy_groups
+        }
+        save_config(config)
+        return {"status": "success", "message": "Built-in template customized"}
+    
+    # Regular template update
     template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -3084,6 +3132,18 @@ def delete_template(template_id: str, _: bool = Depends(verify_session)):
     templates.pop(idx)
     save_config(config)
     return {"status": "success", "message": "Template deleted"}
+
+@app.post("/api/templates/builtin/reset")
+def reset_builtin_template(_: bool = Depends(verify_session)):
+    """Reset built-in template to default (remove user customizations)"""
+    config = load_config()
+    
+    if 'builtin_template_override' in config:
+        del config['builtin_template_override']
+        save_config(config)
+        return {"status": "success", "message": "Built-in template reset to default"}
+    else:
+        return {"status": "success", "message": "Built-in template is already at default"}
 
 # ==================== Template API (Legacy - single template) ====================
 
@@ -3694,6 +3754,27 @@ def get_cron_presets(_: bool = Depends(verify_session)):
             {"value": v, "label": get_cron_description(v), "name": k}
             for k, v in CRON_PRESETS.items()
         ]
+    }
+
+class ValidateCronRequest(BaseModel):
+    cron_expr: str
+
+@app.post("/api/scheduler/validate-cron")
+def validate_cron_expression(data: ValidateCronRequest):
+    """Validate cron expression and get next run time (no auth required for real-time preview)"""
+    if not data.cron_expr or not data.cron_expr.strip():
+        return {"valid": False, "error": "Cron expression is empty", "next_run": None}
+    
+    is_valid, error = scheduler.validate_cron_expression(data.cron_expr)
+    if not is_valid:
+        return {"valid": False, "error": error, "next_run": None}
+    
+    next_run = scheduler.get_next_run_time(data.cron_expr)
+    return {
+        "valid": True,
+        "error": None,
+        "next_run": next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None,
+        "description": get_cron_description(data.cron_expr)
     }
 
 class SetSubscriptionSchedule(BaseModel):

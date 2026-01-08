@@ -6,7 +6,7 @@ Provides cron-based task scheduling using APScheduler.
 import re
 from datetime import datetime
 from typing import Optional, Dict, Callable, Any
-from threading import Lock
+from threading import RLock
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,7 +22,7 @@ class SchedulerManager:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
         self.jobs: Dict[str, str] = {}  # {task_id: job_id}
-        self._lock = Lock()
+        self._lock = RLock()
         self._started = False
         self._callbacks: Dict[str, Callable] = {}  # Store callbacks for tasks
     
@@ -132,9 +132,15 @@ class SchedulerManager:
                 print(f"Invalid cron expression for task {task_id}")
                 return None
             
-            # Remove existing job if any
+            # Remove existing job if any (inline to avoid deadlock)
             if task_id in self.jobs:
-                self.remove_job(task_id)
+                old_job_id = self.jobs[task_id]
+                try:
+                    self.scheduler.remove_job(old_job_id)
+                except Exception:
+                    pass
+                del self.jobs[task_id]
+                print(f"Removed existing job {task_id}")
             
             try:
                 job = self.scheduler.add_job(

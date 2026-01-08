@@ -43,6 +43,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
+ENV TZ=Asia/Shanghai
 
 # Expose port
 EXPOSE 8666
