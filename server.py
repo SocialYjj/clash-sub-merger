@@ -164,56 +164,134 @@ COUNTRY_KEYWORDS = {
     'HK': ['hongkong', 'hong kong', 'hk', '香港', '港'],
     'TW': ['taiwan', 'tw', '台湾', '台', 'taipei'],
     'JP': ['japan', 'jp', '日本', '日'],
-    'KR': ['korea', 'kr', 'kor', '韩国', '韩'],
+    'KR': ['korea', 'kr', 'kor', '韩国', '韩', '首尔', 'seoul'],
     'SG': ['singapore', 'sg', '新加坡', '狮城', '坡'],
-    'US': ['usa', 'us', 'united states', 'america', '美国', '美', 'la', 'los angeles', 'seattle', 'san jose'],
-    'GB': ['uk', 'gb', 'united kingdom', 'britain', 'england', '英国', '英'],
-    'DE': ['germany', 'de', 'deutsch', '德国', '德'],
-    'FR': ['france', 'fr', '法国', '法'],
-    'NL': ['netherlands', 'nl', 'holland', '荷兰', '荷'],
-    'RU': ['russia', 'ru', '俄罗斯', '俄'],
-    'CA': ['canada', 'ca', '加拿大', '加'],
-    'AU': ['australia', 'au', '澳大利亚', '澳洲', '澳'],
-    'IN': ['india', '印度'],
-    'TR': ['turkey', 'tr', '土耳其'],
-    'MY': ['malaysia', 'my', '马来西亚', '马来', '大马'],
-    'TH': ['thailand', 'th', '泰国', '泰'],
+    'US': ['usa', 'us', 'united states', 'america', '美国', '美', 'la', 'los angeles', 'seattle', 'san jose', 'dallas', 'chicago', 'miami', 'new york', 'silicon valley', '硅谷', '洛杉矶', '西雅图', '纽约'],
+    'GB': ['uk', 'gb', 'united kingdom', 'britain', 'england', '英国', '英', 'london', '伦敦'],
+    'DE': ['germany', 'de', 'deutsch', '德国', '德', 'frankfurt', '法兰克福'],
+    'FR': ['france', 'fr', '法国', '法', 'paris', '巴黎'],
+    'NL': ['netherlands', 'nl', 'holland', '荷兰', '荷', 'amsterdam', '阿姆斯特丹'],
+    'RU': ['russia', 'ru', '俄罗斯', '俄', 'moscow', '莫斯科'],
+    'CA': ['canada', 'ca', '加拿大', '加', 'toronto', 'vancouver', '多伦多', '温哥华'],
+    'AU': ['australia', 'au', '澳大利亚', '澳洲', '澳', 'sydney', '悉尼'],
+    'IN': ['india', '印度', 'mumbai', '孟买'],
+    'TR': ['turkey', 'tr', '土耳其', 'istanbul', '伊斯坦布尔'],
+    'MY': ['malaysia', 'my', '马来西亚', '马来', '大马', 'kuala lumpur', '吉隆坡'],
+    'TH': ['thailand', 'th', '泰国', '泰', 'bangkok', '曼谷'],
     'VN': ['vietnam', 'vn', '越南', '越'],
-    'ID': ['indonesia', '印尼', '印度尼西亚'],
-    'PH': ['philippines', 'ph', '菲律宾', '菲'],
-    'BR': ['brazil', 'br', '巴西'],
-    'AR': ['argentina', 'ar', '阿根廷'],
+    'ID': ['indonesia', '印尼', '印度尼西亚', 'jakarta', '雅加达'],
+    'PH': ['philippines', 'ph', '菲律宾', '菲', 'manila', '马尼拉'],
+    'BR': ['brazil', 'br', '巴西', 'sao paulo', '圣保罗'],
+    'AR': ['argentina', 'ar', '阿根廷', 'buenos aires', '布宜诺斯艾利斯'],
     'MX': ['mexico', 'mx', '墨西哥'],
-    'ZA': ['south africa', 'za', '南非'],
-    'AE': ['uae', 'ae', 'dubai', '阿联酋', '迪拜'],
-    'IL': ['israel', 'il', '以色列'],
-    'UA': ['ukraine', 'ua', '乌克兰'],
-    'PL': ['poland', 'pl', '波兰'],
-    'CH': ['switzerland', 'ch', '瑞士'],
-    'SE': ['sweden', 'se', '瑞典'],
-    'NO': ['norway', 'no', '挪威'],
-    'FI': ['finland', 'fi', '芬兰'],
-    'DK': ['denmark', 'dk', '丹麦'],
-    'IT': ['italy', 'it', '意大利', '意'],
-    'ES': ['spain', 'es', '西班牙'],
+    'ZA': ['south africa', 'za', '南非', 'johannesburg', '约翰内斯堡'],
+    'AE': ['uae', 'ae', 'dubai', '阿联酋', '迪拜', 'abu dhabi', '阿布扎比'],
+    'IL': ['israel', 'il', '以色列', 'tel aviv', '特拉维夫'],
+    'UA': ['ukraine', 'ua', '乌克兰', 'kiev', '基辅'],
+    'PL': ['poland', 'pl', '波兰', 'warsaw', '华沙'],
+    'CH': ['switzerland', 'ch', '瑞士', 'zurich', '苏黎世'],
+    'SE': ['sweden', 'se', '瑞典', 'stockholm', '斯德哥尔摩'],
+    'NO': ['norway', 'no', '挪威', 'oslo', '奥斯陆'],
+    'FI': ['finland', 'fi', '芬兰', 'helsinki', '赫尔辛基'],
+    'DK': ['denmark', 'dk', '丹麦', 'copenhagen', '哥本哈根'],
+    'IT': ['italy', 'it', '意大利', '意', 'rome', 'milan', '罗马', '米兰'],
+    'ES': ['spain', 'es', '西班牙', 'madrid', 'barcelona', '马德里', '巴塞罗那'],
     'NG': ['nigeria', 'ng', '尼日利亚'],
-    'NZ': ['new zealand', 'nz', '新西兰'],
+    'NZ': ['new zealand', 'nz', '新西兰', 'auckland', '奥克兰'],
     'MD': ['moldova', 'md', '摩尔多瓦'],
-    'IE': ['ireland', 'ie', '爱尔兰'],
-    'PT': ['portugal', 'pt', '葡萄牙'],
-    'GR': ['greece', 'gr', '希腊'],
-    'AT': ['austria', 'at', '奥地利'],
-    'CZ': ['czech', 'cz', '捷克'],
-    'HU': ['hungary', 'hu', '匈牙利'],
-    'RO': ['romania', 'ro', '罗马尼亚'],
-    'BG': ['bulgaria', 'bg', '保加利亚'],
-    'KZ': ['kazakhstan', 'kz', '哈萨克斯坦'],
-    'EG': ['egypt', 'eg', '埃及'],
-    'KE': ['kenya', 'ke', '肯尼亚'],
-    'PK': ['pakistan', 'pk', '巴基斯坦'],
-    'BD': ['bangladesh', 'bd', '孟加拉'],
-    'CL': ['chile', 'cl', '智利'],
+    'IE': ['ireland', 'ie', '爱尔兰', 'dublin', '都柏林'],
+    'PT': ['portugal', 'pt', '葡萄牙', 'lisbon', '里斯本'],
+    'GR': ['greece', 'gr', '希腊', 'athens', '雅典'],
+    'AT': ['austria', 'at', '奥地利', 'vienna', '维也纳'],
+    'CZ': ['czech', 'cz', '捷克', 'prague', '布拉格'],
+    'HU': ['hungary', 'hu', '匈牙利', 'budapest', '布达佩斯'],
+    'RO': ['romania', 'ro', '罗马尼亚', 'bucharest', '布加勒斯特'],
+    'BG': ['bulgaria', 'bg', '保加利亚', 'sofia', '索非亚'],
+    'KZ': ['kazakhstan', 'kz', '哈萨克斯坦', '哈萨克'],
+    'EG': ['egypt', 'eg', '埃及', 'cairo', '开罗'],
+    'KE': ['kenya', 'ke', '肯尼亚', 'nairobi', '内罗毕'],
+    'PK': ['pakistan', 'pk', '巴基斯坦', 'karachi', '卡拉奇'],
+    'BD': ['bangladesh', 'bd', '孟加拉', 'dhaka', '达卡'],
+    'CL': ['chile', 'cl', '智利', 'santiago', '圣地亚哥'],
     'AQ': ['antarctica', 'aq', '南极'],
+    # Additional less common countries
+    'KP': ['north korea', 'kp', 'dprk', '朝鲜', '北朝鲜', '平壤', 'pyongyang'],
+    'MN': ['mongolia', 'mn', '蒙古', 'ulaanbaatar', '乌兰巴托'],
+    'NP': ['nepal', 'np', '尼泊尔', 'kathmandu', '加德满都'],
+    'LK': ['sri lanka', 'lk', '斯里兰卡', 'colombo', '科伦坡'],
+    'IR': ['iran', 'ir', '伊朗', 'tehran', '德黑兰'],
+    'SA': ['saudi arabia', 'sa', '沙特', '沙特阿拉伯', 'riyadh', '利雅得'],
+    'QA': ['qatar', 'qa', '卡塔尔', 'doha', '多哈'],
+    'KW': ['kuwait', 'kw', '科威特'],
+    'OM': ['oman', 'om', '阿曼', 'muscat', '马斯喀特'],
+    'BH': ['bahrain', 'bh', '巴林'],
+    'LB': ['lebanon', 'lb', '黎巴嫩', 'beirut', '贝鲁特'],
+    'JO': ['jordan', 'jo', '约旦', 'amman', '安曼'],
+    'IQ': ['iraq', 'iq', '伊拉克', 'baghdad', '巴格达'],
+    'SY': ['syria', 'sy', '叙利亚', 'damascus', '大马士革'],
+    'AF': ['afghanistan', 'af', '阿富汗', 'kabul', '喀布尔'],
+    'MM': ['myanmar', 'mm', 'burma', '缅甸', 'yangon', '仰光'],
+    'KH': ['cambodia', 'kh', '柬埔寨', 'phnom penh', '金边'],
+    'LA': ['laos', 'la', '老挝', 'vientiane', '万象'],
+    'BN': ['brunei', 'bn', '文莱'],
+    'MO': ['macau', 'macao', 'mo', '澳门', '濠江'],
+    'IS': ['iceland', 'is', '冰岛', 'reykjavik', '雷克雅未克'],
+    'LU': ['luxembourg', 'lu', '卢森堡'],
+    'BE': ['belgium', 'be', '比利时', 'brussels', '布鲁塞尔'],
+    'SK': ['slovakia', 'sk', '斯洛伐克', 'bratislava', '布拉迪斯拉发'],
+    'SI': ['slovenia', 'si', '斯洛文尼亚', 'ljubljana', '卢布尔雅那'],
+    'HR': ['croatia', 'hr', '克罗地亚', 'zagreb', '萨格勒布'],
+    'RS': ['serbia', 'rs', '塞尔维亚', 'belgrade', '贝尔格莱德'],
+    'BA': ['bosnia', 'ba', '波黑', '波斯尼亚'],
+    'ME': ['montenegro', 'me', '黑山'],
+    'MK': ['macedonia', 'mk', '马其顿', '北马其顿'],
+    'AL': ['albania', 'al', '阿尔巴尼亚', 'tirana', '地拉那'],
+    'LT': ['lithuania', 'lt', '立陶宛', 'vilnius', '维尔纽斯'],
+    'LV': ['latvia', 'lv', '拉脱维亚', 'riga', '里加'],
+    'EE': ['estonia', 'ee', '爱沙尼亚', 'tallinn', '塔林'],
+    'BY': ['belarus', 'by', '白俄罗斯', 'minsk', '明斯克'],
+    'GE': ['georgia', 'ge', '格鲁吉亚', 'tbilisi', '第比利斯'],
+    'AM': ['armenia', 'am', '亚美尼亚', 'yerevan', '埃里温'],
+    'AZ': ['azerbaijan', 'az', '阿塞拜疆', 'baku', '巴库'],
+    'UZ': ['uzbekistan', 'uz', '乌兹别克斯坦', 'tashkent', '塔什干'],
+    'TM': ['turkmenistan', 'tm', '土库曼斯坦'],
+    'KG': ['kyrgyzstan', 'kg', '吉尔吉斯斯坦', 'bishkek', '比什凯克'],
+    'TJ': ['tajikistan', 'tj', '塔吉克斯坦'],
+    'CO': ['colombia', 'co', '哥伦比亚', 'bogota', '波哥大'],
+    'PE': ['peru', 'pe', '秘鲁', 'lima', '利马'],
+    'VE': ['venezuela', 've', '委内瑞拉', 'caracas', '加拉加斯'],
+    'EC': ['ecuador', 'ec', '厄瓜多尔', 'quito', '基多'],
+    'UY': ['uruguay', 'uy', '乌拉圭', 'montevideo', '蒙得维的亚'],
+    'PY': ['paraguay', 'py', '巴拉圭', 'asuncion', '亚松森'],
+    'BO': ['bolivia', 'bo', '玻利维亚', 'la paz', '拉巴斯'],
+    'PA': ['panama', 'pa', '巴拿马'],
+    'CR': ['costa rica', 'cr', '哥斯达黎加'],
+    'CU': ['cuba', 'cu', '古巴', 'havana', '哈瓦那'],
+    'DO': ['dominican', 'do', '多米尼加'],
+    'PR': ['puerto rico', 'pr', '波多黎各'],
+    'JM': ['jamaica', 'jm', '牙买加'],
+    'MA': ['morocco', 'ma', '摩洛哥', 'casablanca', '卡萨布兰卡'],
+    'TN': ['tunisia', 'tn', '突尼斯'],
+    'DZ': ['algeria', 'dz', '阿尔及利亚'],
+    'LY': ['libya', 'ly', '利比亚'],
+    'GH': ['ghana', 'gh', '加纳'],
+    'SN': ['senegal', 'sn', '塞内加尔'],
+    'CI': ['ivory coast', 'ci', '科特迪瓦', '象牙海岸'],
+    'CM': ['cameroon', 'cm', '喀麦隆'],
+    'TZ': ['tanzania', 'tz', '坦桑尼亚'],
+    'UG': ['uganda', 'ug', '乌干达'],
+    'RW': ['rwanda', 'rw', '卢旺达'],
+    'ET': ['ethiopia', 'et', '埃塞俄比亚'],
+    'MU': ['mauritius', 'mu', '毛里求斯'],
+    'SC': ['seychelles', 'sc', '塞舌尔'],
+    'MV': ['maldives', 'mv', '马尔代夫', 'male', '马累'],
+    'GU': ['guam', 'gu', '关岛'],
+    'FJ': ['fiji', 'fj', '斐济'],
+    'NC': ['new caledonia', 'nc', '新喀里多尼亚'],
+    'PF': ['french polynesia', 'pf', '法属波利尼西亚', 'tahiti', '塔希提'],
+    'GL': ['greenland', 'gl', '格陵兰'],
+    'MT': ['malta', 'mt', '马耳他'],
+    'CY': ['cyprus', 'cy', '塞浦路斯'],
 }
 
 # Country code to Chinese name mapping
@@ -228,7 +306,24 @@ COUNTRY_NAMES = {
     'NG': '尼日利亚', 'NZ': '新西兰', 'MD': '摩尔多瓦', 'IE': '爱尔兰', 'PT': '葡萄牙',
     'GR': '希腊', 'AT': '奥地利', 'CZ': '捷克', 'HU': '匈牙利', 'RO': '罗马尼亚',
     'BG': '保加利亚', 'KZ': '哈萨克斯坦', 'EG': '埃及', 'KE': '肯尼亚',
-    'PK': '巴基斯坦', 'BD': '孟加拉', 'CL': '智利', 'AQ': '南极洲', 'CN': '中国'
+    'PK': '巴基斯坦', 'BD': '孟加拉', 'CL': '智利', 'AQ': '南极洲', 'CN': '中国',
+    # Additional countries
+    'KP': '朝鲜', 'MN': '蒙古', 'NP': '尼泊尔', 'LK': '斯里兰卡', 'IR': '伊朗',
+    'SA': '沙特', 'QA': '卡塔尔', 'KW': '科威特', 'OM': '阿曼', 'BH': '巴林',
+    'LB': '黎巴嫩', 'JO': '约旦', 'IQ': '伊拉克', 'SY': '叙利亚', 'AF': '阿富汗',
+    'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'BN': '文莱', 'MO': '澳门',
+    'IS': '冰岛', 'LU': '卢森堡', 'BE': '比利时', 'SK': '斯洛伐克', 'SI': '斯洛文尼亚',
+    'HR': '克罗地亚', 'RS': '塞尔维亚', 'BA': '波黑', 'ME': '黑山', 'MK': '北马其顿',
+    'AL': '阿尔巴尼亚', 'LT': '立陶宛', 'LV': '拉脱维亚', 'EE': '爱沙尼亚', 'BY': '白俄罗斯',
+    'GE': '格鲁吉亚', 'AM': '亚美尼亚', 'AZ': '阿塞拜疆', 'UZ': '乌兹别克', 'TM': '土库曼',
+    'KG': '吉尔吉斯', 'TJ': '塔吉克', 'CO': '哥伦比亚', 'PE': '秘鲁', 'VE': '委内瑞拉',
+    'EC': '厄瓜多尔', 'UY': '乌拉圭', 'PY': '巴拉圭', 'BO': '玻利维亚', 'PA': '巴拿马',
+    'CR': '哥斯达黎加', 'CU': '古巴', 'DO': '多米尼加', 'PR': '波多黎各', 'JM': '牙买加',
+    'MA': '摩洛哥', 'TN': '突尼斯', 'DZ': '阿尔及利亚', 'LY': '利比亚', 'GH': '加纳',
+    'SN': '塞内加尔', 'CI': '科特迪瓦', 'CM': '喀麦隆', 'TZ': '坦桑尼亚', 'UG': '乌干达',
+    'RW': '卢旺达', 'ET': '埃塞俄比亚', 'MU': '毛里求斯', 'SC': '塞舌尔', 'MV': '马尔代夫',
+    'GU': '关岛', 'FJ': '斐济', 'NC': '新喀里多尼亚', 'PF': '法属波利尼西亚', 'GL': '格陵兰',
+    'MT': '马耳他', 'CY': '塞浦路斯',
 }
 
 # Placeholder to country code mapping for template processing
@@ -283,7 +378,7 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
                 country_code = PLACEHOLDER_COUNTRY_MAP[item]
                 # Find the country group name that matches this code
                 for country_name in sorted_country_names:
-                    # Country name format: "🇺🇸 美国" - need to check if code matches
+                    # Country name format: "flag + name" - need to check if code matches
                     if country_code in country_name or COUNTRY_NAMES.get(country_code, '') in country_name:
                         if country_name in country_groups:
                             new_proxies.extend(country_groups[country_name])
@@ -405,9 +500,17 @@ class AddSubscription(BaseModel):
     name: str
     url: str
 
+class AddLocalSubscription(BaseModel):
+    name: str
+    content: str  # YAML or Base64 encoded content
+
 class UpdateSubscription(BaseModel):
     name: Optional[str] = None
     url: Optional[str] = None
+
+class UpdateLocalSubscription(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None  # YAML or Base64 encoded content
 
 class ReorderSubscriptions(BaseModel):
     order: List[str]
@@ -1351,6 +1454,58 @@ def fetch_subscription(url: str) -> Tuple[str, dict, int]:
     
     return content, sub_info, node_count
 
+import base64
+
+def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
+    """
+    Parse local subscription content.
+    Supports: YAML (with proxies), Base64 encoded content, URI list (ss://, vmess://, etc.)
+    
+    Returns: (yaml_content, proxies_list, node_count)
+    """
+    original_content = content.strip()
+    decoded_content = original_content
+    
+    # Try Base64 decode
+    try:
+        # Remove possible padding issues
+        padded = original_content + '=' * (4 - len(original_content) % 4)
+        decoded = base64.b64decode(padded).decode('utf-8')
+        decoded_content = decoded.strip()
+    except:
+        pass  # Not Base64, use original
+    
+    proxies = []
+    
+    # Check if it's YAML with proxies section
+    try:
+        cfg = yaml.safe_load(decoded_content)
+        if isinstance(cfg, dict) and 'proxies' in cfg:
+            proxies = cfg.get('proxies', [])
+            yaml_content = decoded_content
+            return yaml_content, proxies, len(proxies)
+    except:
+        pass
+    
+    # Try parsing as URI list (one link per line)
+    lines = decoded_content.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        
+        # Parse various URI formats
+        proxy = parse_node_link(line)
+        if proxy:
+            proxies.append(proxy)
+    
+    if proxies:
+        # Convert to YAML format
+        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+        return yaml_content, proxies, len(proxies)
+    
+    raise ValueError("无法识别订阅内容格式，请检查是否为有效的 YAML、Base64 或节点链接")
+
 def update_custom_nodes_yaml():
     """Update custom nodes yaml file"""
     config = load_config()
@@ -1405,6 +1560,7 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
         content, sub_info, node_count = fetch_subscription(data.url)
         new_sub = {
             'id': sub_id, 'name': data.name, 'url': data.url, 'enabled': True,
+            'type': 'url',  # Mark as URL subscription
             'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
             'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
             'node_count': node_count, 'last_update': int(time.time())
@@ -1418,6 +1574,76 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
         return {"status": "success", "subscription": new_sub}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch subscription: {str(e)}")
+
+@app.post("/api/subscriptions/local")
+def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_session)):
+    """Add a local subscription by pasting content directly"""
+    config = load_config()
+    sub_id = f"sub_{int(time.time() * 1000)}"
+    
+    try:
+        yaml_content, proxies, node_count = parse_local_subscription(data.content)
+        
+        new_sub = {
+            'id': sub_id, 'name': data.name, 'enabled': True,
+            'type': 'local',  # Mark as local subscription
+            'node_count': node_count, 'last_update': int(time.time())
+        }
+        
+        with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
+            f.write(yaml_content)
+        
+        config['subscriptions'].append(new_sub)
+        save_config(config)
+        return {"status": "success", "subscription": new_sub}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse content: {str(e)}")
+
+@app.put("/api/subscriptions/{sub_id}/local")
+def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: bool = Depends(verify_session)):
+    """Update a local subscription"""
+    config = load_config()
+    sub = next((s for s in config['subscriptions'] if s['id'] == sub_id), None)
+    
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    if sub.get('type') != 'local':
+        raise HTTPException(status_code=400, detail="Not a local subscription")
+    
+    if data.name:
+        sub['name'] = data.name
+    
+    if data.content:
+        try:
+            yaml_content, proxies, node_count = parse_local_subscription(data.content)
+            sub['node_count'] = node_count
+            sub['last_update'] = int(time.time())
+            
+            with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
+                f.write(yaml_content)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    
+    save_config(config)
+    return {"status": "success", "subscription": sub}
+
+@app.post("/api/subscriptions/parse-preview")
+def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(verify_session)):
+    """Preview parsing result without saving"""
+    try:
+        yaml_content, proxies, node_count = parse_local_subscription(data.content)
+        return {
+            "status": "success",
+            "node_count": node_count,
+            "preview": [p.get('name', 'Unknown') for p in proxies[:10]]  # First 10 node names
+        }
+    except ValueError as e:
+        return {"status": "error", "error": str(e), "node_count": 0}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "node_count": 0}
 
 @app.delete("/api/subscriptions/{sub_id}")
 def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
@@ -1562,7 +1788,7 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
             node_data['display_name'] = display_name
             
             # Get region info - STRICT priority:
-            # 1. Flag emoji in ORIGINAL name (机场提供的旗帜标识) - most reliable
+            # 1. Flag emoji in ORIGINAL name (provider's flag) - most reliable
             # 2. Keywords in original name
             # 3. Saved geoip cache (from region testing)  
             # 4. GeoIP lookup (fallback)
@@ -2656,7 +2882,7 @@ def get_merged_subscription(
                         else:
                             # Check if this specific node is allocated
                             # Original node name might have flags, e.g., "🇭🇰HK@xxx"
-                            # Transformed name is "🇭🇰 风萧萧 HK@xxx"
+                            # Transformed name is "flag + name + code@info"
                             # We need to match the core part (without flags)
                             for alloc_node in allocated_nodes:
                                 # Remove flags from allocated node name for matching
@@ -2793,7 +3019,7 @@ def get_merged_subscription(
             total = sub.get('total', 0) or 0
             expire = sub.get('expire', 0) or 0
             
-            # Create info node name: "机场名 | 已用/总量 | 到期时间"
+            # Create info node name: "sub_name | used/total | expire_date"
             if total > 0:
                 info_name = f"📊 {sub['name']} | {format_bytes(used)}/{format_bytes(total)} | {format_expire(expire)}"
             else:
@@ -2811,7 +3037,7 @@ def get_merged_subscription(
         # Prepend traffic info nodes to proxies
         proxies = traffic_info_nodes + proxies
         
-        # Add traffic info nodes to manual select group (🚀 手动选择)
+        # Add traffic info nodes to manual select group
         if traffic_info_names:
             for group in proxy_groups:
                 if group.get('name') == '🚀 手动选择':
@@ -4319,7 +4545,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         if not nodes:
             continue
             
-        # Parse flag and name from group_name (e.g., "🇺🇸 美国")
+        # Parse flag and name from group_name (e.g., "flag + country_name")
         parts = group_name.split(' ', 1)
         if len(parts) == 2:
             flag, name = parts

@@ -162,6 +162,8 @@ export default function Subscriptions({
         <AddSubscriptionModal
           onClose={() => setShowAddModal(false)}
           onAdd={onAdd}
+          onRefreshList={onRefreshList}
+          showToast={showToast}
         />
       )}
 
