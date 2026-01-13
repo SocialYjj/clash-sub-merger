@@ -6,11 +6,19 @@ RUN npm ci
 COPY submerger/ ./
 RUN npm run build
 
-# Final image - Python backend
+# Multi-stage build - Go speedtest service
+FROM golang:1.22-alpine AS go-builder
+WORKDIR /app/speedtest
+COPY speedtest/go.mod speedtest/go.sum ./
+RUN go mod download
+COPY speedtest/*.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o speedtest .
+
+# Final image - Python backend + Go speedtest
 FROM python:3.12-slim
 WORKDIR /app
 
-# Install system dependencies (tzdata for timezone, curl for healthcheck)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     curl \
@@ -20,21 +28,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt ./
 RUN uv pip install --system --no-cache -r requirements.txt
 
-# Copy backend code (all python files)
+# Copy backend code
 COPY *.py ./
 
-# Copy GeoIP database if exists (optional, but good for caching)
-COPY GeoLite2-Country.mmdb* ./
+# Copy Go speedtest binary
+COPY --from=go-builder /app/speedtest/speedtest /app/speedtest
 
-# Copy frontend build from builder stage
+# Copy frontend build
 COPY --from=frontend-builder /app/submerger/dist ./submerger/dist
 
 # Create data directory
 RUN mkdir -p /app/data/uploads
+
+# Create startup script
+RUN echo '#!/bin/sh\n\
+/app/speedtest &\n\
+exec python server.py' > /app/start.sh && chmod +x /app/start.sh
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -44,9 +57,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
 ENV TZ=Asia/Shanghai
+ENV GO_SPEEDTEST_URL=http://localhost:9876
 
-# Expose port
+# Expose port (only main service, speedtest is internal)
 EXPOSE 8666
 
-# Start command
-CMD ["python", "server.py"]
+# Start both services
+CMD ["/app/start.sh"]

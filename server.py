@@ -6,6 +6,10 @@ import time
 import secrets
 import re
 import hashlib
+import httpx
+import subprocess
+import sys
+import atexit
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, unquote, quote
 from typing import Optional, Tuple, Dict, List
@@ -17,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from merge_config import ConfigMerger, NameTransformer, CountryGrouper
-from geoip_service import get_geoip_service, download_geoip_database, init_geoip_service, get_latest_version_info, get_local_version_info, check_update_available
+from geoip_service import GeoIPService, lookup_ip_online
 from scheduler_service import get_scheduler, init_scheduler, CRON_PRESETS, get_cron_description
 from speedtest_service import (
     get_speedtest_service, SpeedTestConfig, SpeedTestResult,
@@ -42,6 +46,78 @@ CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
+
+# ==================== Go Speedtest Service Management ====================
+
+GO_SPEEDTEST_PROCESS = None
+
+def start_go_speedtest_service():
+    """Start the Go speedtest service as a subprocess"""
+    global GO_SPEEDTEST_PROCESS
+    
+    # Check if already running
+    if GO_SPEEDTEST_PROCESS is not None and GO_SPEEDTEST_PROCESS.poll() is None:
+        print("Go speedtest service already running")
+        return True
+    
+    # Find the speedtest executable
+    speedtest_dir = os.path.join(BASE_DIR, 'speedtest')
+    if sys.platform == 'win32':
+        speedtest_exe = os.path.join(speedtest_dir, 'speedtest.exe')
+    else:
+        speedtest_exe = os.path.join(speedtest_dir, 'speedtest')
+    
+    if not os.path.exists(speedtest_exe):
+        print(f"Go speedtest executable not found at {speedtest_exe}")
+        return False
+    
+    try:
+        # Start the Go service
+        GO_SPEEDTEST_PROCESS = subprocess.Popen(
+            [speedtest_exe],
+            cwd=speedtest_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        print(f"Go speedtest service started (PID: {GO_SPEEDTEST_PROCESS.pid})")
+        return True
+    except Exception as e:
+        print(f"Failed to start Go speedtest service: {e}")
+        return False
+
+def stop_go_speedtest_service():
+    """Stop the Go speedtest service"""
+    global GO_SPEEDTEST_PROCESS
+    
+    if GO_SPEEDTEST_PROCESS is not None:
+        try:
+            GO_SPEEDTEST_PROCESS.terminate()
+            GO_SPEEDTEST_PROCESS.wait(timeout=5)
+            print("Go speedtest service stopped")
+        except Exception as e:
+            print(f"Error stopping Go speedtest service: {e}")
+            try:
+                GO_SPEEDTEST_PROCESS.kill()
+            except:
+                pass
+        GO_SPEEDTEST_PROCESS = None
+
+# Register cleanup on exit
+atexit.register(stop_go_speedtest_service)
+
+# Also handle signals for proper cleanup
+import signal
+
+def signal_handler(signum, frame):
+    """Handle termination signals to ensure Go service is stopped"""
+    print(f"\nReceived signal {signum}, stopping Go speedtest service...")
+    stop_go_speedtest_service()
+    sys.exit(0)
+
+# Register signal handlers (Windows only supports SIGINT and SIGTERM)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # ==================== Config Management ====================
 
@@ -296,7 +372,7 @@ COUNTRY_KEYWORDS = {
 
 # Country code to Chinese name mapping
 COUNTRY_NAMES = {
-    'HK': '香港', 'TW': '台湾', 'JP': '日本', 'KR': '韩国', 'SG': '新加坡',
+    'HK': '中国香港', 'TW': '中国台湾', 'JP': '日本', 'KR': '韩国', 'SG': '新加坡',
     'US': '美国', 'GB': '英国', 'DE': '德国', 'FR': '法国', 'NL': '荷兰',
     'RU': '俄罗斯', 'CA': '加拿大', 'AU': '澳大利亚', 'IN': '印度', 'TR': '土耳其',
     'MY': '马来西亚', 'TH': '泰国', 'VN': '越南', 'ID': '印尼', 'PH': '菲律宾',
@@ -311,7 +387,7 @@ COUNTRY_NAMES = {
     'KP': '朝鲜', 'MN': '蒙古', 'NP': '尼泊尔', 'LK': '斯里兰卡', 'IR': '伊朗',
     'SA': '沙特', 'QA': '卡塔尔', 'KW': '科威特', 'OM': '阿曼', 'BH': '巴林',
     'LB': '黎巴嫩', 'JO': '约旦', 'IQ': '伊拉克', 'SY': '叙利亚', 'AF': '阿富汗',
-    'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'BN': '文莱', 'MO': '澳门',
+    'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'BN': '文莱', 'MO': '中国澳门',
     'IS': '冰岛', 'LU': '卢森堡', 'BE': '比利时', 'SK': '斯洛伐克', 'SI': '斯洛文尼亚',
     'HR': '克罗地亚', 'RS': '塞尔维亚', 'BA': '波黑', 'ME': '黑山', 'MK': '北马其顿',
     'AL': '阿尔巴尼亚', 'LT': '立陶宛', 'LV': '拉脱维亚', 'EE': '爱沙尼亚', 'BY': '白俄罗斯',
@@ -394,8 +470,8 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
 
 def extract_country_from_name(node_name: str, server: str = None) -> Optional[Dict]:
     """
-    Extract country info from node name using flag emoji, keywords, or GeoIP.
-    Priority: 1. Flag emoji  2. Keywords  3. GeoIP lookup  4. None
+    Extract country info from node name using flag emoji or keywords.
+    Priority: 1. Flag emoji  2. Keywords  3. None
     Returns: {'country': str, 'country_code': str, 'flag': str} or None
     """
     if not node_name:
@@ -444,19 +520,6 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
             'country_code': best_match_code,
             'flag': GeoIPService.iso_to_flag(best_match_code)
         }
-    
-    # 3. GeoIP lookup as fallback (if server address provided)
-    if server:
-        geoip = get_geoip_service()
-        if geoip and geoip.is_available():
-            result = geoip.get_country(server)
-            if result and result.get('iso_code'):
-                code = result['iso_code']
-                return {
-                    'country': COUNTRY_NAMES.get(code, result.get('country_name', code)),
-                    'country_code': code,
-                    'flag': result.get('flag', GeoIPService.iso_to_flag(code))
-                }
     
     return None
 
@@ -560,6 +623,24 @@ class PortMappingCreate(BaseModel):
 
 class PortMappingUpdate(BaseModel):
     port: int  # New port number
+
+# Proxy chain models
+class ProxyChainNode(BaseModel):
+    sub_id: str           # Subscription ID or "custom" for custom nodes
+    node_index: int       # Index of node in subscription
+    node_name: str        # Display name of the node
+
+class ProxyChainRow(BaseModel):
+    nodes: List[ProxyChainNode]  # Ordered list of nodes in this chain row
+
+class CreateProxyChain(BaseModel):
+    name: str
+    rows: List[ProxyChainRow]
+
+class UpdateProxyChain(BaseModel):
+    name: Optional[str] = None
+    rows: Optional[List[ProxyChainRow]] = None
+    enabled: Optional[bool] = None
 
 # ==================== Auth API ====================
 
@@ -1816,9 +1897,25 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
                     }
                     node_data['detected_region'] = True  # Mark as detected (not from name)
             
+            # Always include city and exit_ip from saved geoip (regardless of flag source)
+            saved_geoip = proxy.get('geoip')
+            if saved_geoip:
+                if saved_geoip.get('city'):
+                    node_data['city'] = saved_geoip['city']
+                if saved_geoip.get('exit_ip'):
+                    node_data['exit_ip'] = saved_geoip['exit_ip']
+            
             # Add port mapping info if exists
             if final_name in port_mappings:
                 node_data['mapped_port'] = port_mappings[final_name]
+            
+            # Add saved latency and speed
+            if 'last_latency' in proxy:
+                node_data['last_latency'] = proxy['last_latency']
+            if 'last_speed' in proxy:
+                node_data['last_speed'] = proxy['last_speed']
+            if 'last_peak_speed' in proxy:
+                node_data['last_peak_speed'] = proxy['last_peak_speed']
             
             enhanced_nodes.append(node_data)
         
@@ -1976,6 +2073,20 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
         if final_name in port_mappings:
             node_data['mapped_port'] = port_mappings[final_name]
         
+        # Add saved test results (city, exit_ip, latency, speed)
+        saved_geoip = node.get('geoip', {})
+        if saved_geoip:
+            node_data['city'] = saved_geoip.get('city')
+            node_data['exit_ip'] = saved_geoip.get('exit_ip')
+        
+        # Add saved latency and speed
+        if 'last_latency' in node:
+            node_data['last_latency'] = node['last_latency']
+        if 'last_speed' in node:
+            node_data['last_speed'] = node['last_speed']
+        if 'last_peak_speed' in node:
+            node_data['last_peak_speed'] = node['last_peak_speed']
+        
         enhanced_nodes.append(node_data)
     
     return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
@@ -2101,10 +2212,24 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
     for i, node in enumerate(config['custom_nodes']):
         if node['id'] == node_id:
             new_node = data.node
-            node['name'] = new_node.get('name', node['name'])
-            node['type'] = new_node.get('type', node.get('type', 'vless'))
-            node['server'] = new_node.get('server', node.get('server', ''))
-            node['port'] = new_node.get('port', node.get('port', 443))
+            
+            # Update all fields from the new node data
+            # Keep id and link (link will be regenerated)
+            node_id_val = node['id']
+            
+            # Clear old proxy fields and update with new ones
+            keys_to_keep = ['id', 'geoip']  # Keep id and cached geoip
+            old_geoip = node.get('geoip')
+            
+            # Update node with all new proxy fields
+            node.clear()
+            node['id'] = node_id_val
+            if old_geoip:
+                node['geoip'] = old_geoip
+            
+            # Copy all fields from new_node
+            for key, value in new_node.items():
+                node[key] = value
             
             # Convert the updated proxy config back to link format and save it
             # This ensures edits persist even after refresh
@@ -2121,10 +2246,13 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
                 if j == i:
                     proxies.append(new_node)
                 else:
-                    proxy = parse_node_link(n['link'])
+                    proxy = parse_node_link(n.get('link', ''))
                     if proxy:
-                        proxy['name'] = n['name']
+                        proxy['name'] = n.get('name', proxy.get('name', ''))
                         proxies.append(proxy)
+                    else:
+                        # Fallback: use stored node data
+                        proxies.append({k: v for k, v in n.items() if k not in ['id', 'link', 'geoip']})
             
             with open(os.path.join(YAML_SOURCE_DIR, 'custom_nodes.yaml'), 'w', encoding='utf-8') as f:
                 yaml.dump({'proxies': proxies}, f, allow_unicode=True, sort_keys=False)
@@ -2254,6 +2382,223 @@ def delete_port_mapping_by_name(final_name: str, _: bool = Depends(verify_sessio
         return {"status": "success", "deleted_name": final_name, "deleted_port": port}
     
     raise HTTPException(status_code=404, detail=f"No mapping found for node '{final_name}'")
+
+# ==================== Proxy Chain API ====================
+
+def get_all_available_nodes() -> List[dict]:
+    """Get all available nodes from subscriptions and custom nodes for chain selection"""
+    config = load_config()
+    nodes = []
+    
+    # Info node keywords to filter out
+    info_keywords = [
+        '剩余流量', '套餐到期', '距离下次重置', '建议', '官网', '未到期',
+        '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
+        '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
+        '使用说明', '教程', '更新', '通知', '邀请', '返利'
+    ]
+    
+    def is_info_node(name: str) -> bool:
+        if not name:
+            return True
+        return any(kw in name for kw in info_keywords)
+    
+    # Get custom nodes FIRST (they should appear at the top)
+    for idx, node in enumerate(config.get('custom_nodes', [])):
+        original_name = node.get('name', f'Custom Node {idx}')
+        if is_info_node(original_name):
+            continue
+        # Transform name to get final name with flag
+        transformed = NameTransformer.transform_name(node, 'Custom')
+        final_name = transformed.get('name', original_name)
+        nodes.append({
+            'sub_id': 'custom',
+            'sub_name': '自建节点',
+            'node_index': idx,
+            'node_name': final_name,  # Use transformed name with flag
+            'node_type': node.get('type', 'unknown'),
+            'server': node.get('server', '')
+        })
+    
+    # Get nodes from subscriptions
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f)
+                proxies = cfg.get('proxies', []) if cfg else []
+                for idx, proxy in enumerate(proxies):
+                    original_name = proxy.get('name', f'Node {idx}')
+                    if is_info_node(original_name):
+                        continue
+                    # Transform name to get final name with flag
+                    transformed = NameTransformer.transform_name(proxy, sub['name'])
+                    final_name = transformed.get('name', original_name)
+                    nodes.append({
+                        'sub_id': sub['id'],
+                        'sub_name': sub['name'],
+                        'node_index': idx,
+                        'node_name': final_name,  # Use transformed name with flag
+                        'node_type': proxy.get('type', 'unknown'),
+                        'server': proxy.get('server', '')
+                    })
+            except:
+                pass
+    
+    return nodes
+
+def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
+    """Find a node by subscription ID and index"""
+    config = load_config()
+    
+    if sub_id == 'custom':
+        custom_nodes = config.get('custom_nodes', [])
+        if 0 <= node_index < len(custom_nodes):
+            return custom_nodes[node_index]
+    else:
+        filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f)
+                proxies = cfg.get('proxies', []) if cfg else []
+                if 0 <= node_index < len(proxies):
+                    return proxies[node_index]
+            except:
+                pass
+    return None
+
+@app.get("/api/proxy-chains")
+def list_proxy_chains(_: bool = Depends(verify_session)):
+    """List all proxy chains"""
+    config = load_config()
+    chains = config.get('proxy_chains', [])
+    return {"chains": chains, "count": len(chains)}
+
+@app.get("/api/proxy-chains/available-nodes")
+def get_available_nodes_for_chain(_: bool = Depends(verify_session)):
+    """Get all available nodes for chain selection"""
+    nodes = get_all_available_nodes()
+    return {"nodes": nodes, "count": len(nodes)}
+
+@app.post("/api/proxy-chains")
+def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)):
+    """Create a new proxy chain"""
+    config = load_config()
+    
+    # Validate chain has at least one row with at least 2 nodes
+    if not data.rows or len(data.rows) == 0:
+        raise HTTPException(status_code=400, detail="Chain must have at least one row")
+    
+    for row in data.rows:
+        if not row.nodes or len(row.nodes) < 2:
+            raise HTTPException(status_code=400, detail="Each row must have at least 2 nodes")
+    
+    # Create chain object
+    chain = {
+        'id': f"chain_{int(time.time() * 1000)}",
+        'name': data.name.strip(),
+        'rows': [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows],
+        'enabled': True,
+        'created_at': int(time.time())
+    }
+    
+    if 'proxy_chains' not in config:
+        config['proxy_chains'] = []
+    config['proxy_chains'].append(chain)
+    save_config(config)
+    
+    return {"status": "success", "chain": chain}
+
+@app.get("/api/proxy-chains/{chain_id}")
+def get_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
+    """Get a specific proxy chain"""
+    config = load_config()
+    for chain in config.get('proxy_chains', []):
+        if chain['id'] == chain_id:
+            return {"chain": chain}
+    raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+@app.put("/api/proxy-chains/{chain_id}")
+def update_proxy_chain(chain_id: str, data: UpdateProxyChain, _: bool = Depends(verify_session)):
+    """Update a proxy chain"""
+    config = load_config()
+    
+    for chain in config.get('proxy_chains', []):
+        if chain['id'] == chain_id:
+            if data.name is not None:
+                chain['name'] = data.name.strip()
+            if data.rows is not None:
+                # Validate rows
+                for row in data.rows:
+                    if not row.nodes or len(row.nodes) < 2:
+                        raise HTTPException(status_code=400, detail="Each row must have at least 2 nodes")
+                chain['rows'] = [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows]
+            if data.enabled is not None:
+                chain['enabled'] = data.enabled
+            
+            save_config(config)
+            return {"status": "success", "chain": chain}
+    
+    raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+@app.put("/api/proxy-chains/{chain_id}/toggle")
+def toggle_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
+    """Toggle proxy chain enabled status"""
+    config = load_config()
+    
+    for chain in config.get('proxy_chains', []):
+        if chain['id'] == chain_id:
+            chain['enabled'] = not chain.get('enabled', True)
+            save_config(config)
+            return {"status": "success", "enabled": chain['enabled']}
+    
+    raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+@app.delete("/api/proxy-chains/{chain_id}")
+def delete_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
+    """Delete a proxy chain"""
+    config = load_config()
+    chains = config.get('proxy_chains', [])
+    
+    original_count = len(chains)
+    config['proxy_chains'] = [c for c in chains if c['id'] != chain_id]
+    
+    if len(config['proxy_chains']) == original_count:
+        raise HTTPException(status_code=404, detail="Proxy chain not found")
+    
+    save_config(config)
+    return {"status": "success"}
+
+class ReorderProxyChains(BaseModel):
+    order: List[str]
+
+@app.put("/api/proxy-chains/reorder")
+def reorder_proxy_chains(data: ReorderProxyChains, _: bool = Depends(verify_session)):
+    """Reorder proxy chains"""
+    config = load_config()
+    chains = config.get('proxy_chains', [])
+    
+    # Create a map of id -> chain
+    chain_map = {c['id']: c for c in chains}
+    
+    # Reorder based on provided order
+    new_chains = []
+    for chain_id in data.order:
+        if chain_id in chain_map:
+            new_chains.append(chain_map[chain_id])
+    
+    # Add any chains not in the order list at the end
+    for chain in chains:
+        if chain['id'] not in data.order:
+            new_chains.append(chain)
+    
+    config['proxy_chains'] = new_chains
+    save_config(config)
+    return {"status": "success"}
 
 # ==================== User Management API ====================
 
@@ -3037,21 +3382,132 @@ def get_merged_subscription(
         # Prepend traffic info nodes to proxies
         proxies = traffic_info_nodes + proxies
         
-        # Add traffic info nodes to manual select group
-        if traffic_info_names:
+        # Process proxy chains - add chain proxies with dialer-proxy
+        proxy_chains = config.get('proxy_chains', [])
+        chain_proxies = []
+        chain_proxy_names = []
+        
+        for chain in proxy_chains:
+            if not chain.get('enabled', True):
+                continue
+            
+            for row_idx, row in enumerate(chain.get('rows', [])):
+                nodes = row.get('nodes', [])
+                if len(nodes) < 2:
+                    continue
+                
+                # Build the chain by setting dialer-proxy on each node
+                # For chain [A, B, C]: B.dialer-proxy = A, C.dialer-proxy = B
+                # We create a new proxy entry based on the last node with dialer-proxy set
+                
+                # Find all nodes in the chain
+                chain_node_proxies = []
+                for node_ref in nodes:
+                    node_proxy = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
+                    if node_proxy:
+                        chain_node_proxies.append(dict(node_proxy))
+                
+                if len(chain_node_proxies) < 2:
+                    continue
+                
+                # Create chain proxy entry based on the last node
+                last_node = chain_node_proxies[-1]
+                chain_proxy = dict(last_node)
+                
+                # Extract country info from the last node (exit node) for grouping
+                last_node_name = last_node.get('name', '')
+                last_node_server = last_node.get('server', '')
+                chain_country_info = extract_country_from_name(last_node_name, last_node_server)
+                
+                # Set chain name
+                chain_name = chain['name']
+                if len(chain.get('rows', [])) > 1:
+                    chain_name = f"{chain_name} #{row_idx + 1}"
+                chain_proxy['name'] = f"🔗 {chain_name}"
+                
+                # Store country info for later grouping
+                if chain_country_info:
+                    chain_proxy['_country_info'] = chain_country_info
+                
+                # Set dialer-proxy to the second-to-last node
+                # For longer chains, we need intermediate proxies
+                if len(chain_node_proxies) == 2:
+                    # Simple 2-node chain: last node uses first as dialer-proxy
+                    chain_proxy['dialer-proxy'] = chain_node_proxies[0]['name']
+                else:
+                    # Multi-node chain: create intermediate proxies
+                    # For [A, B, C]: create B' with dialer-proxy=A, then C' with dialer-proxy=B'
+                    prev_proxy_name = chain_node_proxies[0]['name']
+                    
+                    for i in range(1, len(chain_node_proxies) - 1):
+                        intermediate = dict(chain_node_proxies[i])
+                        intermediate_name = f"🔗 {chain_name} (via {i})"
+                        intermediate['name'] = intermediate_name
+                        intermediate['dialer-proxy'] = prev_proxy_name
+                        chain_proxies.append(intermediate)
+                        chain_proxy_names.append(intermediate_name)
+                        prev_proxy_name = intermediate_name
+                    
+                    chain_proxy['dialer-proxy'] = prev_proxy_name
+                
+                chain_proxies.append(chain_proxy)
+                chain_proxy_names.append(chain_proxy['name'])
+        
+        # Add chain proxies to the proxies list
+        # Position: after custom nodes, before subscription nodes
+        # Order: traffic_info -> custom_nodes -> chain_proxies -> subscription_nodes
+        if chain_proxies:
+            # Find the position after custom nodes
+            # Custom nodes have "Custom" in their name (from file_aliases)
+            custom_node_end_idx = 0
+            for i, proxy in enumerate(proxies):
+                proxy_name = proxy.get('name', '')
+                # Traffic info nodes start with 📊, skip them
+                if proxy_name.startswith('📊'):
+                    custom_node_end_idx = i + 1
+                    continue
+                # Custom nodes have "Custom" as provider name
+                if 'Custom' in proxy_name:
+                    custom_node_end_idx = i + 1
+                else:
+                    # First non-custom, non-traffic node found
+                    break
+            
+            # Insert chain proxies after custom nodes
+            proxies = proxies[:custom_node_end_idx] + chain_proxies + proxies[custom_node_end_idx:]
+            
+            # Add chain proxies to corresponding country groups
+            for chain_proxy in chain_proxies:
+                chain_proxy_name = chain_proxy.get('name', '')
+                # Use stored country info from exit node
+                country_info = chain_proxy.get('_country_info')
+                if country_info:
+                    country_group_name = f"{country_info['flag']} {country_info['country']}"
+                    # Find and update the country group
+                    for group in proxy_groups:
+                        if group.get('name') == country_group_name:
+                            if chain_proxy_name not in group.get('proxies', []):
+                                group['proxies'].insert(0, chain_proxy_name)  # Add at beginning
+                            break
+                    # Clean up temporary field before output
+                    del chain_proxy['_country_info']
+        
+        # Add traffic info nodes and chain proxies to manual select group
+        if traffic_info_names or chain_proxy_names:
             for group in proxy_groups:
                 if group.get('name') == '🚀 手动选择':
-                    # Insert traffic info at the beginning of proxies list
-                    group['proxies'] = traffic_info_names + group.get('proxies', [])
+                    # Insert traffic info at the beginning, chain proxies after traffic info
+                    current_proxies = group.get('proxies', [])
+                    group['proxies'] = traffic_info_names + chain_proxy_names + current_proxies
                     break
         
         # Calculate total traffic info from all subscriptions
         total_upload = sum(s.get('upload', 0) or 0 for s in enabled_subs)
         total_download = sum(s.get('download', 0) or 0 for s in enabled_subs)
         total_traffic = sum(s.get('total', 0) or 0 for s in enabled_subs)
-        # Use the earliest expire time (or 0 if any is permanent)
-        expire_times = [s.get('expire', 0) or 0 for s in enabled_subs]
-        total_expire = min(expire_times) if expire_times and all(t > 0 for t in expire_times) else 0
+        # Use the earliest expire time (ignore 0 which means permanent/unknown)
+        expire_times = [s.get('expire', 0) or 0 for s in enabled_subs if (s.get('expire', 0) or 0) > 0]
+        total_expire = min(expire_times) if expire_times else 0
         
         # Base64 format output
         if format == 'base64':
@@ -3607,178 +4063,341 @@ def download_result(_: bool = Depends(verify_session)):
 
 # ==================== GeoIP API ====================
 
-# Initialize GeoIP service on startup
-geoip_service = get_geoip_service()
-
 # Initialize scheduler on startup
 scheduler = get_scheduler()
 
-@app.get("/api/geoip/status")
-def get_geoip_status(_: bool = Depends(verify_session)):
-    """Get GeoIP database status"""
-    return geoip_service.get_db_info()
+# ==================== Online GeoIP API Settings ====================
 
-@app.get("/api/geoip/lookup/{ip}")
-def lookup_ip(ip: str, _: bool = Depends(verify_session)):
-    """Lookup IP geolocation"""
-    if not geoip_service.is_available():
-        raise HTTPException(status_code=503, detail="GeoIP database not available")
-    
-    result = geoip_service.get_country(ip)
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"No location data for IP: {ip}")
-    
-    return result
+from geoip_service import (
+    set_online_geoip_config, get_online_geoip_config, clear_online_geoip_cache,
+    get_all_geoip_apis, add_custom_geoip_api, update_custom_geoip_api, 
+    delete_custom_geoip_api, set_api_enabled, BUILTIN_GEOIP_APIS
+)
 
-class GeoIPUpdateRequest(BaseModel):
+class OnlineGeoIPConfigRequest(BaseModel):
+    preferred_api: Optional[str] = None  # "ip-api.com", "ipwhois", "ipinfo", or custom id
+    ipinfo_token: Optional[str] = None
+
+class CustomGeoIPAPIRequest(BaseModel):
+    name: str
+    url: str  # URL template with {ip} placeholder
+    token: Optional[str] = ""  # Optional token/API key
+    limit: Optional[str] = ""  # Optional usage limit display (e.g. "1000次/天")
+    method: Optional[str] = "GET"
+    headers: Optional[Dict[str, str]] = None
+    country_code_path: Optional[str] = ""  # JSON path like "countryCode" or "data.country.code"
+    country_name_path: Optional[str] = ""
+    city_path: Optional[str] = ""
+    success_check: Optional[str] = ""  # e.g. "status==success"
+
+class UpdateCustomGeoIPAPIRequest(BaseModel):
+    name: Optional[str] = None
     url: Optional[str] = None
-    use_proxy: Optional[bool] = False
+    token: Optional[str] = None
+    limit: Optional[str] = None
+    method: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    country_code_path: Optional[str] = None
+    country_name_path: Optional[str] = None
+    city_path: Optional[str] = None
+    success_check: Optional[str] = None
+    enabled: Optional[bool] = None
 
-@app.post("/api/geoip/update")
-def update_geoip_database(
-    data: GeoIPUpdateRequest,
-    background_tasks: BackgroundTasks,
-    _: bool = Depends(verify_session)
-):
-    """Download/update GeoIP database"""
-    result = download_geoip_database(
-        url=data.url,
-        use_proxy=data.use_proxy
-    )
-    
-    if result["success"]:
-        # Reload the database after download
-        geoip_service.reload()
-    
-    return result
+class TestCustomGeoIPAPIRequest(BaseModel):
+    url: str
+    token: Optional[str] = ""
+    country_code_path: Optional[str] = ""
+    country_name_path: Optional[str] = ""
+    city_path: Optional[str] = ""
+    success_check: Optional[str] = ""
+    test_ip: Optional[str] = "8.8.8.8"
 
-@app.get("/api/geoip/test")
-def test_geoip(_: bool = Depends(verify_session)):
-    """Test GeoIP with sample IPs"""
-    test_ips = [
-        ("8.8.8.8", "Google DNS - US"),
-        ("1.1.1.1", "Cloudflare - US"),
-        ("114.114.114.114", "China DNS"),
-        ("208.67.222.222", "OpenDNS - US"),
-    ]
-    
-    results = []
-    for ip, desc in test_ips:
-        country = geoip_service.get_country(ip)
-        results.append({
-            "ip": ip,
-            "description": desc,
-            "country": country
-        })
-    
-    return {
-        "available": geoip_service.is_available(),
-        "results": results
-    }
-
-@app.get("/api/geoip/version")
-def get_geoip_version(_: bool = Depends(verify_session)):
-    """Get local GeoIP database version info"""
-    return get_local_version_info()
-
-@app.get("/api/geoip/latest")
-def get_geoip_latest(_: bool = Depends(verify_session)):
-    """Get latest available GeoIP database version from GitHub"""
-    return get_latest_version_info()
-
-@app.get("/api/geoip/check-update")
-def check_geoip_update(_: bool = Depends(verify_session)):
-    """Check if GeoIP database update is available"""
-    return check_update_available()
-
-class GeoIPAutoUpdateSettingRequest(BaseModel):
+class APIEnabledRequest(BaseModel):
     enabled: bool
 
-@app.get("/api/geoip/auto-update-setting")
-def get_geoip_auto_update_setting(_: bool = Depends(verify_session)):
-    """Get GeoIP auto-update setting"""
+@app.get("/api/geoip/online-config")
+def get_online_geoip_api_config(_: bool = Depends(verify_session)):
+    """Get online GeoIP API configuration"""
     config = load_config()
-    return {"enabled": config.get('geoip_auto_update', False)}
-
-@app.post("/api/geoip/auto-update-setting")
-def set_geoip_auto_update_setting(data: GeoIPAutoUpdateSettingRequest, _: bool = Depends(verify_session)):
-    """Set GeoIP auto-update setting"""
-    config = load_config()
-    config['geoip_auto_update'] = data.enabled
-    save_config(config)
+    saved_config = config.get('online_geoip_config', {})
     
-    # Update scheduler
-    scheduler = get_scheduler()
-    if data.enabled:
-        # Schedule daily GeoIP update at 3:00 AM
-        scheduler.add_geoip_update_job()
+    # Merge with current runtime config
+    runtime_config = get_online_geoip_config()
+    
+    return {
+        "preferred_api": saved_config.get('preferred_api', runtime_config.get('preferred_api', 'ip-api.com')),
+        "ipinfo_token": saved_config.get('ipinfo_token', ''),
+        "apis": get_all_geoip_apis()
+    }
+
+@app.post("/api/geoip/online-config")
+def set_online_geoip_api_config(data: OnlineGeoIPConfigRequest, _: bool = Depends(verify_session)):
+    """Set online GeoIP API configuration"""
+    config = load_config()
+    
+    if 'online_geoip_config' not in config:
+        config['online_geoip_config'] = {}
+    
+    if data.preferred_api is not None:
+        config['online_geoip_config']['preferred_api'] = data.preferred_api
+        set_online_geoip_config(preferred_api=data.preferred_api)
+    
+    if data.ipinfo_token is not None:
+        config['online_geoip_config']['ipinfo_token'] = data.ipinfo_token
+        set_online_geoip_config(ipinfo_token=data.ipinfo_token)
+    
+    # Clear cache when config changes
+    clear_online_geoip_cache()
+    
+    save_config(config)
+    return {"success": True, "config": config['online_geoip_config']}
+
+@app.get("/api/geoip/apis")
+def get_geoip_apis(_: bool = Depends(verify_session)):
+    """Get all available GeoIP APIs (builtin + custom)"""
+    return {"apis": get_all_geoip_apis()}
+
+@app.post("/api/geoip/apis")
+def create_custom_geoip_api(data: CustomGeoIPAPIRequest, _: bool = Depends(verify_session)):
+    """Create a custom GeoIP API"""
+    try:
+        new_api = add_custom_geoip_api({
+            "name": data.name,
+            "url": data.url,
+            "token": data.token or "",
+            "limit": data.limit or "",
+            "method": data.method or "GET",
+            "headers": data.headers or {},
+            "country_code_path": data.country_code_path,
+            "country_name_path": data.country_name_path or "",
+            "city_path": data.city_path or "",
+            "success_check": data.success_check or "",
+        })
+        
+        # Save to config
+        config = load_config()
+        if 'online_geoip_config' not in config:
+            config['online_geoip_config'] = {}
+        config['online_geoip_config']['custom_apis'] = get_online_geoip_config().get('custom_apis', [])
+        save_config(config)
+        
+        return {"success": True, "api": new_api}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/geoip/apis/{api_id}")
+def update_geoip_api(api_id: str, data: UpdateCustomGeoIPAPIRequest, _: bool = Depends(verify_session)):
+    """Update a custom GeoIP API"""
+    try:
+        update_data = {k: v for k, v in data.dict().items() if v is not None}
+        updated_api = update_custom_geoip_api(api_id, update_data)
+        
+        # Save to config
+        config = load_config()
+        if 'online_geoip_config' not in config:
+            config['online_geoip_config'] = {}
+        config['online_geoip_config']['custom_apis'] = get_online_geoip_config().get('custom_apis', [])
+        save_config(config)
+        
+        return {"success": True, "api": updated_api}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.delete("/api/geoip/apis/{api_id}")
+def delete_geoip_api(api_id: str, _: bool = Depends(verify_session)):
+    """Delete a custom GeoIP API"""
+    # Check if it's a builtin API
+    if any(api["id"] == api_id for api in BUILTIN_GEOIP_APIS):
+        raise HTTPException(status_code=400, detail="Cannot delete builtin API")
+    
+    if delete_custom_geoip_api(api_id):
+        # Save to config
+        config = load_config()
+        if 'online_geoip_config' not in config:
+            config['online_geoip_config'] = {}
+        config['online_geoip_config']['custom_apis'] = get_online_geoip_config().get('custom_apis', [])
+        save_config(config)
+        
+        return {"success": True}
     else:
-        scheduler.remove_geoip_update_job()
+        raise HTTPException(status_code=404, detail="API not found")
+
+@app.post("/api/geoip/apis/{api_id}/toggle")
+def toggle_geoip_api(api_id: str, data: APIEnabledRequest, _: bool = Depends(verify_session)):
+    """Enable or disable a GeoIP API"""
+    set_api_enabled(api_id, data.enabled)
+    
+    # Save to config
+    config = load_config()
+    if 'online_geoip_config' not in config:
+        config['online_geoip_config'] = {}
+    config['online_geoip_config']['api_settings'] = get_online_geoip_config().get('api_settings', {})
+    save_config(config)
     
     return {"success": True, "enabled": data.enabled}
 
-class GeoIPAutoUpdateRequest(BaseModel):
-    force: Optional[bool] = False  # Force update even if already latest
+class TestBuiltinGeoIPAPIRequest(BaseModel):
+    test_ip: Optional[str] = "8.8.8.8"
 
-@app.post("/api/geoip/auto-update")
-def auto_update_geoip(
-    data: GeoIPAutoUpdateRequest,
-    _: bool = Depends(verify_session)
-):
-    """
-    Auto-update GeoIP database if newer version available.
-    Downloads from the latest GitHub release.
-    """
-    # Check if update is available
-    check_result = check_update_available()
+@app.post("/api/geoip/apis/{api_id}/test")
+def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool = Depends(verify_session)):
+    """Test a GeoIP API with a sample IP"""
+    from geoip_service import lookup_ip_online, _lookup_ip_api_com, _lookup_ipwhois, _lookup_ipinfo, _lookup_custom_api, get_online_geoip_config as get_geoip_config
+    import requests
     
-    if not data.force:
-        if check_result["update_available"] is None:
-            return {
-                "success": False,
-                "message": check_result["message"],
-                "updated": False
-            }
+    test_ip = data.test_ip if data else "8.8.8.8"
+    
+    # Find the API
+    all_apis = get_all_geoip_apis()
+    api = next((a for a in all_apis if a["id"] == api_id), None)
+    
+    if not api:
+        raise HTTPException(status_code=404, detail="API not found")
+    
+    raw_response = None
+    
+    try:
+        result = None
+        # Get raw response for builtin APIs
+        if api_id == "ip-api.com":
+            resp = requests.get(f"http://ip-api.com/json/{test_ip}?lang=zh-CN", timeout=10)
+            if resp.status_code == 200:
+                raw_response = resp.json()
+            result = _lookup_ip_api_com(test_ip)
+        elif api_id == "ipwhois":
+            resp = requests.get(f"https://ipwhois.app/json/{test_ip}?lang=zh-CN", timeout=10)
+            if resp.status_code == 200:
+                raw_response = resp.json()
+            result = _lookup_ipwhois(test_ip)
+        elif api_id == "ipinfo":
+            config = load_config()
+            token = config.get('online_geoip_config', {}).get('ipinfo_token', '')
+            url = f"https://ipinfo.io/{test_ip}/json"
+            if token:
+                url += f"?token={token}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                raw_response = resp.json()
+            result = _lookup_ipinfo(test_ip)
+        elif not api.get("builtin"):
+            # For custom APIs, get the full config with token from runtime config
+            geoip_config = get_geoip_config()
+            custom_apis = geoip_config.get("custom_apis", [])
+            full_api = next((a for a in custom_apis if a["id"] == api_id), None)
+            if full_api:
+                # Make test request to get raw response
+                url = full_api["url"].replace("{ip}", test_ip)
+                token = full_api.get("token", "")
+                if token:
+                    url = url.replace("{key}", token).replace("{token}", token)
+                else:
+                    url = url.replace("{key}", "").replace("{token}", "")
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    raw_response = resp.json()
+                result = _lookup_custom_api(test_ip, full_api)
+            else:
+                result = None
         
-        if not check_result["update_available"]:
+        if result:
             return {
                 "success": True,
-                "message": "已是最新版本，无需更新",
-                "updated": False,
-                "local_version": check_result["local_version"],
-                "latest_version": check_result["latest_version"]
+                "test_ip": test_ip,
+                "result": result,
+                "raw_response": raw_response
             }
-    
-    # Get download URL from latest version info
-    latest_info = check_result.get("latest_version") or get_latest_version_info()
-    download_url = latest_info.get("download_url") if latest_info else None
-    
-    # Download the update
-    result = download_geoip_database(url=download_url)
-    
-    if result["success"]:
-        # Reload the database after download
-        geoip_service.reload()
-        
-        return {
-            "success": True,
-            "message": f"更新成功: {latest_info.get('latest_version', '未知版本')}",
-            "updated": True,
-            "download_result": result,
-            "new_version": get_local_version_info()
-        }
-    else:
+        else:
+            return {
+                "success": False,
+                "test_ip": test_ip,
+                "error": "No result returned",
+                "raw_response": raw_response
+            }
+    except Exception as e:
         return {
             "success": False,
-            "message": result["message"],
-            "updated": False
+            "test_ip": test_ip,
+            "error": str(e),
+            "raw_response": raw_response
         }
+
+@app.post("/api/geoip/test-custom-api")
+def test_custom_geoip_api(data: TestCustomGeoIPAPIRequest, _: bool = Depends(verify_session)):
+    """Test a custom GeoIP API configuration before saving"""
+    from geoip_service import _lookup_custom_api, _auto_detect_json_paths
+    import requests
+    
+    test_ip = data.test_ip or "8.8.8.8"
+    token = data.token or ""
+    
+    # Build API config for testing
+    api_config = {
+        "url": data.url,
+        "token": token,
+        "country_code_path": data.country_code_path or "",
+        "country_name_path": data.country_name_path or "",
+        "city_path": data.city_path or "",
+        "success_check": data.success_check or ""
+    }
+    
+    raw_response = None
+    
+    try:
+        # Make a test request
+        url = api_config["url"].replace("{ip}", test_ip).replace("{key}", token).replace("{token}", token)
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        raw_response = resp.json()
+        
+        # If no field paths specified, try auto-detection
+        if not api_config["country_code_path"]:
+            detected = _auto_detect_json_paths(raw_response)
+            if detected:
+                api_config.update(detected)
+        
+        result = _lookup_custom_api(test_ip, api_config)
+        
+        if result:
+            return {
+                "success": True,
+                "test_ip": test_ip,
+                "result": result,
+                "raw_response": raw_response,
+                "detected_paths": {
+                    "country_code_path": api_config.get("country_code_path", ""),
+                    "country_name_path": api_config.get("country_name_path", ""),
+                    "city_path": api_config.get("city_path", "")
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "test_ip": test_ip,
+                "error": "No result returned - check field paths",
+                "raw_response": raw_response
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "test_ip": test_ip,
+            "error": str(e),
+            "raw_response": raw_response
+        }
+
+@app.post("/api/geoip/clear-online-cache")
+def clear_online_geoip_api_cache(_: bool = Depends(verify_session)):
+    """Clear online GeoIP lookup cache"""
+    clear_online_geoip_cache()
+    return {"success": True, "message": "Cache cleared"}
 
 # ==================== Scheduler API ====================
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize scheduler and load scheduled tasks on startup"""
+    # Start Go speedtest service
+    start_go_speedtest_service()
+    
     # Load saved template from config
     config = load_config()
     if 'template' in config:
@@ -3789,20 +4408,27 @@ async def startup_event():
             ConfigMerger.TEMPLATES['suffix'] = template['suffix']
         print("Custom template loaded from config")
     
+    # Load online GeoIP API config
+    online_geoip_cfg = config.get('online_geoip_config', {})
+    if online_geoip_cfg:
+        set_online_geoip_config(
+            preferred_api=online_geoip_cfg.get('preferred_api'),
+            ipinfo_token=online_geoip_cfg.get('ipinfo_token'),
+            custom_apis=online_geoip_cfg.get('custom_apis'),
+            api_settings=online_geoip_cfg.get('api_settings')
+        )
+        print(f"Online GeoIP API config loaded: {online_geoip_cfg.get('preferred_api', 'ip-api.com')}")
+    
     scheduler.start()
     load_scheduled_subscriptions()
-    
-    # Load GeoIP auto-update setting
-    if config.get('geoip_auto_update', False):
-        scheduler.add_geoip_update_job()
-        print("GeoIP auto-update enabled")
     
     print("Scheduler initialized and tasks loaded")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Stop scheduler on shutdown"""
+    """Stop scheduler and Go service on shutdown"""
     scheduler.stop()
+    stop_go_speedtest_service()
 
 def load_scheduled_subscriptions():
     """Load all subscriptions with cron expressions into scheduler"""
@@ -4105,13 +4731,16 @@ speedtest_service = get_speedtest_service()
 class SpeedTestRequest(BaseModel):
     test_latency: Optional[bool] = True
     test_region: Optional[bool] = False
+    test_speed: Optional[bool] = False
     timeout: Optional[int] = 5000  # milliseconds
+    geoip_api: Optional[str] = None  # API to use for region detection
 
 @app.post("/api/nodes/{sub_id}/{node_idx}/test")
 async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequest = None, _: bool = Depends(verify_session)):
-    """Test a node from subscription by index - TCP latency test and region lookup"""
+    """Test a node from subscription by index - real proxy latency/speed test via Go service"""
     import socket
     import asyncio
+    import httpx
     
     data = data or SpeedTestRequest()
     
@@ -4120,14 +4749,34 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
     
     # Find node and track location for saving
     node = None
-    node_location = None  # ('subscription', sub_id, node_idx) or ('custom', node_idx)
+    node_location = None  # ('subscription', sub_id, node_idx) or ('custom', node_idx) or ('chain', chain_id)
     yaml_nodes = None  # For subscription nodes, keep reference to the full list
+    chain_obj = None  # For chain nodes
+    chain_nodes = []  # For chain proxy testing, list of all nodes in the chain
     
     if sub_id == 'custom':
         custom_nodes = config.get('custom_nodes', [])
         if 0 <= node_idx < len(custom_nodes):
             node = custom_nodes[node_idx]
             node_location = ('custom', node_idx)
+    elif sub_id == 'chain':
+        # Chain proxy - build the full chain for testing
+        chains = config.get('proxy_chains', [])
+        if 0 <= node_idx < len(chains):
+            chain_obj = chains[node_idx]
+            node_location = ('chain', node_idx)
+            # Build the full chain of nodes for testing
+            chain_nodes = []
+            if chain_obj.get('rows') and len(chain_obj['rows']) > 0:
+                first_row = chain_obj['rows'][0]
+                if first_row.get('nodes') and len(first_row['nodes']) > 0:
+                    for node_ref in first_row['nodes']:
+                        chain_node = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
+                        if chain_node:
+                            chain_nodes.append(chain_node)
+                    # Use the last node as the "node" for result display
+                    if chain_nodes:
+                        node = chain_nodes[-1]
     else:
         # Subscription nodes are stored in YAML files, not in config.json
         # Check if subscription exists first
@@ -4154,7 +4803,10 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
         "port": node.get('port', 443),
         "latency": None,
         "region": None,
+        "city": None,
         "exit_ip": None,
+        "speed": None,
+        "peak_speed": None,
         "error": None
     }
     
@@ -4162,19 +4814,63 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
     port = node.get('port', 443)
     need_save = False
     
-    # Test latency using TCP connection
+    # Go speedtest service URL
+    GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
+    
+    # Prepare node config for Go service (remove non-serializable fields)
+    node_config = {k: v for k, v in node.items() if k not in ['geoip', 'last_latency', 'last_latency_time', 'last_speed', 'last_speed_time']}
+    
+    # Prepare chain config if this is a chain proxy test
+    chain_config = None
+    if node_location and node_location[0] == 'chain' and chain_nodes:
+        chain_config = [
+            {k: v for k, v in n.items() if k not in ['geoip', 'last_latency', 'last_latency_time', 'last_speed', 'last_speed_time']}
+            for n in chain_nodes
+        ]
+    
+    # Test latency using Go service (real proxy test)
     if data.test_latency and server:
         try:
-            # Resolve hostname first
+            async with httpx.AsyncClient(timeout=timeout_sec + 5) as client:
+                # Use chain config for chain proxies, otherwise use single node
+                request_data = {
+                    "url": "http://cp.cloudflare.com/generate_204",
+                    "timeout": data.timeout or 5000
+                }
+                if chain_config:
+                    request_data["chain"] = chain_config
+                else:
+                    request_data["node"] = node_config
+                
+                resp = await client.post(
+                    f"{GO_SPEEDTEST_URL}/api/delay",
+                    json=request_data
+                )
+                resp_data = resp.json()
+                
+                if resp_data.get('success'):
+                    latency = resp_data.get('latency', -1)
+                    result["latency"] = latency
+                    node['last_latency'] = latency
+                    node['last_latency_time'] = int(time.time())
+                    need_save = True
+                else:
+                    result["latency"] = -1
+                    result["error"] = resp_data.get('error', 'Unknown error')
+                    node['last_latency'] = -1
+                    node['last_latency_time'] = int(time.time())
+                    need_save = True
+        except httpx.TimeoutException:
+            result["latency"] = -1
+            result["error"] = "Timeout"
+            node['last_latency'] = -1
+            node['last_latency_time'] = int(time.time())
+            need_save = True
+        except Exception as e:
+            # Fallback to TCP test if Go service unavailable
             try:
                 ip = socket.gethostbyname(server)
-            except socket.gaierror:
-                ip = server
-            
-            # TCP connection test
-            start_time = asyncio.get_event_loop().time()
-            
-            try:
+                start_time = asyncio.get_event_loop().time()
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(ip, port),
                     timeout=timeout_sec
@@ -4183,51 +4879,69 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                 writer.close()
                 await writer.wait_closed()
                 result["latency"] = latency
-                
-                # Save latency to node
                 node['last_latency'] = latency
                 node['last_latency_time'] = int(time.time())
                 need_save = True
-            except asyncio.TimeoutError:
-                result["latency"] = -1  # Timeout - use -1 to distinguish from untested (None)
-                node['last_latency'] = -1  # -1 means timeout
+            except Exception as tcp_e:
+                result["latency"] = -2
+                result["error"] = f"Go service error: {e}, TCP fallback error: {tcp_e}"
+                node['last_latency'] = -2
                 node['last_latency_time'] = int(time.time())
                 need_save = True
-            except Exception as e:
-                result["error"] = str(e)
-                result["latency"] = -2  # Error - use -2 to distinguish from timeout
-                node['last_latency'] = -2  # -2 means error
-                node['last_latency_time'] = int(time.time())
-                need_save = True
-        except Exception as e:
-            result["error"] = str(e)
     
-    # Test region - Priority: 1. Node name (flag/keyword), 2. GeoIP database
+    # Test region - Priority: 1. Exit IP via Go service -> GeoIP (country+city), 2. Node name (flag/keyword)
     if data.test_region and server:
         region_info = None
-        node_name = node.get('name', '')
+        exit_ip = None
+        city = None
         
-        # 1. Try to extract from node name first (most reliable)
-        name_country = extract_country_from_name(node_name)
-        if name_country:
-            region_info = {
-                "country": name_country['country'],
-                "country_code": name_country['country_code'],
-                "flag": name_country['flag'],
-            }
-        else:
-            # 2. Fallback to GeoIP database
-            try:
-                geoip = get_geoip_service()
-                geo_data = geoip.get_country(server)
-                if geo_data:
-                    region_info = {
-                        "country": geo_data.get('country_name', ''),
-                        "country_code": geo_data.get('iso_code', ''),
-                        "flag": geo_data.get('flag', ''),
-                    }
-            except Exception:
-                pass
+        # 1. Try to get exit IP via Go service and lookup GeoIP
+        try:
+            async with httpx.AsyncClient(timeout=timeout_sec + 5) as client:
+                # Use chain config for chain proxies
+                request_data = {"timeout": data.timeout or 5000}
+                if chain_config:
+                    request_data["chain"] = chain_config
+                else:
+                    request_data["node"] = node_config
+                
+                resp = await client.post(
+                    f"{GO_SPEEDTEST_URL}/api/ip",
+                    json=request_data
+                )
+                resp_data = resp.json()
+                
+                if resp_data.get('success') and resp_data.get('ip'):
+                    exit_ip = resp_data.get('ip')
+                    result["exit_ip"] = exit_ip
+                    
+                    # Lookup GeoIP using online API
+                    from geoip_service import lookup_ip_online
+                    geoip_api_id = data.geoip_api if data else None
+                    geo_data = lookup_ip_online(exit_ip, api_id=geoip_api_id)
+                    
+                    if geo_data:
+                        region_info = {
+                            "country": geo_data.get('country_name', ''),
+                            "country_code": geo_data.get('iso_code', ''),
+                            "flag": geo_data.get('flag', ''),
+                        }
+                        city = geo_data.get('city')
+                        if city:
+                            result["city"] = city
+        except Exception:
+            pass
+        
+        # 2. Fallback to node name extraction if GeoIP failed
+        if not region_info:
+            node_name = node.get('name', '')
+            name_country = extract_country_from_name(node_name)
+            if name_country:
+                region_info = {
+                    "country": name_country['country'],
+                    "country_code": name_country['country_code'],
+                    "flag": name_country['flag'],
+                }
         
         if region_info:
             result["region"] = region_info
@@ -4237,12 +4951,52 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                 'country': region_info['country'],
                 'country_code': region_info['country_code'],
                 'flag': region_info['flag'],
+                'city': city,
+                'exit_ip': exit_ip,
                 'updated_at': int(time.time())
             }
             need_save = True
         else:
             result["region"] = None
     
+    # Test speed using Go service
+    if data.test_speed and server:
+        try:
+            speedtest_config = config.get('speedtest', {})
+            speed_timeout = speedtest_config.get('timeout', 10)
+            
+            async with httpx.AsyncClient(timeout=speed_timeout + 10) as client:
+                # Use chain config for chain proxies
+                request_data = {
+                    "url": "https://speed.cloudflare.com/__down?bytes=10000000",
+                    "timeout": speed_timeout,
+                    "mode": "peak",
+                    "peakSampleInterval": 100
+                }
+                if chain_config:
+                    request_data["chain"] = chain_config
+                else:
+                    request_data["node"] = node_config
+                
+                resp = await client.post(
+                    f"{GO_SPEEDTEST_URL}/api/speed",
+                    json=request_data
+                )
+                resp_data = resp.json()
+                
+                if resp_data.get('success'):
+                    result["speed"] = round(resp_data.get('speed', 0), 2)
+                    result["peak_speed"] = round(resp_data.get('peakSpeed', 0), 2)
+                    
+                    # Save speed to node
+                    node['last_speed'] = result["speed"]
+                    node['last_peak_speed'] = result["peak_speed"]
+                    node['last_speed_time'] = int(time.time())
+                    need_save = True
+                else:
+                    result["error"] = resp_data.get('error', 'Speed test failed')
+        except Exception as e:
+            result["error"] = f"Speed test error: {e}"
     
     # Save config if any changes were made
     if need_save:
@@ -4262,14 +5016,49 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                         existing_node['last_latency'] = node['last_latency']
                     if 'last_latency_time' in node:
                         existing_node['last_latency_time'] = node['last_latency_time']
+                    if 'last_speed' in node:
+                        existing_node['last_speed'] = node['last_speed']
+                    if 'last_peak_speed' in node:
+                        existing_node['last_peak_speed'] = node['last_peak_speed']
+                    if 'last_speed_time' in node:
+                        existing_node['last_speed_time'] = node['last_speed_time']
                     
                     with open(filepath, 'w', encoding='utf-8') as f:
                         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
             except Exception:
                 pass  # Silently fail saving to YAML
-        else:
+        elif node_location and node_location[0] == 'chain':
+            # Save latency to chain object in config
+            chain_idx = node_location[1]
+            chains = config.get('proxy_chains', [])
+            if 0 <= chain_idx < len(chains):
+                if 'last_latency' in node:
+                    chains[chain_idx]['last_latency'] = node['last_latency']
+                if 'last_latency_time' in node:
+                    chains[chain_idx]['last_latency_time'] = node['last_latency_time']
+                if 'last_speed' in node:
+                    chains[chain_idx]['last_speed'] = node['last_speed']
+                if 'last_speed_time' in node:
+                    chains[chain_idx]['last_speed_time'] = node['last_speed_time']
+                save_config(config)
+        elif node_location and node_location[0] == 'custom':
             # Save to config.json for custom nodes
-            save_config(config)
+            custom_idx = node_location[1]
+            custom_nodes = config.get('custom_nodes', [])
+            if 0 <= custom_idx < len(custom_nodes):
+                if 'geoip' in node:
+                    custom_nodes[custom_idx]['geoip'] = node['geoip']
+                if 'last_latency' in node:
+                    custom_nodes[custom_idx]['last_latency'] = node['last_latency']
+                if 'last_latency_time' in node:
+                    custom_nodes[custom_idx]['last_latency_time'] = node['last_latency_time']
+                if 'last_speed' in node:
+                    custom_nodes[custom_idx]['last_speed'] = node['last_speed']
+                if 'last_peak_speed' in node:
+                    custom_nodes[custom_idx]['last_peak_speed'] = node['last_peak_speed']
+                if 'last_speed_time' in node:
+                    custom_nodes[custom_idx]['last_speed_time'] = node['last_speed_time']
+                save_config(config)
     
     return result
 
@@ -4486,11 +5275,10 @@ def get_stats_overview(_: bool = Depends(verify_session)):
 
 @app.get("/api/stats/nodes-by-country")
 def get_nodes_by_country(_: bool = Depends(verify_session)):
-    """Get node distribution by country (requires GeoIP)"""
+    """Get node distribution by country"""
     config = load_config()
     subs = config.get('subscriptions', [])
     custom_nodes = config.get('custom_nodes', [])
-    geoip = get_geoip_service()
     
     # Keywords to filter out info nodes (not real proxy nodes)
     info_keywords = [
@@ -4579,7 +5367,6 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
     config = load_config()
     subs = config.get('subscriptions', [])
     custom_nodes = config.get('custom_nodes', [])
-    geoip = get_geoip_service()
     
     nodes = []
     # Keywords to filter out info nodes (not real proxy nodes)
@@ -4603,13 +5390,15 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
                 server = node.get('server', '')
                 cached_geoip = node.get('geoip')
                 
-                # Determine country code
+                # Determine country code from cached geoip or node name
                 code = 'Unknown'
                 if cached_geoip and cached_geoip.get('country_code'):
                     code = cached_geoip.get('country_code')
-                elif server:
-                    country = geoip.get_country(server)
-                    code = country.get('iso_code', 'Unknown') if country else 'Unknown'
+                else:
+                    # Try to extract from node name
+                    extracted = extract_country_from_name(name)
+                    if extracted:
+                        code = extracted
                 
                 if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
                     nodes.append({
@@ -4634,16 +5423,15 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
                             if any(kw in name for kw in info_keywords):
                                 continue
                             server = node.get('server', '')
-                            if server:
-                                country = geoip.get_country(server)
-                                code = country.get('iso_code', 'Unknown') if country else 'Unknown'
-                                if code == country_code or (country_code == 'Unknown' and not country):
-                                    nodes.append({
-                                        "name": name,
-                                        "type": node.get('type', ''),
-                                        "server": server,
-                                        "source": sub.get('name', ''),
-                                    })
+                            # Try to extract country from node name
+                            code = extract_country_from_name(name) or 'Unknown'
+                            if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
+                                nodes.append({
+                                    "name": name,
+                                    "type": node.get('type', ''),
+                                    "server": server,
+                                    "source": sub.get('name', ''),
+                                })
                     except:
                         pass
     
@@ -4656,13 +5444,15 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
         server = node.get('server', '')
         cached_geoip = node.get('geoip')
         
-        # Determine country code
+        # Determine country code from cached geoip or node name
         code = 'Unknown'
         if cached_geoip and cached_geoip.get('country_code'):
             code = cached_geoip.get('country_code')
-        elif server:
-            country = geoip.get_country(server)
-            code = country.get('iso_code', 'Unknown') if country else 'Unknown'
+        else:
+            # Try to extract from node name
+            extracted = extract_country_from_name(name)
+            if extracted:
+                code = extracted
         
         if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
             nodes.append({

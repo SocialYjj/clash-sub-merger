@@ -12,7 +12,7 @@ from typing import Optional, Dict, List, Callable, Any
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from geoip_service import get_geoip_service
+# GeoIP lookup is now done via online API in server.py
 
 
 # Default test URLs
@@ -77,7 +77,6 @@ class SpeedTestService:
     
     def __init__(self, config: SpeedTestConfig = None):
         self.config = config or SpeedTestConfig()
-        self.geoip = get_geoip_service()
         self._running_tests: Dict[str, bool] = {}  # Track running tests
     
     async def test_latency(
@@ -256,10 +255,7 @@ class SpeedTestService:
             landing_ip = await self.get_landing_ip(proxy_url)
             if landing_ip:
                 result.landing_ip = landing_ip
-                # Lookup country
-                country = self.geoip.get_country(landing_ip)
-                if country:
-                    result.country = country
+                # Country lookup is done via online API in server.py
             
             # Test speed if requested
             if test_speed:

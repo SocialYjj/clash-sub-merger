@@ -1,232 +1,1144 @@
 """
 GeoIP Service Module
-Provides IP geolocation functionality using MaxMind GeoLite2 database.
+Provides IP geolocation functionality using online APIs.
 """
 
 import os
 import re
-import socket
+import time
 import requests
-from pathlib import Path
-from datetime import datetime
 from typing import Optional, Dict
-from threading import Lock
 from functools import lru_cache
 
+# Traditional to Simplified Chinese converter
 try:
-    import geoip2.database
-    import geoip2.errors
-    GEOIP2_AVAILABLE = True
+    from opencc import OpenCC
+    _t2s_converter = OpenCC('t2s')  # Traditional to Simplified
+    def convert_to_simplified(text: str) -> str:
+        """Convert Traditional Chinese to Simplified Chinese"""
+        if not text:
+            return text
+        return _t2s_converter.convert(text)
 except ImportError:
-    GEOIP2_AVAILABLE = False
+    def convert_to_simplified(text: str) -> str:
+        """Fallback: return text as-is if opencc not available"""
+        return text
 
-# Default database path - Use Country version (smaller, faster, sufficient for our needs)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
-DEFAULT_DB_PATH = os.path.join(DATA_DIR, 'GeoLite2-Country.mmdb')
+# City name translation mapping (English/Romanized/Traditional -> Simplified Chinese)
+CITY_TRANSLATIONS = {
+    # Hong Kong
+    'Tseung Kwan O': '将军澳',
+    'Kowloon City': '九龙城',
+    'Kwun Tong': '观塘',
+    'Sha Tin': '沙田',
+    'Tsuen Wan': '荃湾',
+    'Yuen Long': '元朗',
+    'Tai Po': '大埔',
+    'Tuen Mun': '屯门',
+    'Sai Kung': '西贡',
+    'North': '北区',
+    'Central and Western': '中西区',
+    'Wan Chai': '湾仔',
+    'Eastern': '东区',
+    'Southern': '南区',
+    'Yau Tsim Mong': '油尖旺',
+    'Sham Shui Po': '深水埗',
+    'Wong Tai Sin': '黄大仙',
+    'Kwai Tsing': '葵青',
+    'Islands': '离岛',
+    'Ha Kwai Chung': '下葵涌',
+    'Hong Kong': '香港',
+    'Kowloon': '九龙',
+    'New Territories': '新界',
+    'Causeway Bay': '铜锣湾',
+    'Mong Kok': '旺角',
+    'Tsim Sha Tsui': '尖沙咀',
+    'Aberdeen': '香港仔',
+    'Stanley': '赤柱',
+    'Repulse Bay': '浅水湾',
+    'Lantau Island': '大屿山',
+    'Cheung Chau': '长洲',
+    'Lamma Island': '南丫岛',
+    # Japan
+    'Roppongi': '六本木',
+    'Shibuya': '涩谷',
+    'Shinjuku': '新宿',
+    'Ikebukuro': '池袋',
+    'Ginza': '银座',
+    'Akihabara': '秋叶原',
+    'Ueno': '上野',
+    'Asakusa': '浅草',
+    'Odaiba': '台场',
+    'Shinagawa': '品川',
+    'Meguro': '目黑',
+    'Minato': '港区',
+    'Chiyoda': '千代田',
+    'Chuo': '中央区',
+    'Taito': '台东',
+    'Sumida': '墨田',
+    'Koto': '江东',
+    'Setagaya': '世田谷',
+    'Nakano': '中野',
+    'Suginami': '杉并',
+    'Toshima': '丰岛',
+    'Kita': '北区',
+    'Arakawa': '荒川',
+    'Itabashi': '板桥',
+    'Nerima': '练马',
+    'Adachi': '足立',
+    'Katsushika': '葛饰',
+    'Edogawa': '江户川',
+    'Osaka': '大阪',
+    'Kyoto': '京都',
+    'Yokohama': '横滨',
+    'Nagoya': '名古屋',
+    'Sapporo': '札幌',
+    'Fukuoka': '福冈',
+    'Kobe': '神户',
+    'Kawasaki': '川崎',
+    'Hiroshima': '广岛',
+    'Sendai': '仙台',
+    'Tokyo': '东京',
+    # Japan - More cities
+    'Asagaya': '阿佐谷',
+    'Asagaya-minami': '阿佐谷南',
+    'Togoshi': '户越',
+    'Nishi-Shinjuku': '西新宿',
+    'Higashi-Shinjuku': '东新宿',
+    'Ota': '大田',
+    'Bunkyo': '文京',
+    'Shibuya-ku': '涩谷区',
+    'Shinjuku-ku': '新宿区',
+    'Minato-ku': '港区',
+    'Chiyoda-ku': '千代田区',
+    'Chuo-ku': '中央区',
+    'Shinagawa-ku': '品川区',
+    'Meguro-ku': '目黑区',
+    'Ota-ku': '大田区',
+    'Setagaya-ku': '世田谷区',
+    'Nakano-ku': '中野区',
+    'Suginami-ku': '杉并区',
+    'Toshima-ku': '丰岛区',
+    'Kita-ku': '北区',
+    'Arakawa-ku': '荒川区',
+    'Itabashi-ku': '板桥区',
+    'Nerima-ku': '练马区',
+    'Adachi-ku': '足立区',
+    'Katsushika-ku': '葛饰区',
+    'Edogawa-ku': '江户川区',
+    'Taito-ku': '台东区',
+    'Sumida-ku': '墨田区',
+    'Koto-ku': '江东区',
+    'Bunkyo-ku': '文京区',
+    'Naha': '那霸',
+    'Okinawa': '冲绳',
+    'Chiba': '千叶',
+    'Saitama': '埼玉',
+    'Niigata': '新潟',
+    'Shizuoka': '静冈',
+    'Hamamatsu': '滨松',
+    'Kanazawa': '金泽',
+    'Okayama': '冈山',
+    'Kumamoto': '熊本',
+    'Kagoshima': '鹿儿岛',
+    'Nagasaki': '长崎',
+    'Matsuyama': '松山',
+    'Takamatsu': '高松',
+    'Nara': '奈良',
+    'Wakayama': '和歌山',
+    'Otsu': '大津',
+    'Gifu': '岐阜',
+    'Nagano': '长野',
+    'Toyama': '富山',
+    'Fukui': '福井',
+    'Mito': '水户',
+    'Utsunomiya': '宇都宫',
+    'Maebashi': '前桥',
+    'Kofu': '甲府',
+    'Tsu': '津',
+    'Tokushima': '德岛',
+    'Kochi': '高知',
+    'Saga': '佐贺',
+    'Oita': '大分',
+    'Miyazaki': '宫崎',
+    'Yamagata': '山形',
+    'Morioka': '盛冈',
+    'Akita': '秋田',
+    'Aomori': '青森',
+    'Hakodate': '函馆',
+    'Asahikawa': '旭川',
+    'Kushiro': '釧路',
+    'Obihiro': '带广',
+    # Taiwan (Traditional -> Simplified)
+    'Taipei': '台北',
+    'Kaohsiung': '高雄',
+    'Taichung': '台中',
+    'Tainan': '台南',
+    'Hsinchu': '新竹',
+    'Taoyuan': '桃园',
+    'Keelung': '基隆',
+    '彰化': '彰化',
+    '臺北': '台北',
+    '臺中': '台中',
+    '臺南': '台南',
+    '高雄': '高雄',
+    '新竹': '新竹',
+    '桃園': '桃园',
+    '基隆': '基隆',
+    'Changhua': '彰化',
+    'Zhanghua': '彰化',
+    'Hualien': '花莲',
+    'Yilan': '宜兰',
+    'Pingtung': '屏东',
+    'Nantou': '南投',
+    'Yunlin': '云林',
+    'Chiayi': '嘉义',
+    'Miaoli': '苗栗',
+    'Toufen': '头份',
+    'Toufen Town': '头份',
+    'Toufen City': '头份',
+    'Zhubei': '竹北',
+    'Zhubei City': '竹北',
+    'Banqiao': '板桥',
+    'Sanchong': '三重',
+    'Zhonghe': '中和',
+    'Xinzhuang': '新庄',
+    'Tucheng': '土城',
+    'Luzhou': '芦洲',
+    # Singapore
+    'Singapore': '新加坡',
+    # South Korea
+    'Seoul': '首尔',
+    'Busan': '釜山',
+    'Incheon': '仁川',
+    'Daegu': '大邱',
+    'Daejeon': '大田',
+    'Gwangju': '光州',
+    'Ulsan': '蔚山',
+    'Suwon': '水原',
+    'Guro-gu': '九老区',
+    'Gangnam-gu': '江南区',
+    'Songpa-gu': '松坡区',
+    'Mapo-gu': '麻浦区',
+    'Yeongdeungpo-gu': '永登浦区',
+    # USA
+    'Los Angeles': '洛杉矶',
+    'San Francisco': '旧金山',
+    'San Jose': '圣何塞',
+    'Seattle': '西雅图',
+    'New York': '纽约',
+    'Chicago': '芝加哥',
+    'Dallas': '达拉斯',
+    'Miami': '迈阿密',
+    'Atlanta': '亚特兰大',
+    'Denver': '丹佛',
+    'Phoenix': '凤凰城',
+    'Las Vegas': '拉斯维加斯',
+    'San Diego': '圣迭戈',
+    'Portland': '波特兰',
+    'Boston': '波士顿',
+    'Washington': '华盛顿',
+    'Philadelphia': '费城',
+    'Houston': '休斯顿',
+    'Austin': '奥斯汀',
+    'Silicon Valley': '硅谷',
+    'Santa Clara': '圣克拉拉',
+    'Tukwila': '塔克维拉',
+    'La Puente': '拉蓬特',
+    'Secaucus': '锡考克斯',
+    'Ashburn': '阿什本',
+    'Fremont': '弗里蒙特',
+    'Palo Alto': '帕洛阿尔托',
+    'San Mateo': '圣马特奥',
+    'Mountain View': '山景城',
+    'Sunnyvale': '桑尼维尔',
+    'Cupertino': '库比蒂诺',
+    'Redwood City': '红木城',
+    'Newark': '纽瓦克',
+    'Jersey City': '泽西城',
+    'Buffalo': '布法罗',
+    'Clifton': '克利夫顿',
+    'Piscataway': '皮斯卡塔韦',
+    'Draper': '德雷珀',
+    'Salt Lake City': '盐湖城',
+    'Sacramento': '萨克拉门托',
+    'San Antonio': '圣安东尼奥',
+    'Orlando': '奥兰多',
+    'Tampa': '坦帕',
+    'Charlotte': '夏洛特',
+    'Raleigh': '罗利',
+    'Nashville': '纳什维尔',
+    'Indianapolis': '印第安纳波利斯',
+    'Columbus': '哥伦布',
+    'Detroit': '底特律',
+    'Minneapolis': '明尼阿波利斯',
+    'Kansas City': '堪萨斯城',
+    'St. Louis': '圣路易斯',
+    'New Orleans': '新奥尔良',
+    'Oklahoma City': '俄克拉荷马城',
+    'Albuquerque': '阿尔伯克基',
+    'Tucson': '图森',
+    'Honolulu': '檀香山',
+    'Anchorage': '安克雷奇',
+    # UK
+    'London': '伦敦',
+    'Manchester': '曼彻斯特',
+    'Birmingham': '伯明翰',
+    'Liverpool': '利物浦',
+    'Edinburgh': '爱丁堡',
+    'Glasgow': '格拉斯哥',
+    'Leeds': '利兹',
+    'Sheffield': '谢菲尔德',
+    'Bristol': '布里斯托尔',
+    'Newcastle': '纽卡斯尔',
+    'Nottingham': '诺丁汉',
+    'Southampton': '南安普顿',
+    'Cambridge': '剑桥',
+    'Oxford': '牛津',
+    'Cardiff': '加的夫',
+    'Belfast': '贝尔法斯特',
+    'Abbey Wood': '阿比伍德',
+    # Germany
+    'Frankfurt': '法兰克福',
+    'Berlin': '柏林',
+    'Munich': '慕尼黑',
+    'Hamburg': '汉堡',
+    'Cologne': '科隆',
+    'Dusseldorf': '杜塞尔多夫',
+    'Frankfurt am Main': '法兰克福',
+    'Nuremberg': '纽伦堡',
+    'Stuttgart': '斯图加特',
+    'Hanover': '汉诺威',
+    'Leipzig': '莱比锡',
+    'Dresden': '德累斯顿',
+    'Bonn': '波恩',
+    'Essen': '埃森',
+    'Dortmund': '多特蒙德',
+    'Bremen': '不来梅',
+    # France
+    'Paris': '巴黎',
+    'Marseille': '马赛',
+    'Lyon': '里昂',
+    # Netherlands
+    'Amsterdam': '阿姆斯特丹',
+    'Rotterdam': '鹿特丹',
+    # India
+    'Mumbai': '孟买',
+    'Bengaluru': '班加罗尔',
+    'Bangalore': '班加罗尔',
+    'Delhi': '德里',
+    'New Delhi': '新德里',
+    'Chennai': '金奈',
+    'Hyderabad': '海得拉巴',
+    'Kolkata': '加尔各答',
+    'Pune': '浦那',
+    'Bashettihalli': '巴谢蒂哈利',
+    'Bāshettihalli': '巴谢蒂哈利',
+    'Ahmedabad': '艾哈迈达巴德',
+    'Jaipur': '斋浦尔',
+    'Lucknow': '勒克瑙',
+    'Kanpur': '坎普尔',
+    'Nagpur': '那格浦尔',
+    'Indore': '印多尔',
+    'Thane': '塔那',
+    'Bhopal': '博帕尔',
+    'Visakhapatnam': '维沙卡帕特南',
+    'Patna': '巴特那',
+    'Vadodara': '瓦多达拉',
+    'Ghaziabad': '加济阿巴德',
+    'Ludhiana': '卢迪亚纳',
+    'Agra': '阿格拉',
+    'Nashik': '纳西克',
+    'Faridabad': '法里达巴德',
+    'Meerut': '密拉特',
+    'Rajkot': '拉杰果德',
+    'Varanasi': '瓦拉纳西',
+    'Srinagar': '斯利那加',
+    'Aurangabad': '奥兰加巴德',
+    'Dhanbad': '丹巴德',
+    'Amritsar': '阿姆利则',
+    'Navi Mumbai': '新孟买',
+    'Allahabad': '阿拉哈巴德',
+    'Ranchi': '兰契',
+    'Howrah': '豪拉',
+    'Coimbatore': '哥印拜陀',
+    'Jabalpur': '贾巴尔普尔',
+    'Gwalior': '瓜廖尔',
+    'Vijayawada': '维杰亚瓦达',
+    'Jodhpur': '焦特布尔',
+    'Madurai': '马杜赖',
+    'Raipur': '赖布尔',
+    'Kota': '科塔',
+    'Guwahati': '古瓦哈提',
+    'Chandigarh': '昌迪加尔',
+    'Solapur': '索拉普尔',
+    'Hubli': '胡布利',
+    'Tiruchirappalli': '蒂鲁吉拉帕利',
+    'Bareilly': '巴雷利',
+    'Mysore': '迈索尔',
+    'Tiruppur': '蒂鲁普尔',
+    'Gurgaon': '古尔冈',
+    'Aligarh': '阿里格尔',
+    'Jalandhar': '贾朗达尔',
+    'Bhubaneswar': '布巴内斯瓦尔',
+    'Salem': '塞勒姆',
+    'Warangal': '瓦朗加尔',
+    'Guntur': '贡土尔',
+    'Bhiwandi': '比万迪',
+    'Saharanpur': '萨哈兰普尔',
+    'Gorakhpur': '戈勒克布尔',
+    'Bikaner': '比卡内尔',
+    'Amravati': '阿姆拉瓦蒂',
+    'Noida': '诺伊达',
+    'Jamshedpur': '贾姆谢德布尔',
+    'Bhilai': '比莱',
+    'Cuttack': '卡塔克',
+    'Firozabad': '费罗扎巴德',
+    'Kochi': '科钦',
+    'Nellore': '内洛尔',
+    'Bhavnagar': '巴夫那加尔',
+    'Dehradun': '德拉敦',
+    'Durgapur': '杜尔加布尔',
+    'Asansol': '阿桑索尔',
+    'Rourkela': '鲁尔克拉',
+    'Nanded': '南德德',
+    'Kolhapur': '科尔哈普尔',
+    'Ajmer': '阿杰梅尔',
+    'Akola': '阿科拉',
+    'Gulbarga': '古尔伯加',
+    'Jamnagar': '贾姆讷格尔',
+    'Ujjain': '乌贾因',
+    'Loni': '洛尼',
+    'Siliguri': '西里古里',
+    'Jhansi': '占西',
+    'Ulhasnagar': '乌尔哈斯纳加尔',
+    'Jammu': '查谟',
+    'Sangli-Miraj & Kupwad': '桑格利',
+    'Mangalore': '门格洛尔',
+    'Erode': '埃罗德',
+    'Belgaum': '贝尔高姆',
+    'Ambattur': '安巴图尔',
+    'Tirunelveli': '蒂鲁内尔维利',
+    'Malegaon': '马莱冈',
+    'Gaya': '伽耶',
+    'Jalgaon': '贾尔冈',
+    'Udaipur': '乌代布尔',
+    'Maheshtala': '马赫什塔拉',
+    # Other
+    'Moscow': '莫斯科',
+    'Sydney': '悉尼',
+    'Melbourne': '墨尔本',
+    'Toronto': '多伦多',
+    'Vancouver': '温哥华',
+    'Bangkok': '曼谷',
+    'Dubai': '迪拜',
+    'Istanbul': '伊斯坦布尔',
+    'Kuala Lumpur': '吉隆坡',
+    'Jakarta': '雅加达',
+    'Manila': '马尼拉',
+    'Ho Chi Minh City': '胡志明市',
+    'Hanoi': '河内',
+    # Ukraine
+    'Kyiv': '基辅',
+    'Kiev': '基辅',
+    'Kharkiv': '哈尔科夫',
+    'Odessa': '敖德萨',
+    'Dnipro': '第聂伯罗',
+    'Donetsk': '顿涅茨克',
+    'Zaporizhzhia': '扎波罗热',
+    'Lviv': '利沃夫',
+    'Kryvyi Rih': '克里沃伊罗格',
+    'Mykolaiv': '尼古拉耶夫',
+    'Mariupol': '马里乌波尔',
+    'Luhansk': '卢甘斯克',
+    'Vinnytsia': '文尼察',
+    'Makiivka': '马基耶夫卡',
+    'Simferopol': '辛菲罗波尔',
+    'Sevastopol': '塞瓦斯托波尔',
+    'Kherson': '赫尔松',
+    'Poltava': '波尔塔瓦',
+    'Chernihiv': '切尔尼戈夫',
+    'Cherkasy': '切尔卡瑟',
+    'Sumy': '苏梅',
+    'Zhytomyr': '日托米尔',
+    'Rivne': '罗夫诺',
+    'Ternopil': '捷尔诺波尔',
+    'Ivano-Frankivsk': '伊万诺-弗兰科夫斯克',
+    'Lutsk': '卢茨克',
+    'Uzhhorod': '乌日霍罗德',
+    # Spain
+    'Madrid': '马德里',
+    'Barcelona': '巴塞罗那',
+    'Valencia': '瓦伦西亚',
+    'Seville': '塞维利亚',
+    'Zaragoza': '萨拉戈萨',
+    'Malaga': '马拉加',
+    'Murcia': '穆尔西亚',
+    'Palma': '帕尔马',
+    'Las Palmas': '拉斯帕尔马斯',
+    'Bilbao': '毕尔巴鄂',
+    'Alicante': '阿利坎特',
+    'Cordoba': '科尔多瓦',
+    'Valladolid': '巴利亚多利德',
+    'Vigo': '维戈',
+    'Gijon': '希洪',
+    'Hospitalet': '奥斯皮塔莱特',
+    'Vitoria-Gasteiz': '维多利亚',
+    'Granada': '格拉纳达',
+    'Elche': '埃尔切',
+    'Oviedo': '奥维耶多',
+    'Badalona': '巴达洛纳',
+    'Cartagena': '卡塔赫纳',
+    'Terrassa': '特拉萨',
+    'Jerez de la Frontera': '赫雷斯',
+    'Sabadell': '萨瓦德尔',
+    'Mostoles': '莫斯托莱斯',
+    'Santa Cruz de Tenerife': '圣克鲁斯-德特内里费',
+    'Pamplona': '潘普洛纳',
+    'Almeria': '阿尔梅里亚',
+    'Alcobendas': '阿尔科文达斯',
+    # Nigeria
+    'Lagos': '拉各斯',
+    'Kano': '卡诺',
+    'Ibadan': '伊巴丹',
+    'Abuja': '阿布贾',
+    'Port Harcourt': '哈科特港',
+    'Benin City': '贝宁城',
+    'Maiduguri': '迈杜古里',
+    'Zaria': '扎里亚',
+    'Aba': '阿巴',
+    'Jos': '乔斯',
+    'Ilorin': '伊洛林',
+    'Oyo': '奥约',
+    'Enugu': '埃努古',
+    'Abeokuta': '阿贝奥库塔',
+    'Onitsha': '奥尼查',
+    'Warri': '瓦里',
+    'Sokoto': '索科托',
+    'Calabar': '卡拉巴尔',
+    'Katsina': '卡齐纳',
+    'Akure': '阿库雷',
+    'Bauchi': '包奇',
+    'Ebute Ikorodu': '伊科罗杜',
+    'Makurdi': '马库尔迪',
+    'Minna': '明纳',
+    'Effon-Alaiye': '埃丰阿拉伊耶',
+    'Ilesa': '伊莱沙',
+    'Owo': '奥沃',
+    'Uyo': '乌约',
+    'Ado-Ekiti': '阿多埃基蒂',
+    'Ikeja': '伊凯贾',
+    'Kaduna': '卡杜纳',
+    # China cities
+    'Shenzhen': '深圳',
+    'Shanghai': '上海',
+    'Beijing': '北京',
+    'Guangzhou': '广州',
+    'Chengdu': '成都',
+    'Hangzhou': '杭州',
+    'Wuhan': '武汉',
+    'Xian': '西安',
+    "Xi'an": '西安',
+    'Nanjing': '南京',
+    'Tianjin': '天津',
+    'Suzhou': '苏州',
+    'Chongqing': '重庆',
+    'Dongguan': '东莞',
+    'Shenyang': '沈阳',
+    'Qingdao': '青岛',
+    'Zhengzhou': '郑州',
+    'Dalian': '大连',
+    'Jinan': '济南',
+    'Changsha': '长沙',
+    'Kunming': '昆明',
+    'Harbin': '哈尔滨',
+    'Foshan': '佛山',
+    'Xiamen': '厦门',
+    'Fuzhou': '福州',
+    'Ningbo': '宁波',
+    'Wuxi': '无锡',
+    'Hefei': '合肥',
+    'Nanchang': '南昌',
+    'Changchun': '长春',
+    'Shijiazhuang': '石家庄',
+    'Guiyang': '贵阳',
+    'Nanning': '南宁',
+    'Taiyuan': '太原',
+    'Urumqi': '乌鲁木齐',
+    'Lanzhou': '兰州',
+    'Haikou': '海口',
+    'Yinchuan': '银川',
+    'Xining': '西宁',
+    'Hohhot': '呼和浩特',
+    'Lhasa': '拉萨',
+    'Zhuhai': '珠海',
+    'Zhongshan': '中山',
+    'Huizhou': '惠州',
+    'Jiangmen': '江门',
+    'Shantou': '汕头',
+    'Zhanjiang': '湛江',
+    'Maoming': '茂名',
+    'Yangjiang': '阳江',
+    'Shaoguan': '韶关',
+    'Meizhou': '梅州',
+    'Qingyuan': '清远',
+    'Jieyang': '揭阳',
+    'Chaozhou': '潮州',
+    'Yunfu': '云浮',
+    'Heyuan': '河源',
+    'Shanwei': '汕尾',
+    # Traditional Chinese -> Simplified Chinese
+    '臺': '台',
+    '國': '国',
+    '區': '区',
+    '東': '东',
+    '車': '车',
+    '門': '门',
+    '開': '开',
+    '關': '关',
+    '電': '电',
+    '話': '话',
+    '網': '网',
+    '絡': '络',
+    '機': '机',
+    '場': '场',
+    '塔克維拉': '塔克维拉',
+}
 
-# Default download URL (GitHub mirror) - Country version is smaller and faster
-DEFAULT_DOWNLOAD_URL = "https://git.io/GeoLite2-Country.mmdb"
-ALTERNATIVE_DOWNLOAD_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+# Country/Region display names (for avoiding "香港 香港" style duplicates and normalizing names)
+REGION_DISPLAY_NAMES = {
+    'HK': '中国香港',
+    'MO': '中国澳门',
+    'TW': '中国台湾',
+    'SG': '新加坡',
+}
 
-# GitHub API for checking latest release
-GITHUB_RELEASE_API = "https://api.github.com/repos/P3TERX/GeoLite.mmdb/releases/latest"
+# Country name normalization (GeoIP database name -> preferred display name)
+COUNTRY_NAME_NORMALIZE = {
+    '俄罗斯联邦': '俄罗斯',
+    '大韩民国': '韩国',
+    '朝鲜民主主义人民共和国': '朝鲜',
+    '阿拉伯联合酋长国': '阿联酋',
+    '美利坚合众国': '美国',
+    '大不列颠及北爱尔兰联合王国': '英国',
+    '荷兰王国': '荷兰',
+}
 
-# Fallback to City version if Country not found
-CITY_DB_PATH = os.path.join(DATA_DIR, 'GeoLite2-City.mmdb')
+# Online GeoIP lookup cache (to avoid repeated requests)
+_online_geoip_cache: Dict[str, Dict] = {}
 
-# IP address regex pattern
-IP_PATTERN = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
-IPV6_PATTERN = re.compile(r'^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$')
+# Built-in API definitions
+BUILTIN_GEOIP_APIS = [
+    {
+        "id": "ip-api.com",
+        "name": "ip-api.com",
+        "limit": "45次/分钟",
+        "description": "免费，支持中文，推荐",
+        "builtin": True,
+        "enabled": True,
+    },
+    {
+        "id": "ipwhois",
+        "name": "ipwhois.app",
+        "limit": "10,000次/月",
+        "description": "免费，支持中文",
+        "builtin": True,
+        "enabled": True,
+    },
+    {
+        "id": "ipinfo",
+        "name": "ipinfo.io",
+        "limit": "50,000次/月",
+        "description": "免费额度较高",
+        "builtin": True,
+        "enabled": True,
+        "needs_token": True,
+    },
+]
 
+# Online API configuration
+_online_geoip_config: Dict = {
+    "ipinfo_token": "",
+    "preferred_api": "ip-api.com",
+    "custom_apis": [],  # User-defined custom APIs
+    "api_settings": {},  # Per-API settings like enabled/disabled
+}
 
-def is_ip_address(address: str) -> bool:
-    """Check if the address is an IP address (v4 or v6)"""
-    if not address:
-        return False
-    return bool(IP_PATTERN.match(address) or IPV6_PATTERN.match(address))
+def set_online_geoip_config(ipinfo_token: str = None, preferred_api: str = None, 
+                            custom_apis: list = None, api_settings: dict = None):
+    """Set online GeoIP API configuration"""
+    global _online_geoip_config
+    if ipinfo_token is not None:
+        _online_geoip_config["ipinfo_token"] = ipinfo_token
+    if preferred_api is not None:
+        _online_geoip_config["preferred_api"] = preferred_api
+    if custom_apis is not None:
+        _online_geoip_config["custom_apis"] = custom_apis
+    if api_settings is not None:
+        _online_geoip_config["api_settings"] = api_settings
 
+def get_online_geoip_config() -> Dict:
+    """Get current online GeoIP API configuration"""
+    return _online_geoip_config.copy()
 
-@lru_cache(maxsize=1000)
-def resolve_domain(domain: str) -> Optional[str]:
-    """
-    Resolve domain name to IP address with caching.
-    Returns None if resolution fails.
-    """
-    if not domain:
+def get_all_geoip_apis() -> list:
+    """Get all available GeoIP APIs (builtin + custom)"""
+    apis = []
+    api_settings = _online_geoip_config.get("api_settings", {})
+    
+    # Add builtin APIs
+    for api in BUILTIN_GEOIP_APIS:
+        api_copy = api.copy()
+        # Apply user settings
+        if api["id"] in api_settings:
+            api_copy.update(api_settings[api["id"]])
+        apis.append(api_copy)
+    
+    # Add custom APIs
+    for api in _online_geoip_config.get("custom_apis", []):
+        api_copy = api.copy()
+        api_copy["builtin"] = False
+        # Mask token for security - only indicate if it exists
+        if api_copy.get("token"):
+            api_copy["has_token"] = True
+            api_copy["token"] = ""  # Don't expose actual token
+        apis.append(api_copy)
+    
+    return apis
+
+def add_custom_geoip_api(api_config: dict) -> dict:
+    """Add a custom GeoIP API"""
+    global _online_geoip_config
+    
+    # Validate required fields - only name and url are required now
+    required = ["name", "url"]
+    for field in required:
+        if not api_config.get(field):
+            raise ValueError(f"Missing required field: {field}")
+    
+    # Generate ID
+    api_id = f"custom_{int(time.time() * 1000)}"
+    
+    new_api = {
+        "id": api_id,
+        "name": api_config["name"],
+        "url": api_config["url"],  # URL template with {ip} placeholder
+        "token": api_config.get("token", ""),  # Optional token/API key
+        "limit": api_config.get("limit", ""),  # Optional usage limit display
+        "method": api_config.get("method", "GET"),
+        "headers": api_config.get("headers", {}),
+        "country_code_path": api_config.get("country_code_path", ""),  # JSON path, auto-detected if empty
+        "country_name_path": api_config.get("country_name_path", ""),
+        "city_path": api_config.get("city_path", ""),
+        "success_check": api_config.get("success_check", ""),  # Optional: path to check for success
+        "enabled": True,
+        "builtin": False,
+    }
+    
+    if "custom_apis" not in _online_geoip_config:
+        _online_geoip_config["custom_apis"] = []
+    _online_geoip_config["custom_apis"].append(new_api)
+    
+    return new_api
+
+def update_custom_geoip_api(api_id: str, api_config: dict) -> dict:
+    """Update a custom GeoIP API"""
+    global _online_geoip_config
+    
+    custom_apis = _online_geoip_config.get("custom_apis", [])
+    for i, api in enumerate(custom_apis):
+        if api["id"] == api_id:
+            # Update fields
+            for key in ["name", "url", "token", "limit", "method", "headers", "country_code_path", 
+                       "country_name_path", "city_path", "success_check", "enabled"]:
+                if key in api_config:
+                    custom_apis[i][key] = api_config[key]
+            return custom_apis[i]
+    
+    raise ValueError(f"API not found: {api_id}")
+
+def delete_custom_geoip_api(api_id: str) -> bool:
+    """Delete a custom GeoIP API"""
+    global _online_geoip_config
+    
+    custom_apis = _online_geoip_config.get("custom_apis", [])
+    for i, api in enumerate(custom_apis):
+        if api["id"] == api_id:
+            custom_apis.pop(i)
+            return True
+    
+    return False
+
+def set_api_enabled(api_id: str, enabled: bool):
+    """Enable or disable an API"""
+    global _online_geoip_config
+    
+    if "api_settings" not in _online_geoip_config:
+        _online_geoip_config["api_settings"] = {}
+    
+    if api_id not in _online_geoip_config["api_settings"]:
+        _online_geoip_config["api_settings"][api_id] = {}
+    
+    _online_geoip_config["api_settings"][api_id]["enabled"] = enabled
+
+def _get_json_path(data: dict, path: str):
+    """Get value from nested dict using dot notation path"""
+    if not path:
         return None
     
-    # If it's already an IP, return as-is
-    if is_ip_address(domain):
-        return domain
-    
+    keys = path.split(".")
+    value = data
+    for key in keys:
+        if isinstance(value, dict) and key in value:
+            value = value[key]
+        else:
+            return None
+    return value
+
+def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Optional[Dict]:
+    """Lookup using a custom API configuration"""
     try:
-        # Try to resolve the domain
-        result = socket.gethostbyname(domain)
-        return result
-    except (socket.gaierror, socket.herror, socket.timeout):
+        url = api_config["url"].replace("{ip}", ip)
+        # Replace {key} or {token} placeholder if present
+        token = api_config.get("token", "")
+        if token:
+            url = url.replace("{key}", token).replace("{token}", token)
+        else:
+            # Remove empty placeholders
+            url = url.replace("{key}", "").replace("{token}", "")
+        
+        method = api_config.get("method", "GET").upper()
+        headers = api_config.get("headers", {})
+        
+        if method == "GET":
+            resp = requests.get(url, headers=headers, timeout=timeout)
+        else:
+            resp = requests.post(url, headers=headers, timeout=timeout)
+        
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        
+        # Check success condition if specified
+        success_check = api_config.get("success_check", "")
+        if success_check:
+            # Simple check: "field==value" or just "field" (truthy check)
+            if "==" in success_check:
+                field, expected = success_check.split("==", 1)
+                actual = _get_json_path(data, field.strip())
+                if str(actual) != expected.strip():
+                    return None
+            else:
+                if not _get_json_path(data, success_check):
+                    return None
+        
+        # Get field paths, auto-detect if not specified
+        country_code_path = api_config.get("country_code_path", "")
+        country_name_path = api_config.get("country_name_path", "")
+        city_path = api_config.get("city_path", "")
+        
+        # Auto-detect paths if not specified
+        if not country_code_path:
+            detected = _auto_detect_json_paths(data)
+            if detected:
+                country_code_path = detected.get("country_code_path", "")
+                country_name_path = detected.get("country_name_path", "") or country_name_path
+                city_path = detected.get("city_path", "") or city_path
+        
+        country_code = _get_json_path(data, country_code_path) or "" if country_code_path else ""
+        country_name = _get_json_path(data, country_name_path) or "" if country_name_path else ""
+        city = _get_json_path(data, city_path) or "" if city_path else ""
+        
+        if not country_code:
+            return None
+        
+        return {
+            "countryCode": country_code,
+            "country": country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
+            "city": city
+        }
+    except Exception as e:
+        print(f"Custom API lookup error for {ip}: {e}")
         return None
-    except Exception:
+
+
+def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
+    """Auto-detect common JSON field paths for GeoIP data"""
+    if not isinstance(data, dict):
         return None
+    
+    result = {}
+    
+    # Common field names for country code (2-letter ISO code)
+    country_code_fields = [
+        "countryCode", "country_code", "country_code2", "countrycode", "cc", 
+        "country_iso", "iso_code", "iso", "code", "country_code3"
+    ]
+    
+    # Common field names for country name
+    country_name_fields = [
+        "country", "country_name", "countryName", "nation"
+    ]
+    
+    # Common field names for city
+    city_fields = [
+        "city", "cityName", "city_name"
+    ]
+    
+    def find_field(fields, data, prefix="", check_2letter=False):
+        """Recursively search for field in data"""
+        for field in fields:
+            if field in data:
+                value = data[field]
+                # Country code should be 2 or 3 letter string
+                if check_2letter:
+                    if isinstance(value, str) and 2 <= len(value) <= 3 and value.isupper():
+                        return prefix + field if prefix else field
+                else:
+                    if isinstance(value, str) and value:
+                        return prefix + field if prefix else field
+        
+        # Check nested objects (skip complex nested like currency, time_zone)
+        for key, value in data.items():
+            if isinstance(value, dict) and key not in ['currency', 'time_zone', 'dst_start', 'dst_end']:
+                new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                found = find_field(fields, value, new_prefix, check_2letter)
+                if found:
+                    return found
+        return None
+    
+    # Find country code (check for 2-3 letter codes)
+    code_path = find_field(country_code_fields, data, check_2letter=True)
+    if code_path:
+        result["country_code_path"] = code_path
+    
+    # Find country name
+    name_path = find_field(country_name_fields, data)
+    if name_path:
+        result["country_name_path"] = name_path
+    
+    # Find city
+    city_path = find_field(city_fields, data)
+    if city_path:
+        result["city_path"] = city_path
+    
+    return result if result else None
+
+
+def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
+    """Lookup using ip-api.com (free, 45 req/min, supports Chinese)"""
+    try:
+        resp = requests.get(
+            f"http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,countryCode,city",
+            timeout=timeout
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "success":
+                return {
+                    "countryCode": data.get("countryCode", ""),
+                    "country": data.get("country", ""),
+                    "city": data.get("city", "")
+                }
+    except Exception as e:
+        print(f"ip-api.com lookup error for {ip}: {e}")
+    return None
+
+def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
+    """Lookup using ipwhois.app (free, 10k/month, supports Chinese)"""
+    try:
+        resp = requests.get(
+            f"https://ipwhois.app/json/{ip}?lang=zh-CN",
+            timeout=timeout
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                country_name = data.get("country", "")
+                # Normalize "大韩民国" -> "韩国"
+                country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
+                return {
+                    "countryCode": data.get("country_code", ""),
+                    "country": country_name,
+                    "city": data.get("city", "")
+                }
+    except Exception as e:
+        print(f"ipwhois.app lookup error for {ip}: {e}")
+    return None
+
+def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
+    """Lookup using ipinfo.io (free 50k/month with token)"""
+    try:
+        token = _online_geoip_config.get("ipinfo_token", "")
+        url = f"https://ipinfo.io/{ip}/json"
+        if token:
+            url += f"?token={token}"
+        
+        resp = requests.get(url, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            country_code = data.get("country", "")
+            city = data.get("city", "")
+            
+            # ipinfo doesn't return country name in Chinese, need to map it
+            country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
+            
+            return {
+                "countryCode": country_code,
+                "country": country_name,
+                "city": city
+            }
+    except Exception as e:
+        print(f"ipinfo.io lookup error for {ip}: {e}")
+    return None
+
+# Country code to Chinese name mapping for ipinfo.io
+COUNTRY_NAMES_FROM_CODE = {
+    'HK': '香港', 'TW': '台湾', 'JP': '日本', 'KR': '韩国', 'SG': '新加坡',
+    'US': '美国', 'GB': '英国', 'DE': '德国', 'FR': '法国', 'NL': '荷兰',
+    'RU': '俄罗斯', 'CA': '加拿大', 'AU': '澳大利亚', 'IN': '印度', 'TR': '土耳其',
+    'MY': '马来西亚', 'TH': '泰国', 'VN': '越南', 'ID': '印尼', 'PH': '菲律宾',
+    'BR': '巴西', 'AR': '阿根廷', 'MX': '墨西哥', 'ZA': '南非', 'AE': '阿联酋',
+    'CN': '中国', 'MO': '澳门', 'CY': '塞浦路斯', 'IT': '意大利', 'ES': '西班牙',
+    'PT': '葡萄牙', 'GR': '希腊', 'PL': '波兰', 'CZ': '捷克', 'AT': '奥地利',
+    'CH': '瑞士', 'SE': '瑞典', 'NO': '挪威', 'FI': '芬兰', 'DK': '丹麦',
+    'IE': '爱尔兰', 'BE': '比利时', 'NZ': '新西兰', 'IL': '以色列', 'UA': '乌克兰',
+}
+
+def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:
+    """
+    Lookup IP location using online API
+    Default: ip-api.com (45/min), alternatives: ipwhois (10k/month), ipinfo (needs token), or custom APIs
+    
+    Args:
+        ip: IP address to lookup
+        timeout: Request timeout in seconds
+        api_id: Specific API to use (optional, uses preferred_api from config if not specified)
+    
+    Returns: {"iso_code": "KR", "country_name": "韩国", "city": "首尔", "flag": "🇰🇷"} or None
+    """
+    global _online_geoip_cache
+    
+    # Check cache first
+    cache_key = f"{ip}:{api_id or 'default'}"
+    if cache_key in _online_geoip_cache:
+        return _online_geoip_cache[cache_key]
+    
+    # Determine which API to use
+    target_api = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
+    
+    # Builtin API functions
+    builtin_api_map = {
+        "ip-api.com": _lookup_ip_api_com,
+        "ipwhois": _lookup_ipwhois,
+        "ipinfo": _lookup_ipinfo,
+    }
+    
+    raw_data = None
+    
+    # Check if it's a builtin API
+    if target_api in builtin_api_map:
+        raw_data = builtin_api_map[target_api](ip, timeout)
+    else:
+        # Check if it's a custom API
+        custom_apis = _online_geoip_config.get("custom_apis", [])
+        custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
+        if custom_api and custom_api.get("enabled", True):
+            raw_data = _lookup_custom_api(ip, custom_api, timeout)
+    
+    # If target API failed, try fallback to other enabled APIs
+    if not raw_data and not api_id:  # Only fallback if no specific API was requested
+        for api_name, api_func in builtin_api_map.items():
+            if api_name != target_api:
+                api_settings = _online_geoip_config.get("api_settings", {})
+                if api_settings.get(api_name, {}).get("enabled", True):
+                    raw_data = api_func(ip, timeout)
+                    if raw_data:
+                        break
+    
+    if not raw_data:
+        return None
+    
+    iso_code = raw_data.get("countryCode", "")
+    country_name = raw_data.get("country", "")
+    city = raw_data.get("city", "")
+    
+    # Convert Traditional Chinese to Simplified Chinese
+    country_name = convert_to_simplified(country_name)
+    city = convert_to_simplified(city)
+    
+    # Normalize country name
+    country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
+    # Use special display name for HK/MO/TW/SG
+    display_country = REGION_DISPLAY_NAMES.get(iso_code, country_name)
+    
+    # Translate city name (English -> Chinese)
+    if city:
+        city = translate_city_name(city)
+    
+    result = {
+        "iso_code": iso_code,
+        "country_name": display_country,
+        "city": city if city and city not in display_country else None,
+        "flag": GeoIPService.iso_to_flag(iso_code),
+        "source": "online"
+    }
+    
+    # Cache the result
+    _online_geoip_cache[cache_key] = result
+    return result
+
+def clear_online_geoip_cache():
+    """Clear the online GeoIP lookup cache"""
+    global _online_geoip_cache
+    _online_geoip_cache = {}
+
+def translate_city_name(city_name: str) -> str:
+    """Translate city name to Simplified Chinese if available"""
+    if not city_name:
+        return city_name
+    
+    # Direct translation lookup
+    if city_name in CITY_TRANSLATIONS:
+        return CITY_TRANSLATIONS[city_name]
+    
+    # Try character-by-character Traditional -> Simplified conversion for remaining chars
+    result = city_name
+    for trad, simp in CITY_TRANSLATIONS.items():
+        if len(trad) == 1 and trad in result:
+            result = result.replace(trad, simp)
+    
+    # Convert any remaining Traditional Chinese to Simplified
+    result = convert_to_simplified(result)
+    
+    return result
+
+def format_location_display(country_code: str, country_name: str, city_name: str) -> str:
+    """
+    Format location for display, avoiding duplicates like "香港 香港"
+    Returns: "国家/地区 城市" or just "国家/地区" if city is same as country or empty
+    """
+    # Use special display name for certain regions
+    display_country = REGION_DISPLAY_NAMES.get(country_code, country_name)
+    
+    if not city_name:
+        return display_country
+    
+    # Translate city name
+    translated_city = translate_city_name(city_name)
+    
+    # Avoid duplicates: if city name is same as country/region name, just show country
+    # e.g., "香港" city in "香港" -> just "中国香港"
+    # e.g., "新加坡" city in "新加坡" -> just "新加坡"
+    if translated_city == country_name or translated_city in display_country:
+        return display_country
+    
+    return f"{display_country} {translated_city}"
 
 
 class GeoIPService:
-    """GeoIP database service for IP geolocation"""
-    
-    def __init__(self, db_path: str = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
-        self.reader = None
-        self._lock = Lock()
-        self._load_database()
-    
-    def _load_database(self) -> bool:
-        """Load GeoIP database file"""
-        with self._lock:
-            if self.reader:
-                try:
-                    self.reader.close()
-                except:
-                    pass
-                self.reader = None
-            
-            if not GEOIP2_AVAILABLE:
-                print("Warning: geoip2 library not available")
-                return False
-            
-            # Try primary path first, then fallback to City version
-            db_path = self.db_path
-            if not Path(db_path).exists():
-                # Try City version as fallback
-                if Path(CITY_DB_PATH).exists():
-                    db_path = CITY_DB_PATH
-                    print(f"Country database not found, using City database: {db_path}")
-                else:
-                    print(f"GeoIP database not found: {self.db_path}")
-                    return False
-            
-            try:
-                self.reader = geoip2.database.Reader(db_path)
-                self.db_path = db_path  # Update to actual loaded path
-                size_mb = Path(db_path).stat().st_size / 1024 / 1024
-                print(f"GeoIP database loaded: {db_path} ({size_mb:.2f} MB)")
-                return True
-            except Exception as e:
-                print(f"Failed to load GeoIP database: {e}")
-                return False
-    
-    def reload(self) -> bool:
-        """Reload the database (after update)"""
-        return self._load_database()
-    
-    def is_available(self) -> bool:
-        """Check if GeoIP database is available and loaded"""
-        return self.reader is not None
-    
-    def get_db_info(self) -> Dict:
-        """Get database file information"""
-        path = Path(self.db_path)
-        
-        if not path.exists():
-            return {
-                "available": False,
-                "path": self.db_path,
-                "size": 0,
-                "size_mb": 0,
-                "modified": None,
-                "loaded": False
-            }
-        
-        stat = path.stat()
-        return {
-            "available": True,
-            "path": self.db_path,
-            "size": stat.st_size,
-            "size_mb": round(stat.st_size / 1024 / 1024, 2),
-            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            "loaded": self.reader is not None
-        }
-    
-    def get_country(self, address: str) -> Optional[Dict]:
-        """
-        Get country information for an IP address or domain name.
-        If a domain is provided, it will be resolved to IP first.
-        
-        Returns:
-            {
-                "iso_code": "US",
-                "country_name": "United States",
-                "name_en": "United States",
-                "flag": "🇺🇸",
-                "city": "Los Angeles" (if using City database),
-                "resolved_ip": "1.2.3.4" (if domain was resolved)
-            }
-            or None if lookup fails
-        """
-        if not self.reader:
-            return None
-        
-        if not address:
-            return None
-        
-        # Resolve domain to IP if needed
-        ip = address
-        resolved = False
-        if not is_ip_address(address):
-            resolved_ip = resolve_domain(address)
-            if not resolved_ip:
-                return None
-            ip = resolved_ip
-            resolved = True
-        
-        if ip in ['1.0.0.1', '1.1.1.1']:
-            return {
-                "iso_code": "US",
-                "country_name": "Cloudflare Anycast",
-                "name_en": "United States",
-                "flag": "🇺🇸"
-            }
-
-        try:
-            # Try city lookup first (works with both City and Country databases)
-            try:
-                response = self.reader.city(ip)
-                iso_code = response.country.iso_code
-                city_name = None
-                if hasattr(response, 'city') and response.city:
-                    city_name = response.city.names.get("zh-CN") or response.city.name
-            except:
-                # Fallback to country lookup
-                response = self.reader.country(ip)
-                iso_code = response.country.iso_code
-                city_name = None
-            
-            if not iso_code:
-                return None
-            
-            result = {
-                "iso_code": iso_code,
-                "country_name": response.country.names.get("zh-CN") or response.country.name or iso_code,
-                "name_en": response.country.name or iso_code,
-                "flag": self.iso_to_flag(iso_code)
-            }
-            
-            if city_name:
-                result["city"] = city_name
-            
-            if resolved:
-                result["resolved_ip"] = ip
-            
-            return result
-        except geoip2.errors.AddressNotFoundError:
-            return None
-        except Exception as e:
-            print(f"GeoIP lookup error for {address}: {e}")
-            return None
-    
-    def get_country_code(self, ip: str) -> Optional[str]:
-        """Get just the ISO country code for an IP"""
-        result = self.get_country(ip)
-        return result["iso_code"] if result else None
+    """Static utility class for GeoIP-related functions (flag conversion, etc.)"""
     
     @staticmethod
     def iso_to_flag(iso_code: str) -> str:
@@ -278,302 +1190,3 @@ class GeoIPService:
             return None
         except:
             return None
-    
-    def close(self):
-        """Close the database reader"""
-        with self._lock:
-            if self.reader:
-                try:
-                    self.reader.close()
-                except:
-                    pass
-                self.reader = None
-
-
-def download_geoip_database(
-    url: str = None,
-    save_path: str = None,
-    use_proxy: bool = False,
-    proxy_url: str = None,
-    progress_callback=None
-) -> Dict:
-    """
-    Download GeoIP database from URL
-    
-    Args:
-        url: Download URL (default: GitHub mirror)
-        save_path: Where to save the file
-        use_proxy: Whether to use proxy for download
-        proxy_url: Proxy URL if use_proxy is True
-        progress_callback: Function(downloaded_bytes, total_bytes) for progress
-    
-    Returns:
-        {"success": True/False, "message": str, "path": str}
-    """
-    url = url or DEFAULT_DOWNLOAD_URL
-    save_path = save_path or DEFAULT_DB_PATH
-    
-    proxies = None
-    if use_proxy and proxy_url:
-        proxies = {"http": proxy_url, "https": proxy_url}
-    
-    try:
-        # Create directory if needed
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Download with streaming
-        response = requests.get(url, stream=True, proxies=proxies, timeout=60)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        
-        # Save to temp file first
-        temp_path = save_path + ".tmp"
-        with open(temp_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(downloaded, total_size)
-        
-        # Verify it's a valid mmdb file (basic check)
-        if os.path.getsize(temp_path) < 1000:
-            os.remove(temp_path)
-            return {
-                "success": False,
-                "message": "Downloaded file is too small, may be invalid",
-                "path": None
-            }
-        
-        # Move temp to final location
-        if os.path.exists(save_path):
-            os.remove(save_path)
-        os.rename(temp_path, save_path)
-        
-        size_mb = os.path.getsize(save_path) / 1024 / 1024
-        return {
-            "success": True,
-            "message": f"Database downloaded successfully ({size_mb:.2f} MB)",
-            "path": save_path
-        }
-        
-    except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "message": f"Download failed: {str(e)}",
-            "path": None
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error: {str(e)}",
-            "path": None
-        }
-
-
-# Global instance
-_geoip_service: Optional[GeoIPService] = None
-
-
-def get_geoip_service() -> GeoIPService:
-    """Get or create global GeoIP service instance"""
-    global _geoip_service
-    if _geoip_service is None:
-        _geoip_service = GeoIPService()
-    return _geoip_service
-
-
-def init_geoip_service(db_path: str = None) -> GeoIPService:
-    """Initialize global GeoIP service with custom path"""
-    global _geoip_service
-    _geoip_service = GeoIPService(db_path)
-    return _geoip_service
-
-
-def get_latest_version_info() -> Dict:
-    """
-    Get latest GeoIP database version info from GitHub releases.
-    
-    Returns:
-        {
-            "success": True/False,
-            "latest_version": "2025-01-03" (release tag),
-            "published_at": "2025-01-03T12:00:00Z",
-            "download_url": "https://...",
-            "message": str (error message if failed)
-        }
-    """
-    try:
-        response = requests.get(
-            GITHUB_RELEASE_API,
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=15
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        tag_name = data.get("tag_name", "")
-        published_at = data.get("published_at", "")
-        
-        # Find Country database download URL from assets
-        download_url = None
-        for asset in data.get("assets", []):
-            if "Country" in asset.get("name", "") and asset.get("name", "").endswith(".mmdb"):
-                download_url = asset.get("browser_download_url")
-                break
-        
-        # Fallback to default URL if not found in assets
-        if not download_url:
-            download_url = ALTERNATIVE_DOWNLOAD_URL
-        
-        return {
-            "success": True,
-            "latest_version": tag_name,
-            "published_at": published_at,
-            "download_url": download_url,
-            "message": "OK"
-        }
-    except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "latest_version": None,
-            "published_at": None,
-            "download_url": None,
-            "message": f"Failed to check latest version: {str(e)}"
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "latest_version": None,
-            "published_at": None,
-            "download_url": None,
-            "message": f"Error: {str(e)}"
-        }
-
-
-def get_local_version_info(db_path: str = None) -> Dict:
-    """
-    Get local GeoIP database version info.
-    
-    Returns:
-        {
-            "exists": True/False,
-            "path": str,
-            "size_mb": float,
-            "modified": "2025-01-01 12:00:00",
-            "modified_timestamp": 1704067200,
-            "estimated_version": "2025-01" (based on file modification date)
-        }
-    """
-    path = Path(db_path or DEFAULT_DB_PATH)
-    
-    if not path.exists():
-        return {
-            "exists": False,
-            "path": str(path),
-            "size_mb": 0,
-            "modified": None,
-            "modified_timestamp": None,
-            "estimated_version": None
-        }
-    
-    stat = path.stat()
-    mtime = datetime.fromtimestamp(stat.st_mtime)
-    
-    return {
-        "exists": True,
-        "path": str(path),
-        "size_mb": round(stat.st_size / 1024 / 1024, 2),
-        "modified": mtime.strftime("%Y-%m-%d %H:%M:%S"),
-        "modified_timestamp": int(stat.st_mtime),
-        "estimated_version": mtime.strftime("%Y-%m")
-    }
-
-
-def check_update_available(db_path: str = None) -> Dict:
-    """
-    Check if a newer version of GeoIP database is available.
-    
-    Returns:
-        {
-            "update_available": True/False/None (None if check failed),
-            "local_version": {...},
-            "latest_version": {...},
-            "message": str
-        }
-    """
-    local_info = get_local_version_info(db_path)
-    latest_info = get_latest_version_info()
-    
-    if not latest_info["success"]:
-        return {
-            "update_available": None,
-            "local_version": local_info,
-            "latest_version": None,
-            "message": latest_info["message"]
-        }
-    
-    if not local_info["exists"]:
-        return {
-            "update_available": True,
-            "local_version": local_info,
-            "latest_version": latest_info,
-            "message": "Database not found, download required"
-        }
-    
-    # Compare versions by parsing the release tag (format: YYYY-MM-DD)
-    try:
-        latest_tag = latest_info["latest_version"]
-        # Parse latest version date
-        if latest_tag:
-            latest_date = datetime.strptime(latest_tag, "%Y-%m-%d")
-            local_mtime = datetime.fromtimestamp(local_info["modified_timestamp"])
-            
-            # If latest release is newer than local file by more than 1 day
-            if (latest_date - local_mtime).days > 1:
-                return {
-                    "update_available": True,
-                    "local_version": local_info,
-                    "latest_version": latest_info,
-                    "message": f"发现新版本: {latest_tag}"
-                }
-            else:
-                return {
-                    "update_available": False,
-                    "local_version": local_info,
-                    "latest_version": latest_info,
-                    "message": "已是最新版本"
-                }
-    except Exception:
-        pass
-    
-    # Fallback: compare by published_at timestamp
-    try:
-        published_at = latest_info.get("published_at", "")
-        if published_at:
-            # Parse ISO format: 2025-01-03T12:00:00Z
-            latest_time = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-            local_mtime = datetime.fromtimestamp(local_info["modified_timestamp"])
-            
-            # Make local_mtime timezone-aware for comparison
-            from datetime import timezone
-            local_mtime = local_mtime.replace(tzinfo=timezone.utc)
-            
-            if latest_time > local_mtime:
-                return {
-                    "update_available": True,
-                    "local_version": local_info,
-                    "latest_version": latest_info,
-                    "message": "发现新版本"
-                }
-    except Exception:
-        pass
-    
-    return {
-        "update_available": False,
-        "local_version": local_info,
-        "latest_version": latest_info,
-        "message": "已是最新版本"
-    }

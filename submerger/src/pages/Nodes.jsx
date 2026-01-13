@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2 } from 'lucide-react';
+import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import axios from 'axios';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
@@ -35,8 +35,8 @@ const getLatencyColor = (latency) => {
 const getLatencyBadge = (latency, error) => {
   if (error) return { text: '失败', color: 'bg-red-500/20 text-red-400' };
   if (latency === -2) return { text: '失败', color: 'bg-red-500/20 text-red-400' };  // Error
-  if (latency === -1) return { text: '超时', color: 'bg-orange-500/20 text-orange-400' };  // Timeout
-  if (latency === null) return { text: '超时', color: 'bg-orange-500/20 text-orange-400' };  // Legacy timeout
+  if (latency === -1) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Timeout - red
+  if (latency === null) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Legacy timeout - red
   if (latency === undefined) return { text: '未测', color: 'bg-gray-500/20 text-gray-400' };
   if (latency < 200) return { text: '优秀', color: 'bg-green-500/20 text-green-400' };
   if (latency < 500) return { text: '良好', color: 'bg-lime-500/20 text-lime-400' };
@@ -49,8 +49,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [filterSource, setFilterSource] = useState('all');
   const [filterType, setFilterType] = useState('all');
   const [filterLatencyStatus, setFilterLatencyStatus] = useState('all');
-  const [maxLatency, setMaxLatency] = useState('');
   const [sortBy, setSortBy] = useState('name');
+  const [sortOrder, setSortOrder] = useState('asc');  // 'asc' or 'desc'
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTestSettingsModal, setShowTestSettingsModal] = useState(false);
   const [newNodeLink, setNewNodeLink] = useState('');
@@ -70,8 +70,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [testConcurrency, setTestConcurrency] = useState(5);
   const [testLatency, setTestLatency] = useState(false);
   const [testRegion, setTestRegion] = useState(false);
+  const [testSpeed, setTestSpeed] = useState(false);
   const [showBatchTestMenu, setShowBatchTestMenu] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
+
+  // GeoIP API selection for region detection
+  const [geoipApis, setGeoipApis] = useState([]);
+  const [selectedGeoipApi, setSelectedGeoipApi] = useState('ip-api.com');
 
   // Port mapping state
   const [portMappingNode, setPortMappingNode] = useState(null);  // Node being configured
@@ -81,11 +86,56 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [localPortMappings, setLocalPortMappings] = useState({});  // Local cache: {final_name: port}
   const [portMappingsLoaded, setPortMappingsLoaded] = useState(false);  // Has initial fetch completed?
 
+  // Proxy chain state
+  const [proxyChains, setProxyChains] = useState([]);
+  const [availableChainNodes, setAvailableChainNodes] = useState([]);
+  const [showChainModal, setShowChainModal] = useState(false);
+  const [editingChain, setEditingChain] = useState(null);
+  const [chainName, setChainName] = useState('');
+  const [chainRows, setChainRows] = useState([[null, null]]);
+  const [deleteChainConfirm, setDeleteChainConfirm] = useState({ open: false, chainId: null });
+  const [showAddDropdown, setShowAddDropdown] = useState(false);
+
 
   // Fetch nodes from subscription files
   useEffect(() => {
     fetchAllSubNodes();
   }, [subscriptions]);
+
+  // Fetch proxy chains
+  useEffect(() => {
+    fetchProxyChains();
+    fetchAvailableChainNodes();
+    fetchGeoipApis();
+  }, []);
+
+  const fetchGeoipApis = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/geoip/online-config`);
+      setGeoipApis(res.data.apis || []);
+      setSelectedGeoipApi(res.data.preferred_api || 'ip-api.com');
+    } catch (err) {
+      console.error('Failed to fetch GeoIP APIs', err);
+    }
+  };
+
+  const fetchProxyChains = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/proxy-chains`);
+      setProxyChains(res.data.chains || []);
+    } catch (err) {
+      console.error('Failed to fetch proxy chains', err);
+    }
+  };
+
+  const fetchAvailableChainNodes = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/proxy-chains/available-nodes`);
+      setAvailableChainNodes(res.data.nodes || []);
+    } catch (err) {
+      console.error('Failed to fetch available chain nodes', err);
+    }
+  };
 
   const fetchAllSubNodes = async () => {
     if (!subscriptions?.length) {
@@ -172,16 +222,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         let region = '';
         let flag = '';
         let country = '';
+        let city = '';
 
         if (testResult?.region) {
           region = testResult.region.display || testResult.region.country;
           flag = testResult.region.flag || '';
           country = testResult.region.country || '';
+          city = testResult.city || '';
         } else if (node.region) {
-          // Use backend's region (from extract_country_from_name)
+          // Use backend's region (from saved geoip or extract_country_from_name)
           region = node.region.country || '';
           flag = node.region.flag || '';
           country = node.region.country_code || '';
+          city = node.city || '';  // Read saved city from backend
         } else {
           // Fallback to geoipData lookup
           const geo = geoipData[node.server];
@@ -189,6 +242,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             country = geo.country_name || '';
             flag = geo.flag || '';
             region = country;
+            city = geo.city || '';
           }
         }
 
@@ -202,7 +256,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           flag: flag,
           region: region,
           country: country,
+          city: city,
+          exit_ip: testResult?.exit_ip || node.exit_ip,
           latency: testResult?.latency ?? node.last_latency,
+          speed: testResult?.speed ?? node.last_speed,
           testError: testResult?.error,
           detectedRegion: testResult?.region,
         });
@@ -219,16 +276,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       let region = '';
       let flag = '';
       let country = '';
+      let city = '';
 
       if (testResult?.region) {
         region = testResult.region.display || testResult.region.country;
         flag = testResult.region.flag || '';
         country = testResult.region.country || '';
+        city = testResult.city || '';
       } else if (node.region) {
-        // Use backend's region (from extract_country_from_name)
+        // Use backend's region (from saved geoip or extract_country_from_name)
         region = node.region.country || '';
         flag = node.region.flag || '';
         country = node.region.country_code || '';
+        city = node.city || '';  // Read saved city from backend
       } else {
         // Fallback to geoipData lookup
         const geo = geoipData[node.server];
@@ -236,6 +296,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           country = geo.country_name || '';
           flag = geo.flag || '';
           region = country;
+          city = geo.city || '';
         }
       }
 
@@ -249,14 +310,65 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         flag: flag,
         region: region,
         country: country,
+        city: city,
+        exit_ip: testResult?.exit_ip || node.exit_ip,
         latency: testResult?.latency ?? node.last_latency,
+        speed: testResult?.speed ?? node.last_speed,
         testError: testResult?.error,
         detectedRegion: testResult?.region,
       });
     });
 
+    // Add proxy chain nodes
+    proxyChains?.forEach((chain, chainIdx) => {
+      const nodeKey = `chain-${chain.id}`;
+      const testResult = nodeTestResults[nodeKey];
+
+      // Get region from the last node in the first row (the exit node)
+      let region = '';
+      let flag = '';
+      let country = '';
+      let city = '';
+
+      if (testResult?.region) {
+        region = testResult.region.display || testResult.region.country;
+        flag = testResult.region.flag || '';
+        country = testResult.region.country || '';
+        city = testResult.city || '';
+      }
+
+      // Build chain path for display
+      const firstRow = chain.rows?.[0];
+      const chainPath = firstRow?.nodes?.map(n => n.node_name).join(' → ') || '';
+
+      nodes.push({
+        name: `🔗 ${chain.name}`,
+        display_name: `🔗 ${chain.name}`,
+        final_name: `🔗 ${chain.name}`,
+        type: 'chain',
+        server: chainPath,  // Show chain path as server
+        source: '链式代理',
+        sourceId: 'chain',
+        sourceType: 'chain',
+        idx: chainIdx,
+        chainId: chain.id,
+        nodeKey,
+        flag: flag,
+        region: region,
+        country: country,
+        city: city,
+        exit_ip: testResult?.exit_ip,
+        latency: testResult?.latency ?? chain.last_latency,
+        speed: testResult?.speed ?? chain.last_speed,
+        testError: testResult?.error,
+        detectedRegion: testResult?.region,
+        enabled: chain.enabled,
+        rows: chain.rows,
+      });
+    });
+
     return nodes;
-  }, [subNodes, customNodes, geoipData, nodeTestResults]);
+  }, [subNodes, customNodes, proxyChains, geoipData, nodeTestResults]);
 
 
   // Get unique types and sources
@@ -304,40 +416,54 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
     }
 
-    // Max latency filter
-    if (maxLatency && !isNaN(parseInt(maxLatency))) {
-      const max = parseInt(maxLatency);
-      result = result.filter(n => n.latency !== undefined && n.latency !== null && n.latency <= max);
-    }
-
-    // Primary sort: custom nodes always come first
+    // Primary sort: custom nodes first, then chain nodes, then subscription nodes
     result.sort((a, b) => {
       // Custom nodes first
       if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
       if (a.sourceType !== 'custom' && b.sourceType === 'custom') return 1;
+
+      // Chain nodes second
+      if (a.sourceType === 'chain' && b.sourceType !== 'chain' && b.sourceType !== 'custom') return -1;
+      if (a.sourceType !== 'chain' && a.sourceType !== 'custom' && b.sourceType === 'chain') return 1;
 
       // If both are custom, keep original order (by idx)
       if (a.sourceType === 'custom' && b.sourceType === 'custom') {
         return a.idx - b.idx;
       }
 
-      // For non-custom nodes, apply secondary sort
-      if (sortBy === 'name') return (a.name || '').localeCompare(b.name || '');
-      if (sortBy === 'type') return (a.type || '').localeCompare(b.type || '');
-      if (sortBy === 'source') return (a.source || '').localeCompare(b.source || '');
-      if (sortBy === 'region') return (a.region || '').localeCompare(b.region || '');
+      // If both are chain, keep original order (by idx)
+      if (a.sourceType === 'chain' && b.sourceType === 'chain') {
+        return a.idx - b.idx;
+      }
+
+      // For non-custom nodes, apply secondary sort with direction
+      const dir = sortOrder === 'asc' ? 1 : -1;
+      
+      if (sortBy === 'name') return dir * (a.name || '').localeCompare(b.name || '');
+      if (sortBy === 'type') return dir * (a.type || '').localeCompare(b.type || '');
+      if (sortBy === 'source') return dir * (a.source || '').localeCompare(b.source || '');
+      if (sortBy === 'region') return dir * (a.region || '').localeCompare(b.region || '');
       if (sortBy === 'latency') {
+        // Untested nodes go to the end
+        if (a.latency === undefined && b.latency === undefined) return (a.name || '').localeCompare(b.name || '');
         if (a.latency === undefined) return 1;
         if (b.latency === undefined) return -1;
-        if (a.latency === null) return 1;
-        if (b.latency === null) return -1;
-        return a.latency - b.latency;
+        if (a.latency === null || a.latency < 0) return 1;
+        if (b.latency === null || b.latency < 0) return -1;
+        return dir * (a.latency - b.latency);
+      }
+      if (sortBy === 'speed') {
+        // Untested nodes go to the end
+        if (a.speed === undefined && b.speed === undefined) return (a.name || '').localeCompare(b.name || '');
+        if (a.speed === undefined) return 1;
+        if (b.speed === undefined) return -1;
+        return dir * (a.speed - b.speed);
       }
       return 0;
     });
 
     return result;
-  }, [allNodes, search, filterSource, filterType, filterLatencyStatus, maxLatency, sortBy]);
+  }, [allNodes, search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
 
 
   const getTypeColor = (type) => {
@@ -359,16 +485,22 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setTestingNode(node.nodeKey);
     setTestingType(isRegionTest ? 'region' : 'latency');
     try {
-      const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+      const payload = {
         test_latency: !isRegionTest,
         test_speed: false,
         test_region: isRegionTest,
         timeout: testTimeout
-      });
+      };
+      if (isRegionTest) {
+        payload.geoip_api = selectedGeoipApi;
+      }
+      const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, payload);
       setNodeTestResults(prev => {
         const newResult = { ...prev[node.nodeKey] };
         if (isRegionTest) {
           newResult.region = res.data.region;
+          newResult.city = res.data.city;
+          newResult.exit_ip = res.data.exit_ip;
         } else {
           newResult.latency = res.data.latency;
           newResult.error = false;
@@ -380,6 +512,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         ...prev,
         [node.nodeKey]: { latency: null, error: true }
       }));
+    } finally {
+      setTestingNode(null);
+    }
+  };
+
+  // Test single node speed
+  const testNodeSpeed = async (node) => {
+    setTestingNode(node.nodeKey);
+    setTestingType('speed');
+    try {
+      const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+        test_latency: false,
+        test_speed: true,
+        test_region: false,
+        timeout: testTimeout
+      });
+      setNodeTestResults(prev => ({
+        ...prev,
+        [node.nodeKey]: { ...prev[node.nodeKey], speed: res.data.speed, peak_speed: res.data.peak_speed }
+      }));
+    } catch {
+      // Speed test failed, keep existing data
     } finally {
       setTestingNode(null);
     }
@@ -400,7 +554,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return;
     }
 
-    if (!testLatency && !testRegion) {
+    if (!testLatency && !testRegion && !testSpeed) {
       showToast?.('请至少选择一项检测内容', 'error');
       return;
     }
@@ -408,9 +562,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setShowBatchTestMenu(false);
     setBatchTesting(true);
 
-    const totalSteps = (testLatency ? nodesToTest.length : 0) + (testRegion ? nodesToTest.length : 0);
+    const totalSteps = (testLatency ? nodesToTest.length : 0) + (testRegion ? nodesToTest.length : 0) + (testSpeed ? nodesToTest.length : 0);
     let currentStep = 0;
-    setBatchTestProgress({ current: 0, total: totalSteps, phase: testLatency ? '延迟' : '地区' });
+    const firstPhase = testLatency ? '延迟' : (testRegion ? '地区' : '速度');
+    setBatchTestProgress({ current: 0, total: totalSteps, phase: firstPhase });
 
     // Phase 1: Test latency with concurrency
     if (testLatency) {
@@ -452,11 +607,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               test_latency: false,
               test_speed: false,
               test_region: true,
-              timeout: testTimeout
+              timeout: testTimeout,
+              geoip_api: selectedGeoipApi
             });
             setNodeTestResults(prev => ({
               ...prev,
-              [node.nodeKey]: { ...prev[node.nodeKey], region: res.data.region }
+              [node.nodeKey]: { ...prev[node.nodeKey], region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip }
             }));
           } catch {
             // Region test failed, keep existing data
@@ -464,6 +620,35 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         }));
         currentStep = baseStep + Math.min(i + testConcurrency, nodesToTest.length);
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '地区' });
+      }
+    }
+
+    // Phase 3: Test speed with concurrency (lower concurrency for speed test)
+    if (testSpeed) {
+      const baseStep = (testLatency ? nodesToTest.length : 0) + (testRegion ? nodesToTest.length : 0);
+      setBatchTestProgress(prev => ({ ...prev, phase: '速度' }));
+      // Use lower concurrency for speed test (max 2) to avoid bandwidth saturation
+      const speedConcurrency = Math.min(testConcurrency, 2);
+      for (let i = 0; i < nodesToTest.length; i += speedConcurrency) {
+        const batch = nodesToTest.slice(i, i + speedConcurrency);
+        await Promise.all(batch.map(async (node) => {
+          try {
+            const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+              test_latency: false,
+              test_speed: true,
+              test_region: false,
+              timeout: testTimeout
+            });
+            setNodeTestResults(prev => ({
+              ...prev,
+              [node.nodeKey]: { ...prev[node.nodeKey], speed: res.data.speed, peak_speed: res.data.peak_speed }
+            }));
+          } catch {
+            // Speed test failed, keep existing data
+          }
+        }));
+        currentStep = baseStep + Math.min(i + speedConcurrency, nodesToTest.length);
+        setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '速度' });
       }
     }
 
@@ -534,6 +719,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setNodeTestResults({});
     setSelectedNodes(new Set());
     await fetchAllSubNodes();
+    await fetchProxyChains();
+    await fetchAvailableChainNodes();
     onRefreshCustomNodes?.();
     showToast?.('节点列表已刷新');
   };
@@ -544,7 +731,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setFilterSource('all');
     setFilterType('all');
     setFilterLatencyStatus('all');
-    setMaxLatency('');
+    setSortBy('name');
+    setSortOrder('asc');
   };
 
   // Move custom node up or down
@@ -568,6 +756,174 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       showToast?.('调整失败', 'error');
     }
   };
+
+  // Proxy chain functions
+  const openChainModal = (chain = null) => {
+    if (chain) {
+      setChainName(chain.name);
+      const rows = chain.rows.map(row =>
+        row.nodes.map(node => ({
+          sub_id: node.sub_id,
+          node_index: node.node_index,
+          node_name: node.node_name
+        }))
+      );
+      setChainRows(rows);
+      setEditingChain(chain);
+    } else {
+      setChainName('');
+      setChainRows([[null, null]]);
+      setEditingChain(null);
+    }
+    setShowChainModal(true);
+  };
+
+  const closeChainModal = () => {
+    setShowChainModal(false);
+    setEditingChain(null);
+    setChainName('');
+    setChainRows([[null, null]]);
+  };
+
+  const addChainColumn = (rowIndex) => {
+    setChainRows(prev => {
+      const newRows = [...prev];
+      newRows[rowIndex] = [...newRows[rowIndex], null];
+      return newRows;
+    });
+  };
+
+  const removeChainColumn = (rowIndex, colIndex) => {
+    setChainRows(prev => {
+      const newRows = [...prev];
+      if (newRows[rowIndex].length > 2) {
+        newRows[rowIndex] = newRows[rowIndex].filter((_, i) => i !== colIndex);
+      }
+      return newRows;
+    });
+  };
+
+  const addChainRow = () => {
+    setChainRows(prev => [...prev, [null, null]]);
+  };
+
+  const removeChainRow = (rowIndex) => {
+    if (chainRows.length > 1) {
+      setChainRows(prev => prev.filter((_, i) => i !== rowIndex));
+    }
+  };
+
+  const updateChainNode = (rowIndex, colIndex, nodeKey) => {
+    if (!nodeKey) {
+      setChainRows(prev => {
+        const newRows = [...prev];
+        newRows[rowIndex][colIndex] = null;
+        return newRows;
+      });
+      return;
+    }
+
+    const [subId, nodeIndex] = nodeKey.split('|');
+    const node = availableChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+
+    setChainRows(prev => {
+      const newRows = [...prev];
+      newRows[rowIndex][colIndex] = node ? {
+        sub_id: node.sub_id,
+        node_index: node.node_index,
+        node_name: node.node_name
+      } : null;
+      return newRows;
+    });
+  };
+
+  const getChainNodeKey = (node) => {
+    if (!node) return '';
+    return `${node.sub_id}|${node.node_index}`;
+  };
+
+  const saveChain = async () => {
+    if (!chainName.trim()) {
+      showToast?.('请输入链式代理名称', 'error');
+      return;
+    }
+
+    for (const row of chainRows) {
+      if (row.some(node => !node)) {
+        showToast?.('请选择所有节点', 'error');
+        return;
+      }
+    }
+
+    const payload = {
+      name: chainName.trim(),
+      rows: chainRows.map(row => ({
+        nodes: row.map(node => ({
+          sub_id: node.sub_id,
+          node_index: node.node_index,
+          node_name: node.node_name
+        }))
+      }))
+    };
+
+    try {
+      if (editingChain) {
+        await axios.put(`${API_BASE}/proxy-chains/${editingChain.id}`, payload);
+        showToast?.('链式代理已更新');
+      } else {
+        await axios.post(`${API_BASE}/proxy-chains`, payload);
+        showToast?.('链式代理已创建');
+      }
+      closeChainModal();
+      fetchProxyChains();
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '保存失败', 'error');
+    }
+  };
+
+  const toggleChain = async (chainId) => {
+    try {
+      const res = await axios.put(`${API_BASE}/proxy-chains/${chainId}/toggle`);
+      setProxyChains(prev => prev.map(c =>
+        c.id === chainId ? { ...c, enabled: res.data.enabled } : c
+      ));
+      showToast?.(res.data.enabled ? '已启用' : '已禁用');
+    } catch (err) {
+      showToast?.('操作失败', 'error');
+    }
+  };
+
+  const deleteChain = async (chainId) => {
+    try {
+      await axios.delete(`${API_BASE}/proxy-chains/${chainId}`);
+      setProxyChains(prev => prev.filter(c => c.id !== chainId));
+      showToast?.('链式代理已删除');
+    } catch (err) {
+      showToast?.('删除失败', 'error');
+    }
+    setDeleteChainConfirm({ open: false, chainId: null });
+  };
+
+  const moveChain = async (chainId, direction) => {
+    const chainsList = proxyChains || [];
+    const currentIndex = chainsList.findIndex(c => c.id === chainId);
+    if (currentIndex === -1) return;
+
+    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (newIndex < 0 || newIndex >= chainsList.length) return;
+
+    const newOrder = chainsList.map(c => c.id);
+    [newOrder[currentIndex], newOrder[newIndex]] = [newOrder[newIndex], newOrder[currentIndex]];
+
+    try {
+      await axios.put(`${API_BASE}/proxy-chains/reorder`, { order: newOrder });
+      fetchProxyChains();
+      showToast?.('顺序已调整');
+    } catch (err) {
+      showToast?.('调整失败', 'error');
+    }
+  };
+
 
   // Port mapping functions
   const openPortMapping = (node) => {
@@ -681,10 +1037,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (showBatchTestMenu && !e.target.closest('.batch-test-menu')) {
         setShowBatchTestMenu(false);
       }
+      if (showAddDropdown && !e.target.closest('.add-dropdown')) {
+        setShowAddDropdown(false);
+      }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
-  }, [showBatchTestMenu]);
+  }, [showBatchTestMenu, showAddDropdown]);
 
 
   return (
@@ -708,13 +1067,34 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               </span>
             )}
           </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
-          >
-            <Plus size={18} />
-            添加节点
-          </button>
+          <div className="relative add-dropdown">
+            <button
+              onClick={() => setShowAddDropdown(!showAddDropdown)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+            >
+              <Plus size={18} />
+              添加节点
+              <ChevronDownIcon size={16} />
+            </button>
+            {showAddDropdown && (
+              <div className="absolute right-0 top-full mt-2 w-40 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+                <button
+                  onClick={() => { setShowAddDropdown(false); setShowAddModal(true); }}
+                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-t-lg transition-colors flex items-center gap-2"
+                >
+                  <Server size={16} />
+                  自建节点
+                </button>
+                <button
+                  onClick={() => { setShowAddDropdown(false); openChainModal(); }}
+                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-b-lg transition-colors flex items-center gap-2"
+                >
+                  <Link2 size={16} />
+                  链式代理
+                </button>
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setShowTestSettingsModal(true)}
             className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
@@ -753,10 +1133,20 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     />
                     <span className="text-white text-sm">地区检测</span>
                   </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={testSpeed}
+                      onChange={(e) => setTestSpeed(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                    />
+                    <span className="text-white text-sm">速度检测</span>
+                    <span className="text-xs text-gray-500">(较慢)</span>
+                  </label>
                   <div className="pt-2 border-t border-gray-700">
                     <button
                       onClick={batchTestNodes}
-                      disabled={!testLatency && !testRegion}
+                      disabled={!testLatency && !testRegion && !testSpeed}
                       className="w-full px-3 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
                     >
                       开始检测
@@ -821,20 +1211,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       </div>
 
 
-      {/* Filters Row 2 */}
+      {/* Filters Row 2 - Sort */}
       <div className="flex flex-wrap gap-3 items-center">
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-400">最大延迟</span>
-          <input
-            type="number"
-            value={maxLatency}
-            onChange={(e) => setMaxLatency(e.target.value)}
-            placeholder="ms"
-            className="w-20 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-          />
-          <span className="text-sm text-gray-500">ms</span>
-        </div>
-
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
@@ -845,6 +1223,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <option value="source">按来源</option>
           <option value="region">按地区</option>
           <option value="latency">按延迟</option>
+          <option value="speed">按速度</option>
+        </select>
+
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value)}
+          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+        >
+          <option value="asc">升序 ↑</option>
+          <option value="desc">降序 ↓</option>
         </select>
 
         <button
@@ -859,7 +1247,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       <div className="flex flex-wrap gap-4 text-sm">
         <span className="text-gray-400">
           共 <span className="text-white font-medium">{filteredNodes.length}</span> 个节点
-          {(search || filterSource !== 'all' || filterType !== 'all' || filterLatencyStatus !== 'all' || maxLatency) &&
+          {(search || filterSource !== 'all' || filterType !== 'all' || filterLatencyStatus !== 'all') &&
             <span className="text-gray-500"> (筛选自 {allNodes.length} 个)</span>
           }
         </span>
@@ -894,24 +1282,26 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-700 text-left">
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">
+                  <th className="px-4 py-3 text-sm font-medium text-gray-400 whitespace-nowrap">
                     <button
                       onClick={toggleSelectAll}
-                      className="flex items-center gap-2 hover:text-white transition-colors"
+                      className="flex items-center gap-1 hover:text-white transition-colors"
                     >
                       {selectedNodes.size === filteredNodes.length && filteredNodes.length > 0 ? (
-                        <CheckSquare size={18} className="text-blue-400" />
+                        <CheckSquare size={16} className="text-blue-400" />
                       ) : (
-                        <Square size={18} />
+                        <Square size={16} />
                       )}
-                      全选
+                      <span>全选</span>
                     </button>
                   </th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">节点名称</th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">来源</th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">协议</th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">地区</th>
+                  <th className="px-4 py-3 text-sm font-medium text-gray-400">IP</th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">延迟</th>
+                  <th className="px-4 py-3 text-sm font-medium text-gray-400">速度</th>
                   <th className="px-4 py-3 text-sm font-medium text-gray-400">操作</th>
                 </tr>
               </thead>
@@ -948,9 +1338,27 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            <span className="text-white truncate max-w-[280px]" title={node.final_name}>
+                            {node.sourceType === 'chain' && (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-blue-500/20 text-blue-400 text-xs font-bold">
+                                {node.idx + 1}
+                              </span>
+                            )}
+                            <span className={`text-white truncate max-w-[280px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={node.sourceType === 'chain' ? node.server : node.final_name}>
                               {node.display_name || node.name || '未命名'}
                             </span>
+                            {node.sourceType === 'chain' && (
+                              <button
+                                onClick={() => toggleChain(node.chainId)}
+                                className="text-gray-400 hover:text-white transition-colors"
+                                title={node.enabled ? '点击禁用' : '点击启用'}
+                              >
+                                {node.enabled ? (
+                                  <ToggleRight size={18} className="text-green-400" />
+                                ) : (
+                                  <ToggleLeft size={18} />
+                                )}
+                              </button>
+                            )}
                             {currentMappedPort && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 text-xs font-mono">
                                 :{currentMappedPort}
@@ -959,7 +1367,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`text-sm ${node.sourceType === 'custom' ? 'text-orange-400' : 'text-gray-400'}`}>
+                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : 'text-gray-400'}`}>
                             {node.source}
                           </span>
                         </td>
@@ -969,13 +1377,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </span>
                         </td>
                         <td className="px-4 py-3 text-gray-400 text-sm">
-                          <span className="truncate max-w-[120px] inline-block" title={node.region}>
-                            {node.region || '-'}
+                          <span className="truncate max-w-[150px] inline-block" title={node.city ? `${node.region} ${node.city}` : node.region}>
+                            {node.region || '-'}{node.city ? ` ${node.city}` : ''}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 text-sm">
+                          <span className="truncate max-w-[120px] inline-block font-mono text-xs" title={testResult?.exit_ip || node.exit_ip || ''}>
+                            {testResult?.exit_ip || node.exit_ip || '-'}
                           </span>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            {node.latency !== undefined && node.latency !== null && !node.testError ? (
+                            {node.latency !== undefined && node.latency !== null && node.latency > 0 && !node.testError ? (
                               <span className={`font-mono text-sm ${getLatencyColor(node.latency)}`}>
                                 {node.latency}ms
                               </span>
@@ -987,26 +1400,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </div>
                         </td>
                         <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            {node.speed !== undefined && node.speed > 0 ? (
+                              <span className="font-mono text-sm text-green-400">
+                                {node.speed.toFixed(1)} MB/s
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">
+                                未测
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
                             <button
-                              onClick={() => setEditingNode(node)}
+                              onClick={() => node.sourceType === 'chain' ? openChainModal(proxyChains.find(c => c.id === node.chainId)) : setEditingNode(node)}
                               className="p-1.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
                               title="查看/编辑"
                             >
                               <Edit2 size={16} />
                             </button>
-                            <button
-                              onClick={() => testNode(node)}
-                              disabled={isTesting || batchTesting}
-                              className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
-                              title="测试延迟"
-                            >
-                              {isTesting && testingType === 'latency' ? (
-                                <RefreshCw size={16} className="animate-spin" />
-                              ) : (
-                                <Clock size={16} />
-                              )}
-                            </button>
+                            {/* Region test button */}
                             <button
                               onClick={() => testNode(node, true)}
                               disabled={isTesting || batchTesting}
@@ -1017,6 +1432,32 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 <RefreshCw size={16} className="animate-spin" />
                               ) : (
                                 <Globe size={16} />
+                              )}
+                            </button>
+                            {/* Latency test button */}
+                            <button
+                              onClick={() => testNode(node)}
+                              disabled={isTesting || batchTesting}
+                              className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                              title="测试延迟"
+                            >
+                              {isTesting && testingType === 'latency' && node.nodeKey === testingNode ? (
+                                <RefreshCw size={16} className="animate-spin" />
+                              ) : (
+                                <Clock size={16} />
+                              )}
+                            </button>
+                            {/* Speed test button */}
+                            <button
+                              onClick={() => testNodeSpeed(node)}
+                              disabled={isTesting || batchTesting}
+                              className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
+                              title="测试速度"
+                            >
+                              {isTesting && testingType === 'speed' ? (
+                                <RefreshCw size={16} className="animate-spin" />
+                              ) : (
+                                <Play size={16} />
                               )}
                             </button>
                             <button
@@ -1047,6 +1488,31 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 </button>
                                 <button
                                   onClick={() => confirmDeleteNode(node.id)}
+                                  className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  title="删除"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </>
+                            )}
+                            {node.sourceType === 'chain' && (
+                              <>
+                                <button
+                                  onClick={() => moveChain(node.chainId, 'up')}
+                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  title="上移"
+                                >
+                                  <ChevronUp size={16} />
+                                </button>
+                                <button
+                                  onClick={() => moveChain(node.chainId, 'down')}
+                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  title="下移"
+                                >
+                                  <ChevronDown size={16} />
+                                </button>
+                                <button
+                                  onClick={() => setDeleteChainConfirm({ open: true, chainId: node.chainId })}
                                   className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
@@ -1162,6 +1628,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 />
                 <p className="text-xs text-gray-500 mt-1">同时测试的节点数量，建议 3-10</p>
               </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">地区检测 API</label>
+                <select
+                  value={selectedGeoipApi}
+                  onChange={(e) => setSelectedGeoipApi(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  {geoipApis.filter(api => api.enabled !== false).map(api => (
+                    <option key={api.id} value={api.id}>
+                      {api.name} {api.limit ? `(${api.limit})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">用于检测节点出口 IP 地区的在线 API</p>
+              </div>
             </div>
             <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">
               <button
@@ -1190,7 +1671,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <NodeEditModal
           node={editingNode}
           onClose={() => setEditingNode(null)}
-          onSave={() => onRefreshCustomNodes?.()}
+          onSave={async () => {
+            await onRefreshCustomNodes?.();
+          }}
           showToast={showToast}
         />
       )}
@@ -1329,6 +1812,134 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           </div>
         </div>
       )}
+
+      {/* Proxy Chain Modal */}
+      {showChainModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <h2 className="text-lg font-medium text-white">
+                {editingChain ? '编辑链式代理' : '添加链式代理'}
+              </h2>
+              <button
+                onClick={closeChainModal}
+                className="p-1 text-gray-400 hover:text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 space-y-4">
+              {/* Name Input */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">名称</label>
+                <input
+                  type="text"
+                  value={chainName}
+                  onChange={(e) => setChainName(e.target.value)}
+                  placeholder="例如：美国家宽链路"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* Chain Rows - Vertical Layout */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm text-gray-400">链路配置</label>
+                </div>
+
+                <div className="space-y-4">
+                  {chainRows.map((row, rowIndex) => (
+                    <div key={rowIndex} className="bg-gray-900/50 rounded-lg p-3">
+
+                      {/* Vertical Node Selectors */}
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-500 text-center">我</div>
+                        
+                        {row.map((node, colIndex) => (
+                          <React.Fragment key={colIndex}>
+                            <div className="flex justify-center">
+                              <ArrowRight size={16} className="text-gray-600 rotate-90" />
+                            </div>
+                            <div className="relative">
+                              <select
+                                value={getChainNodeKey(node)}
+                                onChange={(e) => updateChainNode(rowIndex, colIndex, e.target.value)}
+                                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 appearance-none"
+                              >
+                                <option value="">选择节点</option>
+                                {/* Use flat list like node management page */}
+                                {availableChainNodes.map(n => (
+                                  <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
+                                    {n.node_name} ({n.node_type})
+                                  </option>
+                                ))}
+                              </select>
+                              {row.length > 2 && (
+                                <button
+                                  onClick={() => removeChainColumn(rowIndex, colIndex)}
+                                  className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-400"
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
+                          </React.Fragment>
+                        ))}
+
+                        <div className="flex justify-center">
+                          <ArrowRight size={16} className="text-gray-600 rotate-90" />
+                        </div>
+                        <div className="text-sm text-gray-500 text-center">服务</div>
+
+                        <button
+                          onClick={() => addChainColumn(rowIndex)}
+                          className="w-full px-2 py-1.5 text-xs text-blue-400 hover:text-blue-300 border border-blue-400/30 rounded hover:border-blue-400/50 mt-2"
+                        >
+                          + 添加中转节点
+                        </button>
+                      </div>
+
+                      {/* Preview */}
+                      <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
+                        预览: 我 → {row.map(n => n?.node_name || '?').join(' → ')} → 服务
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-2 p-4 border-t border-gray-700">
+              <button
+                onClick={closeChainModal}
+                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={saveChain}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Chain Confirm Modal */}
+      <ConfirmModal
+        isOpen={deleteChainConfirm.open}
+        onClose={() => setDeleteChainConfirm({ open: false, chainId: null })}
+        onConfirm={() => deleteChain(deleteChainConfirm.chainId)}
+        title="删除链式代理"
+        message="确定要删除这个链式代理吗？此操作不可撤销。"
+        type="danger"
+      />
     </div>
   );
 }

@@ -289,35 +289,6 @@ class SchedulerManager:
                 return True
             except Exception:
                 return False
-    
-    def add_geoip_update_job(self):
-        """Add daily GeoIP database update job at 3:00 AM"""
-        from geoip_service import download_geoip_database, get_geoip_service, check_update_available
-        
-        async def update_geoip():
-            """Auto-update GeoIP database if newer version available"""
-            try:
-                check_result = check_update_available()
-                if check_result.get("update_available"):
-                    latest_info = check_result.get("latest_version")
-                    download_url = latest_info.get("download_url") if latest_info else None
-                    result = download_geoip_database(url=download_url)
-                    if result["success"]:
-                        get_geoip_service().reload()
-                        print(f"GeoIP database auto-updated: {latest_info.get('latest_version', 'unknown')}")
-                    else:
-                        print(f"GeoIP auto-update failed: {result['message']}")
-                else:
-                    print("GeoIP database is up to date")
-            except Exception as e:
-                print(f"GeoIP auto-update error: {e}")
-        
-        # Schedule at 3:00 AM daily
-        self.add_job("geoip_auto_update", "0 3 * * *", update_geoip)
-    
-    def remove_geoip_update_job(self):
-        """Remove GeoIP auto-update job"""
-        self.remove_job("geoip_auto_update")
 
 
 # Common cron presets

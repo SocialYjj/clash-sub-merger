@@ -4,9 +4,28 @@
 
 A modern and beautiful subscription aggregation management panel for Clash/Mihomo, supporting multi-subscription merging, custom nodes, user management, and smart format output.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Go](https://img.shields.io/badge/go-1.22+-00ADD8.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-brightgreen.svg)
+
+## 📸 Screenshots
+
+|               Dashboard               |         Node Map         |
+| :-----------------------------------: | :-----------------------: |
+| ![Dashboard](screenshots/dashboard.png) | ![Map](screenshots/map.png) |
+
+|                  Subscriptions                  |             Nodes             |
+| :---------------------------------------------: | :---------------------------: |
+| ![Subscriptions](screenshots/add-subscriptio.png) | ![Nodes](screenshots/nodes.png) |
+
+|              Add Node              |               Templates               |
+| :---------------------------------: | :-----------------------------------: |
+| ![Add Node](screenshots/add-node.png) | ![Templates](screenshots/templates.png) |
+
+|              Settings              |             Users             |
+| :---------------------------------: | :---------------------------: |
+| ![Settings](screenshots/settings.png) | ![Users](screenshots/users.png) |
 
 ## ✨ Features
 
@@ -14,16 +33,35 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 
 - 🔗 **Multi-subscription Aggregation** - Merge multiple subscriptions into one
 - 🛠️ **Custom Nodes** - Add your own nodes (vmess/vless/ss/trojan/hysteria2, etc.)
-- 🔄 **Auto Refresh** - Scheduled subscription updates
+- 📁 **Local Import** - Import subscriptions from local YAML/Base64 files
+- 🔄 **Auto Refresh** - Scheduled subscription updates with Cron expression
 - 📊 **Traffic Statistics** - Display traffic usage and expiration time
 - 🎯 **Drag & Drop Sorting** - Customize node order
 
 ### Node Management
 
-- 🌍 **Global Node Map** - Interactive ECharts visualization
-- 🔍 **Node Testing** - Latency and GeoIP detection
-- 🏷️ **Smart Filtering** - Filter by country, protocol, subscription
+- 🌍 **Global Node Map** - Interactive ECharts world map visualization
+- ⚡ **Go Speedtest Service** - High-performance testing via mihomo library
+  - Delay test (TCP latency)
+  - Speed test with peak mode
+  - Exit IP detection
+- 🌐 **Online GeoIP APIs** - No local database needed
+  - Built-in: ip-api.com (45 req/min, Chinese), ipwhois.app, ipinfo.io
+  - Custom API support with `{ip}` and `{key}` placeholders
+  - Token security protection
+  - City name translations (Tokyo→东京, Seoul→首尔)
+  - Special region display (HK→中国香港, TW→中国台湾)
+- 🔗 **Proxy Chain** - Create chained proxy configurations (Node A → Node B → Target)
+- 🔌 **Port Mapping** - Map nodes to local ports for direct access (generates Clash listeners)
+- 🏷️ **Smart Filtering** - Filter by country, protocol, subscription, latency status
+- ↕️ **Flexible Sorting** - Sort by name, latency, speed (ascending/descending)
 - 📈 **Protocol Distribution** - Pie chart analytics
+
+### Template Management
+
+- 📝 **Custom Templates** - Create and manage Clash configuration templates
+- 🔄 **Placeholder System** - Use `{{ALL_PROXIES}}`, `{{COUNTRY_GROUPS}}` for dynamic content
+- 📤 **Import/Export** - Upload YAML files or create from scratch
 
 ### User Management
 
@@ -43,6 +81,22 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 - 🔐 **Password Protection** - Panel access requires password
 - 🎫 **Token Authentication** - Subscription URL with token
 - 🔑 **Regenerate Token** - Reset subscription token anytime
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Docker Container                  │
+├─────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────────────┐ │
+│  │  Python/FastAPI │◄──►│  Go Speedtest Service   │ │
+│  │   (port 8666)   │    │     (port 9876)         │ │
+│  │                 │    │  - mihomo library       │ │
+│  │  - API Server   │    │  - delay/speed test     │ │
+│  │  - Frontend     │    │  - exit IP detection    │ │
+│  └─────────────────┘    └─────────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
 
 ## 🚀 Quick Deploy
 
@@ -90,11 +144,11 @@ docker-compose up -d --build
 
 ### Subscription Format
 
-| Client              | Format      | Note                               |
-| ------------------- | ----------- | ---------------------------------- |
-| Clash/FlClash/Stash | YAML        | Auto-detect                        |
-| V2RayN/V2RayNG      | Base64      | Auto-detect                        |
-| Shadowrocket        | YAML/Base64 | Auto-detect                        |
+| Client              | Format      | Note                                   |
+| ------------------- | ----------- | -------------------------------------- |
+| Clash/FlClash/Stash | YAML        | Auto-detect                            |
+| V2RayN/V2RayNG      | Base64      | Auto-detect                            |
+| Shadowrocket        | YAML/Base64 | Auto-detect                            |
 | Manual              | -           | `?format=yaml` or `?format=base64` |
 
 ### Supported Protocols
@@ -115,8 +169,8 @@ docker-compose up -d --build
 
 ### Environment Variables
 
-| Variable   | Default     | Description    |
-| ---------- | ----------- | -------------- |
+| Variable     | Default       | Description    |
+| ------------ | ------------- | -------------- |
 | `TZ`       | `UTC`       | Timezone       |
 | `DATA_DIR` | `/app/data` | Data directory |
 | `PORT`     | `8666`      | Server port    |
@@ -162,4 +216,4 @@ npm run build
 
 ## 📄 License
 
-MIT License
+[Apache License 2.0](LICENSE)

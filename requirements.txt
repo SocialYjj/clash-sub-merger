@@ -5,3 +5,5 @@ requests>=2.32.0
 python-multipart>=0.0.20
 geoip2>=4.8.0
 apscheduler>=3.10.0
+httpx>=0.28.0
+opencc-python-reimplemented>=0.1.7

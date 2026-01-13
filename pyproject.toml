@@ -1,6 +1,6 @@
 [project]
 name = "submerger"
-version = "1.0.0"
+version = "2.3.0"
 description = "Modern subscription aggregation management panel for Clash/Mihomo"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,6 +11,8 @@ dependencies = [
     "python-multipart>=0.0.20",
     "geoip2>=4.8.0",
     "apscheduler>=3.10.0",
+    "httpx>=0.28.1",
+    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [tool.uv]

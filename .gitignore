@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info
 .venv/
 venv/
+.pytest_cache/
 
 # Node
 node_modules/
@@ -13,6 +14,10 @@ submerger/node_modules/
 submerger/dist/
 submerger/.vite/
 
+# Go binaries
+speedtest/*.exe
+speedtest/*.exe~
+
 # User Data & Secrets
 uploads/
 data/
@@ -21,10 +26,6 @@ myconfig.yaml
 *.yaml
 !docker-compose.yml
 !submerger/src/**/*.yaml
-
-# GeoIP
-*.mmdb
-GeoLite2*
 
 # Logs
 *.log
@@ -37,6 +38,9 @@ GeoLite2*
 # System
 .DS_Store
 Thumbs.db
+
+# Reference projects (not part of this repo)
+sublinkPro/
 
 # Misc
 uv.lock

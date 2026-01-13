@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Database, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, Download, AlertCircle, CheckCircle, ToggleLeft, ToggleRight, Plus, Trash2, Edit2, X, FileCode, Shuffle } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play } from 'lucide-react';
 import axios from 'axios';
+import ConfirmModal from '../components/ConfirmModal';
 
 const API_BASE = '/api';
 
@@ -515,46 +516,40 @@ export default function Settings({
   onChangePassword,
   showToast
 }) {
-  const [geoipStatus, setGeoipStatus] = useState(null);
-  const [geoipVersion, setGeoipVersion] = useState(null);
-  const [geoipLatest, setGeoipLatest] = useState(null);
-  const [updateCheck, setUpdateCheck] = useState(null);
-  const [geoipLoading, setGeoipLoading] = useState(false);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [speedtestConfig, setSpeedtestConfig] = useState({});
   const [newPassword, setNewPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  
+  // Online GeoIP API config
+  const [onlineGeoipConfig, setOnlineGeoipConfig] = useState({
+    preferred_api: 'ip-api.com',
+    ipinfo_token: '',
+    apis: []
+  });
+  const [ipinfoToken, setIpinfoToken] = useState('');
+  const [savingOnlineConfig, setSavingOnlineConfig] = useState(false);
+  const [showAddApiModal, setShowAddApiModal] = useState(false);
+  const [editingApi, setEditingApi] = useState(null);
+  const [deleteApiConfirm, setDeleteApiConfirm] = useState(null);
+  const [customApiForm, setCustomApiForm] = useState({
+    name: '',
+    url: '',
+    token: '',
+    limit: '',
+    test_ip: '8.8.8.8',
+    country_code_path: '',
+    country_name_path: '',
+    city_path: '',
+    success_check: ''
+  });
+  const [configApiId, setConfigApiId] = useState(null);  // For builtin API config modal (e.g., ipinfo token)
+  const [customApiTestResult, setCustomApiTestResult] = useState(null);  // Test result for custom API
+  const [testingCustomApi, setTestingCustomApi] = useState(false);  // Testing custom API in progress
 
   useEffect(() => {
-    fetchGeoipStatus();
     fetchSpeedtestConfig();
-    checkGeoipUpdate();
-    fetchGeoipAutoUpdateSetting();
+    fetchOnlineGeoipConfig();
   }, []);
-
-  const fetchGeoipStatus = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/geoip/status`);
-      setGeoipStatus(res.data);
-    } catch (err) {
-      console.error('Failed to fetch GeoIP status', err);
-    }
-  };
-
-  const checkGeoipUpdate = async () => {
-    setCheckingUpdate(true);
-    try {
-      const res = await axios.get(`${API_BASE}/geoip/check-update`);
-      setUpdateCheck(res.data);
-      setGeoipVersion(res.data.local_version);
-      setGeoipLatest(res.data.latest_version);
-    } catch (err) {
-      console.error('Failed to check GeoIP update', err);
-    } finally {
-      setCheckingUpdate(false);
-    }
-  };
 
   const fetchSpeedtestConfig = async () => {
     try {
@@ -565,46 +560,190 @@ export default function Settings({
     }
   };
 
-  const fetchGeoipAutoUpdateSetting = async () => {
+  const fetchOnlineGeoipConfig = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/geoip/auto-update-setting`);
-      setAutoUpdateEnabled(res.data.enabled);
+      const res = await axios.get(`${API_BASE}/geoip/online-config`);
+      setOnlineGeoipConfig(res.data);
+      setIpinfoToken(res.data.ipinfo_token || '');
     } catch (err) {
-      console.error('Failed to fetch GeoIP auto-update setting', err);
+      console.error('Failed to fetch online GeoIP config', err);
     }
   };
 
-  const toggleAutoUpdate = async () => {
+  const saveOnlineGeoipConfig = async (preferredApi = null, token = null) => {
+    setSavingOnlineConfig(true);
     try {
-      const newValue = !autoUpdateEnabled;
-      await axios.post(`${API_BASE}/geoip/auto-update-setting`, { enabled: newValue });
-      setAutoUpdateEnabled(newValue);
-      showToast(newValue ? '已开启自动更新' : '已关闭自动更新');
+      const payload = {};
+      if (preferredApi !== null) payload.preferred_api = preferredApi;
+      if (token !== null) payload.ipinfo_token = token;
+      
+      await axios.post(`${API_BASE}/geoip/online-config`, payload);
+      showToast('设置已保存');
+      fetchOnlineGeoipConfig();
     } catch (err) {
-      showToast('设置失败', 'error');
+      showToast('保存失败', 'error');
+    } finally {
+      setSavingOnlineConfig(false);
     }
   };
 
-  const updateGeoipDatabase = async (force = false) => {
-    setGeoipLoading(true);
+  const testGeoipApi = async (apiId) => {
     try {
-      const res = await axios.post(`${API_BASE}/geoip/auto-update`, { force });
+      const res = await axios.post(`${API_BASE}/geoip/apis/${apiId}/test`);
       if (res.data.success) {
-        if (res.data.updated) {
-          showToast('GeoIP 数据库更新成功');
-        } else {
-          showToast(res.data.message);
-        }
-        fetchGeoipStatus();
-        checkGeoipUpdate();
+        const r = res.data.result;
+        showToast(`测试成功: ${r.country} (${r.countryCode}) ${r.city || ''}`);
       } else {
-        showToast(res.data.message, 'error');
+        showToast(`测试失败: ${res.data.error}`, 'error');
       }
     } catch (err) {
-      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
-    } finally {
-      setGeoipLoading(false);
+      showToast('测试失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
+  };
+
+  const toggleApiEnabled = async (apiId, currentEnabled) => {
+    try {
+      await axios.post(`${API_BASE}/geoip/apis/${apiId}/toggle`, { enabled: !currentEnabled });
+      fetchOnlineGeoipConfig();
+      showToast(currentEnabled ? 'API 已禁用' : 'API 已启用');
+    } catch (err) {
+      showToast('操作失败', 'error');
+    }
+  };
+
+  const openEditApiModal = (api) => {
+    setEditingApi(api);
+    
+    // For builtin APIs, set their URL templates
+    let url = api.url || '';
+    if (api.builtin) {
+      if (api.id === 'ip-api.com') {
+        url = 'http://ip-api.com/json/{ip}?lang=zh-CN';
+      } else if (api.id === 'ipwhois') {
+        url = 'https://ipwhois.app/json/{ip}?lang=zh-CN';
+      } else if (api.id === 'ipinfo') {
+        url = 'https://ipinfo.io/{ip}/json?token={key}';
+      }
+    }
+    
+    setCustomApiForm({
+      name: api.name || '',
+      url: url,
+      // Don't load token for security - user can enter new one if needed
+      // For ipinfo builtin, load from global config; for custom APIs, leave empty
+      token: api.id === 'ipinfo' ? (onlineGeoipConfig.ipinfo_token || '') : '',
+      test_ip: '8.8.8.8',
+      country_code_path: api.country_code_path || '',
+      country_name_path: api.country_name_path || '',
+      city_path: api.city_path || '',
+      success_check: api.success_check || '',
+      limit: api.limit || ''  // Load limit field
+    });
+    setCustomApiTestResult(null);
+  };
+
+  const closeApiModal = () => {
+    setShowAddApiModal(false);
+    setEditingApi(null);
+    setCustomApiForm({
+      name: '',
+      url: '',
+      token: '',
+      test_ip: '8.8.8.8',
+      country_code_path: '',
+      country_name_path: '',
+      city_path: '',
+      success_check: '',
+      limit: ''
+    });
+    setCustomApiTestResult(null);
+  };
+
+  const testCustomApi = async () => {
+    if (!customApiForm.url) {
+      showToast('请填写接口地址', 'error');
+      return;
+    }
+    
+    setTestingCustomApi(true);
+    setCustomApiTestResult(null);
+    
+    try {
+      // For builtin APIs, use the existing test endpoint
+      if (editingApi?.builtin) {
+        // For ipinfo, save token first if changed
+        if (editingApi.id === 'ipinfo' && customApiForm.token !== onlineGeoipConfig.ipinfo_token) {
+          await saveOnlineGeoipConfig(null, customApiForm.token);
+        }
+        
+        const res = await axios.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
+          test_ip: customApiForm.test_ip || '8.8.8.8'
+        });
+        setCustomApiTestResult(res.data);
+      } else if (editingApi && !customApiForm.token && editingApi.has_token) {
+        // Editing existing custom API without new token - use saved API's token via API ID
+        const res = await axios.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
+          test_ip: customApiForm.test_ip || '8.8.8.8'
+        });
+        setCustomApiTestResult(res.data);
+      } else {
+        // New custom API or editing with new token
+        const res = await axios.post(`${API_BASE}/geoip/test-custom-api`, {
+          url: customApiForm.url,
+          token: customApiForm.token || '',
+          country_code_path: customApiForm.country_code_path || '',
+          country_name_path: customApiForm.country_name_path || '',
+          city_path: customApiForm.city_path || '',
+          success_check: customApiForm.success_check || '',
+          test_ip: customApiForm.test_ip || '8.8.8.8'
+        });
+        setCustomApiTestResult(res.data);
+      }
+    } catch (err) {
+      setCustomApiTestResult({
+        success: false,
+        error: err.response?.data?.detail || err.message
+      });
+    } finally {
+      setTestingCustomApi(false);
+    }
+  };
+
+  const saveCustomApi = async () => {
+    setSavingOnlineConfig(true);
+    try {
+      // Build payload - only include token if user entered a new one
+      const payload = { ...customApiForm };
+      if (editingApi && !payload.token) {
+        // Don't send empty token when editing - keep existing
+        delete payload.token;
+      }
+      
+      if (editingApi) {
+        await axios.put(`${API_BASE}/geoip/apis/${editingApi.id}`, payload);
+        showToast('API 已更新');
+      } else {
+        await axios.post(`${API_BASE}/geoip/apis`, payload);
+        showToast('API 已添加');
+      }
+      closeApiModal();
+      fetchOnlineGeoipConfig();
+    } catch (err) {
+      showToast('保存失败: ' + (err.response?.data?.detail || err.message), 'error');
+    } finally {
+      setSavingOnlineConfig(false);
+    }
+  };
+
+  const deleteCustomApi = async (apiId) => {
+    try {
+      await axios.delete(`${API_BASE}/geoip/apis/${apiId}`);
+      showToast('API 已删除');
+      fetchOnlineGeoipConfig();
+    } catch (err) {
+      showToast('删除失败', 'error');
+    }
+    setDeleteApiConfirm(null);
   };
 
   const copySubUrl = () => {
@@ -630,138 +769,246 @@ export default function Settings({
       {/* Admin Token Management */}
       <AdminTokenSection showToast={showToast} />
 
-      {/* GeoIP Settings */}
+      {/* Online GeoIP API Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
         <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <Database size={20} />
-          GeoIP 数据库
+          <Globe size={20} />
+          在线 IP 查询 API
         </h2>
-
+        
         <div className="space-y-4">
-          {/* Auto Update Toggle */}
-          <div className="flex items-center justify-between bg-gray-700/50 rounded-lg p-4">
-            <div>
-              <div className="text-white font-medium">自动更新</div>
-              <div className="text-xs text-gray-400 mt-1">每天自动检查并更新 GeoIP 数据库</div>
-            </div>
-            <button
-              onClick={toggleAutoUpdate}
-              className={`p-1 rounded-lg transition-colors ${autoUpdateEnabled ? 'text-green-400' : 'text-gray-500'}`}
-            >
-              {autoUpdateEnabled ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
-            </button>
-          </div>
-
-          {/* Version Info */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Local Version */}
-            <div className="bg-gray-700/50 rounded-lg p-4">
-              <div className="text-sm text-gray-400 mb-2">本地版本</div>
-              {geoipVersion?.exists ? (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${geoipStatus?.loaded ? 'bg-green-400' : 'bg-red-400'}`}></span>
-                    <span className="text-white font-medium">
-                      {geoipVersion.estimated_version || '未知'}
-                    </span>
+          <p className="text-sm text-gray-400">
+            节点地区检测时使用在线 API 查询出口 IP 的地理位置
+          </p>
+          
+          {/* API List */}
+          <div className="space-y-2">
+            {(onlineGeoipConfig.apis || []).map(api => (
+              <div
+                key={api.id}
+                className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer ${
+                  api.enabled !== false
+                    ? 'bg-gray-700/50 border border-gray-600 hover:border-gray-500'
+                    : 'bg-gray-800/50 border border-gray-700 opacity-60'
+                }`}
+                onClick={() => openEditApiModal(api)}
+              >
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-white font-medium">{api.name}</span>
+                    {api.builtin ? (
+                      <span className="text-xs px-1.5 py-0.5 bg-blue-600/30 text-blue-400 rounded">内置</span>
+                    ) : (
+                      <span className="text-xs px-1.5 py-0.5 bg-purple-600/30 text-purple-400 rounded">自定义</span>
+                    )}
+                    {api.limit && (
+                      <span className="text-xs px-1.5 py-0.5 bg-gray-600 rounded text-gray-300">{api.limit}</span>
+                    )}
                   </div>
-                  <div className="text-xs text-gray-500">
-                    大小: {geoipVersion.size_mb} MB
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    更新: {geoipVersion.modified}
-                  </div>
+                  {api.description && (
+                    <div className="text-xs text-gray-400 mt-0.5">{api.description}</div>
+                  )}
+                  {!api.builtin && api.url && (
+                    <div className="text-xs text-gray-500 mt-0.5 truncate max-w-md">{api.url}</div>
+                  )}
                 </div>
-              ) : (
-                <div className="flex items-center gap-2 text-yellow-400">
-                  <AlertCircle size={16} />
-                  <span>未安装</span>
+                
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  {/* Delete button for custom APIs */}
+                  {!api.builtin && (
+                    <button
+                      onClick={() => setDeleteApiConfirm(api.id)}
+                      className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded transition-colors"
+                      title="删除"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          
+          {/* Add custom API button */}
+          <button
+            onClick={() => setShowAddApiModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+          >
+            <Plus size={18} />
+            添加自定义 API
+          </button>
+        </div>
+      </div>
+
+      {/* Add/Edit Custom API Modal */}
+      {(showAddApiModal || editingApi) && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">
+                {editingApi?.builtin ? `${editingApi.name} 配置` : (editingApi ? '编辑自定义 API' : '添加自定义 API')}
+              </h3>
+              <button onClick={closeApiModal} className="text-gray-400 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              {/* 1. Name */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">名称</label>
+                <input
+                  type="text"
+                  value={customApiForm.name}
+                  onChange={(e) => setCustomApiForm({...customApiForm, name: e.target.value})}
+                  placeholder="例如: ipgeolocation.io"
+                  disabled={editingApi?.builtin}
+                  className={`w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                />
+              </div>
+              
+              {/* 2. API URL */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">
+                  接口地址
+                  <span className="text-gray-500 ml-1">（用 {'{ip}'} 和 {'{key}'} 作为占位符）</span>
+                </label>
+                <input
+                  type="text"
+                  value={customApiForm.url}
+                  onChange={(e) => setCustomApiForm({...customApiForm, url: e.target.value})}
+                  placeholder="例如: https://api.ipgeolocation.io/ipgeo?apiKey={key}&ip={ip}&lang=cn"
+                  disabled={editingApi?.builtin}
+                  className={`w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                />
+              </div>
+              
+              {/* 3. Token/API Key (optional) */}
+              {(!editingApi?.builtin || editingApi?.needs_token) && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">
+                    Token / API Key
+                    <span className="text-gray-500 ml-1">（可选，如不需要留空）</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={customApiForm.token || ''}
+                    onChange={(e) => setCustomApiForm({...customApiForm, token: e.target.value})}
+                    placeholder={editingApi?.has_token ? '已配置，留空则不修改' : '如果API需要认证，填入Token或API Key'}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                  />
+                  {/* Preview URL - mask the key */}
+                  {customApiForm.url && (
+                    <p className="text-xs text-gray-500 mt-1 font-mono break-all">
+                      预览: {customApiForm.url
+                        .replace('{ip}', customApiForm.test_ip || '8.8.8.8')
+                        .replace('{key}', (customApiForm.token || editingApi?.has_token) ? '***' : '')
+                        .replace('{token}', (customApiForm.token || editingApi?.has_token) ? '***' : '')}
+                    </p>
+                  )}
                 </div>
               )}
-            </div>
-
-            {/* Latest Version */}
-            <div className="bg-gray-700/50 rounded-lg p-4">
-              <div className="text-sm text-gray-400 mb-2">最新版本</div>
-              {checkingUpdate ? (
-                <div className="flex items-center gap-2 text-gray-400">
-                  <RefreshCw size={16} className="animate-spin" />
-                  <span>检查中...</span>
+              
+              {/* 4. Test IP */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">测试 IP</label>
+                <input
+                  type="text"
+                  value={customApiForm.test_ip || '8.8.8.8'}
+                  onChange={(e) => setCustomApiForm({...customApiForm, test_ip: e.target.value})}
+                  placeholder="8.8.8.8"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                />
+              </div>
+              
+              {/* 5. Usage Limit (custom APIs only) */}
+              {!editingApi?.builtin && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">
+                    用量限制
+                    <span className="text-gray-500 ml-1">（可选，仅作显示用）</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={customApiForm.limit || ''}
+                    onChange={(e) => setCustomApiForm({...customApiForm, limit: e.target.value})}
+                    placeholder="例如: 1000次/天 或 30000次/月"
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 text-sm"
+                  />
                 </div>
-              ) : geoipLatest?.success ? (
-                <div className="space-y-1">
-                  <div className="text-white font-medium">
-                    {geoipLatest.latest_version || '未知'}
-                  </div>
-                  {geoipLatest.published_at && (
-                    <div className="text-xs text-gray-500">
-                      发布: {new Date(geoipLatest.published_at).toLocaleDateString('zh-CN')}
+              )}
+              
+              {/* Test Result */}
+              {customApiTestResult && (
+                <div className={`p-3 rounded-lg ${customApiTestResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                  {customApiTestResult.success ? (
+                    <div className="space-y-2">
+                      <div className="text-green-400 text-sm flex items-center gap-2">
+                        <CheckCircle size={16} />
+                        <span>测试成功: {customApiTestResult.result?.country} ({customApiTestResult.result?.countryCode}) {customApiTestResult.result?.city || ''}</span>
+                      </div>
+                      {customApiTestResult.raw_response && (
+                        <details className="text-xs">
+                          <summary className="text-gray-400 cursor-pointer hover:text-gray-300">查看原始响应</summary>
+                          <pre className="mt-2 p-2 bg-gray-900/50 rounded text-gray-300 overflow-x-auto max-h-40 overflow-y-auto">
+                            {JSON.stringify(customApiTestResult.raw_response, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-red-400 text-sm">
+                      <AlertCircle size={16} className="inline mr-2" />
+                      测试失败: {customApiTestResult.error}
                     </div>
                   )}
                 </div>
-              ) : (
-                <div className="flex items-center gap-2 text-red-400">
-                  <AlertCircle size={16} />
-                  <span className="text-sm">检查失败</span>
-                </div>
               )}
             </div>
-          </div>
-
-          {/* Update Status */}
-          {updateCheck && (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${updateCheck.update_available === true
-              ? 'bg-blue-500/10 text-blue-400'
-              : updateCheck.update_available === false
-                ? 'bg-green-500/10 text-green-400'
-                : 'bg-yellow-500/10 text-yellow-400'
-              }`}>
-              {updateCheck.update_available === true ? (
-                <Download size={16} />
-              ) : updateCheck.update_available === false ? (
-                <CheckCircle size={16} />
-              ) : (
-                <AlertCircle size={16} />
-              )}
-              <span className="text-sm">{updateCheck.message}</span>
+            
+            <div className="flex justify-between gap-2 mt-6">
+              <button
+                onClick={testCustomApi}
+                disabled={testingCustomApi || !customApiForm.url}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                <Play size={16} className={testingCustomApi ? 'animate-pulse' : ''} />
+                {testingCustomApi ? '测试中...' : '测试'}
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={closeApiModal}
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                >
+                  {editingApi?.builtin ? '关闭' : '取消'}
+                </button>
+                {!editingApi?.builtin && (
+                  <button
+                    onClick={saveCustomApi}
+                    disabled={savingOnlineConfig || !customApiForm.name || !customApiForm.url || !customApiTestResult?.success}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                    title={!customApiTestResult?.success ? '请先测试成功后再保存' : ''}
+                  >
+                    {savingOnlineConfig ? '保存中...' : '保存'}
+                  </button>
+                )}
+              </div>
             </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={checkGeoipUpdate}
-              disabled={checkingUpdate}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={18} className={checkingUpdate ? 'animate-spin' : ''} />
-              检查更新
-            </button>
-
-            <button
-              onClick={() => updateGeoipDatabase(false)}
-              disabled={geoipLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              <Download size={18} className={geoipLoading ? 'animate-spin' : ''} />
-              {geoipLoading ? '更新中...' : '立即更新'}
-            </button>
-
-            <button
-              onClick={() => updateGeoipDatabase(true)}
-              disabled={geoipLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={18} />
-              强制更新
-            </button>
           </div>
-
-          <p className="text-xs text-gray-500">
-            数据来源: P3TERX/GeoLite.mmdb (GitHub)，{autoUpdateEnabled ? '已开启自动更新' : '可手动检查更新'}
-          </p>
         </div>
-      </div>
+      )}
+
+      {/* Delete API Confirm Modal */}
+      {deleteApiConfirm && (
+        <ConfirmModal
+          isOpen={!!deleteApiConfirm}
+          title="删除 API"
+          message="确定要删除这个自定义 API 吗？"
+          onConfirm={() => deleteCustomApi(deleteApiConfirm)}
+          onClose={() => setDeleteApiConfirm(null)}
+          type="danger"
+        />
+      )}
 
       {/* Password Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
