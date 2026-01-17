@@ -1523,17 +1523,80 @@ def fetch_subscription(url: str) -> Tuple[str, dict, int]:
     response.raise_for_status()
     
     sub_info = parse_subscription_info(dict(response.headers))
-    content = response.text
     
+    # Use response.content (bytes) instead of response.text to avoid encoding issues
+    # Some subscriptions contain emoji or special characters that cause decoding problems
+    try:
+        content = response.content.decode('utf-8', errors='ignore').strip()
+    except:
+        content = response.text.strip()
+    
+    # Try to parse as YAML first
     node_count = 0
     try:
         cfg = yaml.safe_load(content)
-        if cfg and 'proxies' in cfg:
+        if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
             node_count = len(cfg.get('proxies', []))
+            return content, sub_info, node_count
     except:
         pass
     
-    return content, sub_info, node_count
+    # If not YAML, try Base64 decode
+    try:
+        # Try to decode as Base64
+        padded = content + '=' * (4 - len(content) % 4)
+        decoded = base64.b64decode(padded).decode('utf-8', errors='ignore').strip()
+        
+        # Check if decoded content is YAML
+        try:
+            cfg = yaml.safe_load(decoded)
+            if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
+                node_count = len(cfg.get('proxies', []))
+                return decoded, sub_info, node_count
+        except:
+            pass
+        
+        # If not YAML, parse as URI list (ss://, vmess://, vless://, etc.)
+        proxies = []
+        lines = decoded.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            # Parse node link
+            proxy = parse_node_link(line)
+            if proxy:
+                proxies.append(proxy)
+        
+        if proxies:
+            # Convert to YAML format
+            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+            node_count = len(proxies)
+            return yaml_content, sub_info, node_count
+    except Exception as e:
+        # Base64 decode failed, might be plain URI list
+        pass
+    
+    # Try parsing as plain URI list (not Base64 encoded)
+    proxies = []
+    lines = content.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        
+        proxy = parse_node_link(line)
+        if proxy:
+            proxies.append(proxy)
+    
+    if proxies:
+        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+        node_count = len(proxies)
+        return yaml_content, sub_info, node_count
+    
+    # If all parsing failed, return original content
+    return content, sub_info, 0
 
 import base64
 
