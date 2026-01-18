@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders } from 'lucide-react';
 import axios from 'axios';
 import ConfirmModal from '../components/ConfirmModal';
+import UserConfigEditor from '../components/UserConfigEditor';
 
 const API_BASE = '/api';
 
@@ -22,6 +23,7 @@ const AdminTokenSection = ({ showToast }) => {
   const [saving, setSaving] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);  // Token ID to delete
+  const [configToken, setConfigToken] = useState(null);  // Token for visual config editor
 
   useEffect(() => {
     fetchData();
@@ -124,6 +126,11 @@ const AdminTokenSection = ({ showToast }) => {
     }
   };
 
+  const openVisualEditor = (token) => {
+    // Open visual config editor for admin token
+    setConfigToken(token);
+  };
+
   const resetForm = () => {
     setNewTokenName('');
     setNewTokenValue('');
@@ -146,6 +153,10 @@ const AdminTokenSection = ({ showToast }) => {
   const getTemplateName = (templateId) => {
     if (!templateId || templateId === 'builtin') return '内置模版';
     const template = templates.find(t => t.id === templateId);
+    // Debug log
+    if (!template && templateId) {
+      console.log('Template not found:', templateId, 'Available templates:', templates);
+    }
     return template ? template.name : templateId;
   };
 
@@ -254,6 +265,18 @@ const AdminTokenSection = ({ showToast }) => {
                   title="复制订阅地址"
                 >
                   {copiedId === token.id ? <Check size={16} /> : <Copy size={16} />}
+                </button>
+                <button
+                  onClick={() => openVisualEditor(token)}
+                  disabled={token.template_id === 'builtin'}
+                  className={`p-2 rounded-lg transition-colors ${
+                    token.template_id === 'builtin'
+                      ? 'text-gray-600 cursor-not-allowed'
+                      : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                  }`}
+                  title={token.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '可视化编辑'}
+                >
+                  <Sliders size={16} />
                 </button>
                 <button
                   onClick={() => openEditModal(token)}
@@ -507,6 +530,25 @@ const AdminTokenSection = ({ showToast }) => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Visual Config Editor */}
+      {configToken && (
+        <UserConfigEditor
+          user={{
+            id: configToken.id,
+            name: configToken.name,
+            template_id: configToken.template_id,
+            allocations: {},  // Admin tokens don't have allocations
+            group_config: configToken.group_config || {}
+          }}
+          onClose={() => setConfigToken(null)}
+          onSave={() => {
+            fetchData();  // Refresh token list
+          }}
+          showToast={showToast}
+          isAdminToken={true}
+        />
       )}
     </div>
   );

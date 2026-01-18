@@ -47,6 +47,21 @@ CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
 
+# ==================== Stats Cache ====================
+# Cache stats data to improve dashboard performance
+STATS_CACHE = {
+    'overview': None,
+    'countries': None,
+    'last_update': 0,
+    'cache_duration': 60  # Cache for 60 seconds
+}
+
+def invalidate_stats_cache():
+    """Invalidate stats cache when data changes"""
+    STATS_CACHE['overview'] = None
+    STATS_CACHE['countries'] = None
+    STATS_CACHE['last_update'] = 0
+
 # ==================== Go Speedtest Service Management ====================
 
 GO_SPEEDTEST_PROCESS = None
@@ -247,7 +262,8 @@ COUNTRY_KEYWORDS = {
     'DE': ['germany', 'de', 'deutsch', '德国', '德', 'frankfurt', '法兰克福'],
     'FR': ['france', 'fr', '法国', '法', 'paris', '巴黎'],
     'NL': ['netherlands', 'nl', 'holland', '荷兰', '荷', 'amsterdam', '阿姆斯特丹'],
-    'RU': ['russia', 'ru', '俄罗斯', '俄', 'moscow', '莫斯科'],
+    'BY': ['belarus', 'by', '白俄罗斯', 'minsk', '明斯克'],  # MUST be before RU!
+    'RU': ['russia', 'ru', '俄罗斯', 'moscow', '莫斯科'],
     'CA': ['canada', 'ca', '加拿大', '加', 'toronto', 'vancouver', '多伦多', '温哥华'],
     'AU': ['australia', 'au', '澳大利亚', '澳洲', '澳', 'sydney', '悉尼'],
     'IN': ['india', '印度', 'mumbai', '孟买'],
@@ -325,7 +341,6 @@ COUNTRY_KEYWORDS = {
     'LT': ['lithuania', 'lt', '立陶宛', 'vilnius', '维尔纽斯'],
     'LV': ['latvia', 'lv', '拉脱维亚', 'riga', '里加'],
     'EE': ['estonia', 'ee', '爱沙尼亚', 'tallinn', '塔林'],
-    'BY': ['belarus', 'by', '白俄罗斯', 'minsk', '明斯克'],
     'GE': ['georgia', 'ge', '格鲁吉亚', 'tbilisi', '第比利斯'],
     'AM': ['armenia', 'am', '亚美尼亚', 'yerevan', '埃里温'],
     'AZ': ['azerbaijan', 'az', '阿塞拜疆', 'baku', '巴库'],
@@ -371,35 +386,244 @@ COUNTRY_KEYWORDS = {
 }
 
 # Country code to Chinese name mapping
+# Complete mapping of all 241 countries/regions from world.json (236 unique ISO codes)
 COUNTRY_NAMES = {
-    'HK': '中国香港', 'TW': '中国台湾', 'JP': '日本', 'KR': '韩国', 'SG': '新加坡',
-    'US': '美国', 'GB': '英国', 'DE': '德国', 'FR': '法国', 'NL': '荷兰',
-    'RU': '俄罗斯', 'CA': '加拿大', 'AU': '澳大利亚', 'IN': '印度', 'TR': '土耳其',
-    'MY': '马来西亚', 'TH': '泰国', 'VN': '越南', 'ID': '印尼', 'PH': '菲律宾',
-    'BR': '巴西', 'AR': '阿根廷', 'MX': '墨西哥', 'ZA': '南非', 'AE': '阿联酋',
-    'IL': '以色列', 'UA': '乌克兰', 'PL': '波兰', 'CH': '瑞士', 'SE': '瑞典',
-    'NO': '挪威', 'FI': '芬兰', 'DK': '丹麦', 'IT': '意大利', 'ES': '西班牙',
-    'NG': '尼日利亚', 'NZ': '新西兰', 'MD': '摩尔多瓦', 'IE': '爱尔兰', 'PT': '葡萄牙',
-    'GR': '希腊', 'AT': '奥地利', 'CZ': '捷克', 'HU': '匈牙利', 'RO': '罗马尼亚',
-    'BG': '保加利亚', 'KZ': '哈萨克斯坦', 'EG': '埃及', 'KE': '肯尼亚',
-    'PK': '巴基斯坦', 'BD': '孟加拉', 'CL': '智利', 'AQ': '南极洲', 'CN': '中国',
-    # Additional countries
-    'KP': '朝鲜', 'MN': '蒙古', 'NP': '尼泊尔', 'LK': '斯里兰卡', 'IR': '伊朗',
-    'SA': '沙特', 'QA': '卡塔尔', 'KW': '科威特', 'OM': '阿曼', 'BH': '巴林',
-    'LB': '黎巴嫩', 'JO': '约旦', 'IQ': '伊拉克', 'SY': '叙利亚', 'AF': '阿富汗',
-    'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'BN': '文莱', 'MO': '中国澳门',
-    'IS': '冰岛', 'LU': '卢森堡', 'BE': '比利时', 'SK': '斯洛伐克', 'SI': '斯洛文尼亚',
-    'HR': '克罗地亚', 'RS': '塞尔维亚', 'BA': '波黑', 'ME': '黑山', 'MK': '北马其顿',
-    'AL': '阿尔巴尼亚', 'LT': '立陶宛', 'LV': '拉脱维亚', 'EE': '爱沙尼亚', 'BY': '白俄罗斯',
-    'GE': '格鲁吉亚', 'AM': '亚美尼亚', 'AZ': '阿塞拜疆', 'UZ': '乌兹别克', 'TM': '土库曼',
-    'KG': '吉尔吉斯', 'TJ': '塔吉克', 'CO': '哥伦比亚', 'PE': '秘鲁', 'VE': '委内瑞拉',
-    'EC': '厄瓜多尔', 'UY': '乌拉圭', 'PY': '巴拉圭', 'BO': '玻利维亚', 'PA': '巴拿马',
-    'CR': '哥斯达黎加', 'CU': '古巴', 'DO': '多米尼加', 'PR': '波多黎各', 'JM': '牙买加',
-    'MA': '摩洛哥', 'TN': '突尼斯', 'DZ': '阿尔及利亚', 'LY': '利比亚', 'GH': '加纳',
-    'SN': '塞内加尔', 'CI': '科特迪瓦', 'CM': '喀麦隆', 'TZ': '坦桑尼亚', 'UG': '乌干达',
-    'RW': '卢旺达', 'ET': '埃塞俄比亚', 'MU': '毛里求斯', 'SC': '塞舌尔', 'MV': '马尔代夫',
-    'GU': '关岛', 'FJ': '斐济', 'NC': '新喀里多尼亚', 'PF': '法属波利尼西亚', 'GL': '格陵兰',
-    'MT': '马耳他', 'CY': '塞浦路斯',
+    'AD': '安道尔',
+    'AE': '阿联酋',
+    'AF': '阿富汗',
+    'AG': '安提瓜和巴布达',
+    'AI': '安圭拉',
+    'AL': '阿尔巴尼亚',
+    'AM': '亚美尼亚',
+    'AO': '安哥拉',
+    'AQ': '南极洲',
+    'AR': '阿根廷',
+    'AS': '美属萨摩亚',
+    'AT': '奥地利',
+    'AU': '澳大利亚',
+    'AW': '阿鲁巴',
+    'AX': '奥兰群岛',
+    'AZ': '阿塞拜疆',
+    'BA': '波黑',
+    'BB': '巴巴多斯',
+    'BD': '孟加拉国',
+    'BE': '比利时',
+    'BF': '布基纳法索',
+    'BG': '保加利亚',
+    'BH': '巴林',
+    'BI': '布隆迪',
+    'BJ': '贝宁',
+    'BL': '圣巴泰勒米',
+    'BM': '百慕大',
+    'BN': '文莱',
+    'BO': '玻利维亚',
+    'BR': '巴西',
+    'BS': '巴哈马',
+    'BT': '不丹',
+    'BW': '博茨瓦纳',
+    'BY': '白俄罗斯',
+    'BZ': '伯利兹',
+    'CA': '加拿大',
+    'CD': '刚果民主共和国',
+    'CF': '中非共和国',
+    'CG': '刚果共和国',
+    'CH': '瑞士',
+    'CI': '科特迪瓦',
+    'CK': '库克群岛',
+    'CL': '智利',
+    'CM': '喀麦隆',
+    'CN': '中国大陆',
+    'CO': '哥伦比亚',
+    'CR': '哥斯达黎加',
+    'CU': '古巴',
+    'CV': '佛得角',
+    'CW': '库拉索',
+    'CY': '塞浦路斯',
+    'CZ': '捷克',
+    'DE': '德国',
+    'DJ': '吉布提',
+    'DK': '丹麦',
+    'DM': '多米尼克',
+    'DO': '多米尼加',
+    'DZ': '阿尔及利亚',
+    'EC': '厄瓜多尔',
+    'EE': '爱沙尼亚',
+    'EG': '埃及',
+    'EH': '西撒哈拉',
+    'ER': '厄立特里亚',
+    'ES': '西班牙',
+    'ET': '埃塞俄比亚',
+    'FI': '芬兰',
+    'FJ': '斐济',
+    'FK': '福克兰群岛',
+    'FM': '密克罗尼西亚',
+    'FO': '法罗群岛',
+    'FR': '法国',
+    'GA': '加蓬',
+    'GB': '英国',
+    'GD': '格林纳达',
+    'GE': '格鲁吉亚',
+    'GG': '根西岛',
+    'GH': '加纳',
+    'GL': '格陵兰',
+    'GM': '冈比亚',
+    'GN': '几内亚',
+    'GQ': '赤道几内亚',
+    'GR': '希腊',
+    'GS': '南乔治亚和南桑威奇群岛',
+    'GT': '危地马拉',
+    'GU': '关岛',
+    'GW': '几内亚比绍',
+    'GY': '圭亚那',
+    'HK': '中国香港',
+    'HM': '赫德岛和麦克唐纳群岛',
+    'HN': '洪都拉斯',
+    'HR': '克罗地亚',
+    'HT': '海地',
+    'HU': '匈牙利',
+    'ID': '印尼',
+    'IE': '爱尔兰',
+    'IL': '以色列',
+    'IM': '马恩岛',
+    'IN': '印度',
+    'IO': '英属印度洋领地',
+    'IQ': '伊拉克',
+    'IR': '伊朗',
+    'IS': '冰岛',
+    'IT': '意大利',
+    'JE': '泽西岛',
+    'JM': '牙买加',
+    'JO': '约旦',
+    'JP': '日本',
+    'KE': '肯尼亚',
+    'KG': '吉尔吉斯斯坦',
+    'KH': '柬埔寨',
+    'KI': '基里巴斯',
+    'KM': '科摩罗',
+    'KN': '圣基茨和尼维斯',
+    'KP': '朝鲜',
+    'KR': '韩国',
+    'KW': '科威特',
+    'KY': '开曼群岛',
+    'KZ': '哈萨克斯坦',
+    'LA': '老挝',
+    'LB': '黎巴嫩',
+    'LC': '圣卢西亚',
+    'LI': '列支敦士登',
+    'LK': '斯里兰卡',
+    'LR': '利比里亚',
+    'LS': '莱索托',
+    'LT': '立陶宛',
+    'LU': '卢森堡',
+    'LV': '拉脱维亚',
+    'LY': '利比亚',
+    'MA': '摩洛哥',
+    'MC': '摩纳哥',
+    'MD': '摩尔多瓦',
+    'ME': '黑山',
+    'MF': '法属圣马丁',
+    'MG': '马达加斯加',
+    'MH': '马绍尔群岛',
+    'MK': '北马其顿',
+    'ML': '马里',
+    'MM': '缅甸',
+    'MN': '蒙古',
+    'MO': '中国澳门',
+    'MP': '北马里亚纳群岛',
+    'MR': '毛里塔尼亚',
+    'MS': '蒙特塞拉特',
+    'MT': '马耳他',
+    'MU': '毛里求斯',
+    'MV': '马尔代夫',
+    'MW': '马拉维',
+    'MX': '墨西哥',
+    'MY': '马来西亚',
+    'MZ': '莫桑比克',
+    'NA': '纳米比亚',
+    'NC': '新喀里多尼亚',
+    'NE': '尼日尔',
+    'NF': '诺福克岛',
+    'NG': '尼日利亚',
+    'NI': '尼加拉瓜',
+    'NL': '荷兰',
+    'NO': '挪威',
+    'NP': '尼泊尔',
+    'NR': '瑙鲁',
+    'NU': '纽埃',
+    'NZ': '新西兰',
+    'OM': '阿曼',
+    'PA': '巴拿马',
+    'PE': '秘鲁',
+    'PF': '法属波利尼西亚',
+    'PG': '巴布亚新几内亚',
+    'PH': '菲律宾',
+    'PK': '巴基斯坦',
+    'PL': '波兰',
+    'PM': '圣皮埃尔和密克隆',
+    'PN': '皮特凯恩群岛',
+    'PR': '波多黎各',
+    'PS': '巴勒斯坦',
+    'PT': '葡萄牙',
+    'PW': '帕劳',
+    'PY': '巴拉圭',
+    'QA': '卡塔尔',
+    'RO': '罗马尼亚',
+    'RS': '塞尔维亚',
+    'RU': '俄罗斯',
+    'RW': '卢旺达',
+    'SA': '沙特阿拉伯',
+    'SB': '所罗门群岛',
+    'SC': '塞舌尔',
+    'SD': '苏丹',
+    'SE': '瑞典',
+    'SG': '新加坡',
+    'SH': '圣赫勒拿',
+    'SI': '斯洛文尼亚',
+    'SK': '斯洛伐克',
+    'SL': '塞拉利昂',
+    'SM': '圣马力诺',
+    'SN': '塞内加尔',
+    'SO': '索马里',
+    'SR': '苏里南',
+    'SS': '南苏丹',
+    'ST': '圣多美和普林西比',
+    'SV': '萨尔瓦多',
+    'SX': '荷属圣马丁',
+    'SY': '叙利亚',
+    'SZ': '斯威士兰',
+    'TC': '特克斯和凯科斯群岛',
+    'TD': '乍得',
+    'TF': '法属南部领地',
+    'TG': '多哥',
+    'TH': '泰国',
+    'TJ': '塔吉克斯坦',
+    'TL': '东帝汶',
+    'TM': '土库曼斯坦',
+    'TN': '突尼斯',
+    'TO': '汤加',
+    'TR': '土耳其',
+    'TT': '特立尼达和多巴哥',
+    'TW': '中国台湾',
+    'TZ': '坦桑尼亚',
+    'UA': '乌克兰',
+    'UG': '乌干达',
+    'US': '美国',
+    'UY': '乌拉圭',
+    'UZ': '乌兹别克斯坦',
+    'VA': '梵蒂冈',
+    'VC': '圣文森特和格林纳丁斯',
+    'VE': '委内瑞拉',
+    'VG': '英属维尔京群岛',
+    'VI': '美属维尔京群岛',
+    'VN': '越南',
+    'VU': '瓦努阿图',
+    'WF': '瓦利斯和富图纳',
+    'WS': '萨摩亚',
+    'XK': '科索沃',
+    'YE': '也门',
+    'ZA': '南非',
+    'ZM': '赞比亚',
+    'ZW': '津巴布韦'
 }
 
 # Placeholder to country code mapping for template processing
@@ -412,6 +636,19 @@ PLACEHOLDER_COUNTRY_MAP = {
     '{{IL}}': 'IL', '{{UA}}': 'UA', '{{PL}}': 'PL', '{{CH}}': 'CH', '{{SE}}': 'SE',
     '{{NO}}': 'NO', '{{FI}}': 'FI', '{{DK}}': 'DK', '{{IT}}': 'IT', '{{ES}}': 'ES',
 }
+
+def filter_underscore_fields(data: dict) -> dict:
+    """
+    Filter out fields starting with underscore from a dictionary.
+    Used to remove internal fields like _editable, _icon, _description from template output.
+    
+    Args:
+        data: Dictionary that may contain underscore-prefixed fields
+    
+    Returns:
+        New dictionary with underscore fields removed
+    """
+    return {k: v for k, v in data.items() if not k.startswith('_')}
 
 def process_template_proxy_groups(template_groups: List[dict], all_proxies: List[str], 
                                    country_groups: Dict[str, List[str]], 
@@ -464,7 +701,9 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
                 new_proxies.append(item)
         
         new_group['proxies'] = new_proxies
-        processed_groups.append(new_group)
+        # Filter out underscore-prefixed fields before adding to output
+        filtered_group = filter_underscore_fields(new_group)
+        processed_groups.append(filtered_group)
     
     return processed_groups
 
@@ -612,9 +851,14 @@ class UpdateUser(BaseModel):
     expire_time: Optional[int] = None
     enabled: Optional[bool] = None
     template_id: Optional[str] = None  # Template to use for this user
+    sub_name: Optional[str] = None  # Subscription config name
+    sub_filename: Optional[str] = None  # Subscription filename
 
 class UserNodeAllocation(BaseModel):
     subscriptions: Dict[str, List[str]]  # {sub_id: [node_names] or ["*"] for all}
+
+class UpdateUserGroupConfig(BaseModel):
+    group_config: Dict[str, List[str]]  # {group_name: [node_names]}
 
 # Port mapping models
 class PortMappingCreate(BaseModel):
@@ -1715,6 +1959,7 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
         
         config['subscriptions'].append(new_sub)
         save_config(config)
+        invalidate_stats_cache()  # Clear stats cache
         return {"status": "success", "subscription": new_sub}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch subscription: {str(e)}")
@@ -1794,6 +2039,7 @@ def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     config = load_config()
     config['subscriptions'] = [s for s in config['subscriptions'] if s['id'] != sub_id]
     save_config(config)
+    invalidate_stats_cache()  # Clear stats cache
     
     filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
     if os.path.exists(filepath):
@@ -1808,6 +2054,7 @@ def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
             s['enabled'] = not s['enabled']
             break
     save_config(config)
+    invalidate_stats_cache()  # Clear stats cache
     return {"status": "success"}
 
 @app.put("/api/subscriptions/reorder")
@@ -1864,7 +2111,12 @@ def refresh_subscription(sub_id: str, _: bool = Depends(verify_session)):
                 })
                 with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
                     f.write(content)
+                # Invalidate all user caches when subscription is refreshed
+                for user in config.get('users', []):
+                    if 'sub_cache' in user:
+                        del user['sub_cache']
                 save_config(config)
+                invalidate_stats_cache()
                 return {"status": "success", "subscription": s}
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Refresh failed: {str(e)}")
@@ -1888,7 +2140,12 @@ def refresh_all_subscriptions(_: bool = Depends(verify_session)):
                 updated += 1
             except:
                 pass
+    # Invalidate all user caches when subscriptions are refreshed
+    for user in config.get('users', []):
+        if 'sub_cache' in user:
+            del user['sub_cache']
     save_config(config)
+    invalidate_stats_cache()
     return {"status": "success", "updated": updated}
 
 @app.get("/api/source-order")
@@ -2696,7 +2953,8 @@ def create_user(data: CreateUser, _: bool = Depends(verify_session)):
         'expire_time': data.expire_time,  # 0 = never expire
         'created_at': int(time.time()),
         'allocations': {},  # {sub_id: [node_names] or ["*"] for all}
-        'template_id': 'builtin'  # Default to built-in template
+        'template_id': 'builtin',  # Default to built-in template
+        'group_config': {}  # User's custom node configuration for editable groups
     }
     
     if 'users' not in config:
@@ -2725,6 +2983,13 @@ def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session
                     if not any(t['id'] == data.template_id for t in templates):
                         raise HTTPException(status_code=400, detail="Template not found")
                 user['template_id'] = data.template_id
+            if data.sub_name is not None:
+                user['sub_name'] = data.sub_name
+            if data.sub_filename is not None:
+                user['sub_filename'] = data.sub_filename
+            # Invalidate cache when settings change
+            if 'sub_cache' in user:
+                del user['sub_cache']
             save_config(config)
             return {"status": "success", "user": user}
     raise HTTPException(status_code=404, detail="User not found")
@@ -2755,6 +3020,294 @@ def regenerate_user_token(user_id: str, data: RegenerateTokenRequest = None, _: 
             return {"status": "success", "token": user['token']}
     raise HTTPException(status_code=404, detail="User not found")
 
+@app.post("/api/users/{user_id}/reset-group-config")
+def reset_user_group_config(user_id: str, _: bool = Depends(verify_session)):
+    """Reset user's group configuration (clear all saved settings)"""
+    config = load_config()
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            # Clear group_config
+            user['group_config'] = {}
+            # Invalidate subscription cache
+            if 'sub_cache' in user:
+                del user['sub_cache']
+            save_config(config)
+            return {"status": "success", "message": "组配置已重置"}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.get("/api/users/{user_id}/group-config")
+def get_user_group_config(user_id: str, _: bool = Depends(verify_session)):
+    """Get user's group configuration for visual editor
+    
+    Returns:
+        - template_id: User's template ID
+        - template_name: Template name
+        - groups: List of proxy groups with editable flag and available nodes
+    """
+    config = load_config()
+    
+    # Find user
+    user = next((u for u in config.get('users', []) if u['id'] == user_id), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get template
+    template_id = user.get('template_id', 'builtin')
+    if template_id == 'builtin':
+        template = get_builtin_template()
+    else:
+        template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if not template:
+            # Fallback to builtin
+            template = get_builtin_template()
+            template_id = 'builtin'
+    
+    # Auto-migrate: Add _editable: true to all groups if not present
+    template_proxy_groups = template.get('proxy_groups', [])
+    if template_proxy_groups and isinstance(template_proxy_groups, list):
+        needs_migration = False
+        for group in template_proxy_groups:
+            if isinstance(group, dict) and '_editable' not in group:
+                group['_editable'] = True
+                needs_migration = True
+        
+        # Save the migration if needed (only for custom templates)
+        if needs_migration and template_id != 'builtin':
+            template['proxy_groups'] = template_proxy_groups
+            save_config(config)
+    
+    # Get user's available nodes (based on allocations)
+    available_nodes = []
+    user_allocations = user.get('allocations', {})
+    
+    # 1. Load nodes from subscriptions
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        
+        sub_id = sub['id']
+        allocation = user_allocations.get(sub_id, [])
+        
+        # Skip if user has no allocation for this subscription
+        if not allocation:
+            continue
+        
+        # Load subscription nodes
+        sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+        if os.path.exists(sub_file):
+            try:
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                    proxies = sub_data.get('proxies', [])
+                    
+                    for proxy in proxies:
+                        node_name = proxy.get('name', '')
+                        if not node_name:
+                            continue
+                        
+                        # Use NameTransformer to get the final transformed name (same as in subscription generation)
+                        from merge_config import NameTransformer
+                        transformed = NameTransformer.transform_name(proxy, sub['name'])
+                        final_name = transformed.get('name', node_name)
+                        
+                        # Check if user has access to this node (check against original name)
+                        if allocation == ["*"] or node_name in allocation or final_name in allocation:
+                            available_nodes.append(final_name)
+            except:
+                pass
+    
+    # 2. Load custom nodes if allocated
+    custom_allocation = user_allocations.get('custom_nodes', [])
+    if custom_allocation:
+        custom_nodes = config.get('custom_nodes', [])
+        for custom_node in custom_nodes:
+            node_name = custom_node.get('name', '')
+            if not node_name:
+                continue
+            
+            # Use NameTransformer to get the final transformed name (same as in subscription generation)
+            from merge_config import NameTransformer
+            transformed = NameTransformer.transform_name(custom_node, 'Custom')
+            final_name = transformed.get('name', node_name)
+            
+            # Check if user has access to this custom node
+            if custom_allocation == ["*"] or node_name in custom_allocation:
+                available_nodes.append(final_name)
+    
+    # 3. Add DIRECT and REJECT as special nodes (always available)
+    special_nodes = ["DIRECT", "REJECT"]
+    all_available_nodes = special_nodes + available_nodes
+    
+    # Get user's current group config
+    group_config = user.get('group_config', {})
+    
+    # Build groups list
+    groups = []
+    # Get proxy-groups from template's proxy_groups field (not from header)
+    template_proxy_groups = template.get('proxy_groups', [])
+    if template_proxy_groups and isinstance(template_proxy_groups, list):
+        for group in template_proxy_groups:
+            if not isinstance(group, dict):
+                continue
+            
+            group_name = group.get('name', '')
+            group_type = group.get('type', 'select')
+            # All groups are editable by default (unless explicitly marked as false)
+            editable = group.get('_editable', True)
+            icon = group.get('_icon', '')
+            description = group.get('_description', '')
+            
+            # Get current nodes for this group
+            if group_name in group_config:
+                # User has configured this group - use their selection
+                current_nodes = group_config[group_name]
+            else:
+                # User hasn't configured this group yet
+                # Default: only actual proxy nodes (not DIRECT/REJECT)
+                # DIRECT and REJECT should be explicitly selected by user
+                current_nodes = available_nodes.copy() if editable else []
+            
+            groups.append({
+                'name': group_name,
+                'type': group_type,
+                'editable': editable,
+                'icon': icon,
+                'description': description,
+                'current_nodes': current_nodes,
+                'available_nodes': all_available_nodes if editable else []
+            })
+    
+    return {
+        'template_id': template_id,
+        'template_name': template.get('name', 'Built-in Template'),
+        'groups': groups
+    }
+
+@app.put("/api/users/{user_id}/group-config")
+def update_user_group_config(user_id: str, data: UpdateUserGroupConfig, _: bool = Depends(verify_session)):
+    """Update user's group configuration"""
+    config = load_config()
+    
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            user['group_config'] = data.group_config
+            # Invalidate user's subscription cache when config changes
+            if 'sub_cache' in user:
+                del user['sub_cache']
+            save_config(config)
+            return {"status": "success", "message": "配置已保存"}
+    
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.get("/api/users/{user_id}/preview-yaml")
+def preview_user_yaml(user_id: str, _: bool = Depends(verify_session)):
+    """Preview YAML configuration for user based on their group config"""
+    config = load_config()
+    
+    # Find user
+    user = next((u for u in config.get('users', []) if u['id'] == user_id), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get template
+    template_id = user.get('template_id', 'builtin')
+    if template_id == 'builtin':
+        template = get_builtin_template()
+    else:
+        template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if not template:
+            template = get_builtin_template()
+    
+    # Get user's group config
+    group_config = user.get('group_config', {})
+    
+    # Get user's available nodes (for preview)
+    available_nodes = []
+    user_allocations = user.get('allocations', {})
+    
+    # 1. Load nodes from subscriptions
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        sub_id = sub['id']
+        allocation = user_allocations.get(sub_id, [])
+        
+        # Skip if user has no allocation for this subscription
+        if not allocation:
+            continue
+        
+        sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+        if os.path.exists(sub_file):
+            try:
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                    proxies = sub_data.get('proxies', [])
+                    for proxy in proxies:
+                        node_name = proxy.get('name', '')
+                        if not node_name:
+                            continue
+                        prefix = sub.get('prefix', '')
+                        final_name = f"{prefix}{node_name}" if prefix else node_name
+                        if allocation == ["*"] or node_name in allocation or final_name in allocation:
+                            available_nodes.append(final_name)
+            except:
+                pass
+    
+    # 2. Load custom nodes if allocated
+    custom_allocation = user_allocations.get('custom_nodes', [])
+    if custom_allocation:
+        custom_nodes = config.get('custom_nodes', [])
+        for custom_node in custom_nodes:
+            node_name = custom_node.get('name', '')
+            if not node_name:
+                continue
+            
+            # Check if user has access to this custom node
+            if custom_allocation == ["*"] or node_name in custom_allocation:
+                available_nodes.append(node_name)
+    
+    # Get proxy-groups from template's proxy_groups field (not from header)
+    try:
+        template_proxy_groups = template.get('proxy_groups', [])
+        if not template_proxy_groups or not isinstance(template_proxy_groups, list):
+            return {"yaml": "# No proxy-groups found in template"}
+        
+        # Apply user's group config
+        proxy_groups = []
+        for group in template_proxy_groups:
+            if not isinstance(group, dict):
+                continue
+            
+            # Create a copy to avoid modifying the template
+            group_copy = dict(group)
+            group_name = group_copy.get('name', '')
+            
+            # If user configured this group, use user's selection
+            if group_name in group_config and group_config[group_name]:
+                # User has configured this group - use their selection
+                # Their selection may include DIRECT/REJECT if they chose them
+                group_copy['proxies'] = group_config[group_name]
+            else:
+                # No user config - default to only actual proxy nodes (not DIRECT/REJECT)
+                # DIRECT and REJECT should be explicitly selected by user
+                group_copy['proxies'] = available_nodes
+            
+            # Remove underscore fields for preview
+            group_copy.pop('_editable', None)
+            group_copy.pop('_icon', None)
+            group_copy.pop('_description', None)
+            
+            proxy_groups.append(group_copy)
+        
+        # Generate YAML preview (only proxy-groups section)
+        preview_data = {'proxy-groups': proxy_groups}
+        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        
+        return {"yaml": yaml_preview}
+    except Exception as e:
+        return {"yaml": f"# Error generating preview: {str(e)}"}
+
+
 @app.put("/api/users/{user_id}/allocations")
 def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = Depends(verify_session)):
     """Update user's node allocations
@@ -2770,6 +3323,9 @@ def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = De
     for user in config.get('users', []):
         if user['id'] == user_id:
             user['allocations'] = data.subscriptions
+            # Invalidate user's subscription cache when allocations change
+            if 'sub_cache' in user:
+                del user['sub_cache']
             save_config(config)
             return {"status": "success", "allocations": user['allocations']}
     raise HTTPException(status_code=404, detail="User not found")
@@ -2917,6 +3473,246 @@ def delete_admin_token(token_id: str, _: bool = Depends(verify_session)):
     config['admin_tokens'] = [t for t in tokens if t['id'] != token_id]
     save_config(config)
     return {"status": "success"}
+
+@app.get("/api/admin-tokens/{token_id}/group-config")
+def get_admin_token_group_config(token_id: str, _: bool = Depends(verify_session)):
+    """Get admin token's group configuration for visual editor (reuse user logic)"""
+    config = load_config()
+    
+    # Find admin token
+    token = next((t for t in config.get('admin_tokens', []) if t['id'] == token_id), None)
+    if not token:
+        raise HTTPException(status_code=404, detail="Token not found")
+    
+    # Create a fake user object to reuse get_user_group_config logic
+    fake_user = {
+        'id': token_id,
+        'template_id': token.get('template_id', 'builtin'),
+        'allocations': {},  # Admin tokens have access to all nodes
+        'group_config': token.get('group_config', {})
+    }
+    
+    # Get template
+    template_id = fake_user.get('template_id', 'builtin')
+    if template_id == 'builtin':
+        template = get_builtin_template()
+    else:
+        template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if not template:
+            template = get_builtin_template()
+            template_id = 'builtin'
+    
+    # Auto-migrate: Add _editable: true to all groups if not present
+    template_proxy_groups = template.get('proxy_groups', [])
+    if template_proxy_groups and isinstance(template_proxy_groups, list):
+        needs_migration = False
+        for group in template_proxy_groups:
+            if isinstance(group, dict) and '_editable' not in group:
+                group['_editable'] = True
+                needs_migration = True
+        
+        if needs_migration and template_id != 'builtin':
+            template['proxy_groups'] = template_proxy_groups
+            save_config(config)
+    
+    # Get all available nodes (admin tokens have access to all)
+    available_nodes = []
+    
+    # Load all subscription nodes
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        
+        sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+        if os.path.exists(sub_file):
+            try:
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                    proxies = sub_data.get('proxies', [])
+                    
+                    for proxy in proxies:
+                        node_name = proxy.get('name', '')
+                        if not node_name:
+                            continue
+                        
+                        from merge_config import NameTransformer
+                        transformed = NameTransformer.transform_name(proxy, sub['name'])
+                        final_name = transformed.get('name', node_name)
+                        available_nodes.append(final_name)
+            except:
+                pass
+    
+    # Load all custom nodes
+    custom_nodes = config.get('custom_nodes', [])
+    for custom_node in custom_nodes:
+        node_name = custom_node.get('name', '')
+        if not node_name:
+            continue
+        
+        from merge_config import NameTransformer
+        transformed = NameTransformer.transform_name(custom_node, 'Custom')
+        final_name = transformed.get('name', node_name)
+        available_nodes.append(final_name)
+    
+    # Add DIRECT and REJECT
+    special_nodes = ["DIRECT", "REJECT"]
+    all_available_nodes = special_nodes + available_nodes
+    
+    # Get token's current group config
+    group_config = fake_user.get('group_config', {})
+    
+    # Build groups list
+    groups = []
+    if template_proxy_groups and isinstance(template_proxy_groups, list):
+        for group in template_proxy_groups:
+            if not isinstance(group, dict):
+                continue
+            
+            group_name = group.get('name', '')
+            group_type = group.get('type', 'select')
+            editable = group.get('_editable', True)
+            icon = group.get('_icon', '')
+            description = group.get('_description', '')
+            
+            # Get current nodes for this group
+            if group_name in group_config:
+                current_nodes = group_config[group_name]
+            else:
+                # Default: only actual proxy nodes (not DIRECT/REJECT)
+                current_nodes = available_nodes.copy() if editable else []
+            
+            groups.append({
+                'name': group_name,
+                'type': group_type,
+                'editable': editable,
+                'icon': icon,
+                'description': description,
+                'current_nodes': current_nodes,
+                'available_nodes': all_available_nodes if editable else []
+            })
+    
+    return {
+        'template_id': template_id,
+        'template_name': template.get('name', '内置模版'),
+        'groups': groups
+    }
+
+@app.put("/api/admin-tokens/{token_id}/group-config")
+def update_admin_token_group_config(token_id: str, data: UpdateUserGroupConfig, _: bool = Depends(verify_session)):
+    """Update admin token's group configuration"""
+    config = load_config()
+    
+    for token in config.get('admin_tokens', []):
+        if token['id'] == token_id:
+            token['group_config'] = data.group_config
+            save_config(config)
+            return {"status": "success", "message": "配置已保存"}
+    
+    raise HTTPException(status_code=404, detail="Token not found")
+
+@app.post("/api/admin-tokens/{token_id}/reset-group-config")
+def reset_admin_token_group_config(token_id: str, _: bool = Depends(verify_session)):
+    """Reset admin token's group configuration (clear all saved settings)"""
+    config = load_config()
+    
+    for token in config.get('admin_tokens', []):
+        if token['id'] == token_id:
+            # Clear group_config
+            token['group_config'] = {}
+            save_config(config)
+            return {"status": "success", "message": "组配置已重置"}
+    
+    raise HTTPException(status_code=404, detail="Token not found")
+
+@app.get("/api/admin-tokens/{token_id}/preview-yaml")
+def preview_admin_token_yaml(token_id: str, _: bool = Depends(verify_session)):
+    """Preview YAML configuration for admin token based on their group config"""
+    config = load_config()
+    
+    # Find token
+    token = next((t for t in config.get('admin_tokens', []) if t['id'] == token_id), None)
+    if not token:
+        raise HTTPException(status_code=404, detail="Token not found")
+    
+    # Get template
+    template_id = token.get('template_id', 'builtin')
+    if template_id == 'builtin':
+        template = get_builtin_template()
+    else:
+        template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+        if not template:
+            template = get_builtin_template()
+    
+    # Get token's group config
+    group_config = token.get('group_config', {})
+    
+    # Get all available nodes (admin has access to all)
+    available_nodes = []
+    
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        sub_id = sub['id']
+        
+        sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+        if os.path.exists(sub_file):
+            try:
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                    proxies = sub_data.get('proxies', [])
+                    for proxy in proxies:
+                        node_name = proxy.get('name', '')
+                        if not node_name:
+                            continue
+                        prefix = sub.get('prefix', '')
+                        final_name = f"{prefix}{node_name}" if prefix else node_name
+                        available_nodes.append(final_name)
+            except:
+                pass
+    
+    custom_nodes = config.get('custom_nodes', [])
+    for custom_node in custom_nodes:
+        node_name = custom_node.get('name', '')
+        if not node_name:
+            continue
+        available_nodes.append(node_name)
+    
+    # Get proxy-groups from template
+    try:
+        template_proxy_groups = template.get('proxy_groups', [])
+        if not template_proxy_groups or not isinstance(template_proxy_groups, list):
+            return {"yaml": "# No proxy-groups found in template"}
+        
+        # Apply token's group config
+        proxy_groups = []
+        for group in template_proxy_groups:
+            if not isinstance(group, dict):
+                continue
+            
+            group_copy = dict(group)
+            group_name = group_copy.get('name', '')
+            
+            # If token configured this group, use token's selection
+            if group_name in group_config and group_config[group_name]:
+                group_copy['proxies'] = group_config[group_name]
+            else:
+                # No config - default to only actual proxy nodes
+                group_copy['proxies'] = available_nodes
+            
+            # Remove underscore fields for preview
+            group_copy.pop('_editable', None)
+            group_copy.pop('_icon', None)
+            group_copy.pop('_description', None)
+            
+            proxy_groups.append(group_copy)
+        
+        # Generate YAML preview
+        preview_data = {'proxy-groups': proxy_groups}
+        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        
+        return {"yaml": yaml_preview}
+    except Exception as e:
+        return {"yaml": f"# Error generating preview: {str(e)}"}
 
 class RegenerateAdminTokenRequest(BaseModel):
     custom_token: Optional[str] = None
@@ -3153,6 +3949,22 @@ def get_merged_subscription(
         if not is_admin and not user_info:
             raise HTTPException(status_code=401, detail="Invalid subscription token")
     
+    # Check cache for user subscriptions (admin subscriptions are not cached as they may change frequently)
+    if user_info and not format:  # Only cache YAML format
+        cache = user_info.get('sub_cache', {})
+        cache_time = cache.get('timestamp', 0)
+        cache_content = cache.get('content', '')
+        cache_headers = cache.get('headers', {})
+        
+        # Cache is valid for 5 minutes (300 seconds)
+        if cache_content and (time.time() - cache_time) < 300:
+            print(f"Using cached subscription for user {user_info['name']}")
+            return PlainTextResponse(
+                cache_content,
+                media_type='text/yaml',
+                headers=cache_headers
+            )
+    
     subs = config.get('subscriptions', [])
     enabled_subs = [s for s in subs if s['enabled']]
     custom_nodes = config.get('custom_nodes', [])
@@ -3173,6 +3985,38 @@ def get_merged_subscription(
     
     if not enabled_subs and not custom_nodes:
         raise HTTPException(status_code=404, detail="No enabled subscriptions or custom nodes")
+    
+    # Check and auto-refresh missing subscription files
+    # This prevents slow first-time access by ensuring files exist
+    missing_subs = []
+    for sub in enabled_subs:
+        filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+        if not os.path.exists(filepath):
+            missing_subs.append(sub)
+    
+    # If there are missing subscription files, fetch them now
+    if missing_subs:
+        print(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
+        for sub in missing_subs:
+            try:
+                content, sub_info, node_count = fetch_subscription(sub['url'])
+                sub.update({
+                    'upload': sub_info.get('upload', 0),
+                    'download': sub_info.get('download', 0),
+                    'total': sub_info.get('total', 0),
+                    'expire': sub_info.get('expire', 0),
+                    'node_count': node_count,
+                    'last_update': int(time.time()),
+                    'update_status': 'success'
+                })
+                with open(os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml"), 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"  ✓ Refreshed: {sub['name']}")
+            except Exception as e:
+                print(f"  ✗ Failed to refresh {sub['name']}: {e}")
+                sub['update_status'] = f'error: {str(e)}'
+        # Save updated subscription info
+        save_config(config)
     
     # Smart format detection: auto-select based on User-Agent
     # Clash clients → YAML, others → Base64
@@ -3208,10 +4052,37 @@ def get_merged_subscription(
         # Find template by ID
         template = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
         if template:
-            header = template['header']
-            suffix = template['suffix']
-            # Check if template has custom proxy-groups
-            template_proxy_groups = template.get('proxy_groups')
+            # Check if template needs migration (only if both header and suffix are missing)
+            needs_migration = ('header' not in template or 'suffix' not in template) and 'content' in template
+            
+            if needs_migration:
+                # Auto-migrate old format templates
+                try:
+                    parsed = yaml.safe_load(template['content'])
+                    if isinstance(parsed, dict):
+                        # Split the content
+                        header, suffix = split_template(template['content'])
+                        template['header'] = header
+                        template['suffix'] = suffix
+                        if 'proxy_groups' not in template:
+                            template['proxy_groups'] = parsed.get('proxy-groups', [])
+                        # Remove old content field
+                        del template['content']
+                        # Save migrated template (only once)
+                        save_config(config)
+                        print(f"Template {template_id} migrated successfully")
+                except Exception as e:
+                    print(f"Template migration failed: {e}")
+                    # If migration fails, use fallback
+                    header = ConfigMerger.TEMPLATES['header']
+                    suffix = ConfigMerger.TEMPLATES['suffix']
+                    template_proxy_groups = None
+            
+            # Use template data (either already migrated or just migrated)
+            if not needs_migration or ('header' in template and 'suffix' in template):
+                header = template.get('header', ConfigMerger.TEMPLATES['header'])
+                suffix = template.get('suffix', ConfigMerger.TEMPLATES['suffix'])
+                template_proxy_groups = template.get('proxy_groups')
         else:
             # Fallback to built-in
             header = ConfigMerger.TEMPLATES['header']
@@ -3341,51 +4212,152 @@ def get_merged_subscription(
             country_groups = CountryGrouper.group_by_country(proxies)
             proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
         
-        # If using custom template with proxy-groups, process placeholders
+        # If using custom template with proxy-groups, process user config
         if template_proxy_groups and isinstance(template_proxy_groups, list) and len(template_proxy_groups) > 0:
-            # Generate country groups for placeholder replacement
-            from merge_config import CountryGrouper
-            if 'country_groups' not in dir():
-                country_groups = CountryGrouper.group_by_country(proxies)
-            
             # Get all proxy names
             all_proxy_names = [p['name'] for p in proxies]
             
-            # Get sorted country group names
-            sorted_country_names = sorted(
-                [c for c in country_groups.keys() if country_groups[c]],
-                key=lambda c: len(country_groups[c]),
-                reverse=True
-            )
+            # Identify primary selection groups (groups that contain actual proxy nodes)
+            # These are typically "manual select" or "auto select" type groups
+            primary_groups = []
+            for g in template_proxy_groups:
+                g_name = g.get('name', '')
+                g_type = g.get('type', '')
+                # Primary groups are usually select or url-test types that will contain actual nodes
+                # Common patterns: "节点选择", "自动选择", "手动选择", etc.
+                if g_type in ['select', 'url-test', 'fallback', 'load-balance']:
+                    # Check if this looks like a primary selection group (not a policy group)
+                    # Policy groups typically have names like "广告拦截", "国内服务", etc.
+                    is_policy = any(keyword in g_name for keyword in ['广告', '拦截', '国内', '服务', '私有', '网络', '漏网', 'Ad', 'Block', 'Domestic', 'Private', 'Catch'])
+                    if not is_policy:
+                        primary_groups.append(g_name)
             
-            # Process template proxy-groups (replace placeholders)
-            custom_groups = process_template_proxy_groups(
-                template_proxy_groups, 
-                all_proxy_names, 
-                country_groups, 
-                sorted_country_names
-            )
-            
-            # Add country groups after custom groups
-            for country_name in sorted_country_names:
-                if country_name in country_groups and country_groups[country_name]:
-                    country_group = {
-                        'name': country_name,
-                        'type': 'select',
-                        'proxies': country_groups[country_name]
-                    }
-                    custom_groups.append(country_group)
+            # Process each group
+            custom_groups = []
+            for group in template_proxy_groups:
+                new_group = dict(group)
+                group_name = new_group.get('name', '')
+                group_type = new_group.get('type', '')
+                
+                # Remove underscore fields
+                new_group = filter_underscore_fields(new_group)
+                
+                # Build fixed options based on group type
+                # Base options that are always safe
+                base_options = ["DIRECT", "REJECT"]
+                
+                # For policy groups (like ad-block, domestic, etc.), add primary selection groups
+                # For primary selection groups, don't add other groups to avoid loops
+                is_policy = any(keyword in group_name for keyword in ['广告', '拦截', '国内', '服务', '私有', '网络', '漏网', 'Ad', 'Block', 'Domestic', 'Private', 'Catch'])
+                
+                if is_policy:
+                    # Policy groups can reference primary selection groups
+                    fixed_options = base_options + primary_groups
+                else:
+                    # Primary selection groups only get DIRECT/REJECT
+                    fixed_options = base_options
+                
+                # Apply user's group_config if exists
+                if user_info and user_info.get('group_config'):
+                    group_config = user_info['group_config']
+                    
+                    # If user configured this group, use user's selection
+                    if group_name in group_config and group_config[group_name]:
+                        # Extract group references from original template (for other groups, not DIRECT/REJECT)
+                        original_proxies = group.get('proxies', [])
+                        group_refs = []
+                        
+                        for item in original_proxies:
+                            # Only keep group references (not DIRECT/REJECT, those come from user config)
+                            if item not in ['DIRECT', 'REJECT'] and item in [g.get('name') for g in template_proxy_groups]:
+                                group_refs.append(item)
+                        
+                        # Filter user's selected nodes
+                        user_selected_nodes = group_config[group_name]
+                        valid_nodes = []
+                        
+                        # Debug logging
+                        print(f"[DEBUG] Group '{group_name}': user selected {len(user_selected_nodes)} nodes")
+                        print(f"[DEBUG] Available proxy names: {len(all_proxy_names)} nodes")
+                        if len(all_proxy_names) > 0:
+                            print(f"[DEBUG] Sample proxy names: {all_proxy_names[:3]}")
+                        if len(user_selected_nodes) > 0:
+                            print(f"[DEBUG] Sample user selected: {user_selected_nodes[:5]}")
+                        
+                        for node in user_selected_nodes:
+                            # Keep DIRECT and REJECT
+                            if node in ['DIRECT', 'REJECT']:
+                                valid_nodes.append(node)
+                            # Keep actual proxy nodes that exist
+                            elif node in all_proxy_names:
+                                valid_nodes.append(node)
+                            else:
+                                # Debug: node not found
+                                print(f"[DEBUG] Node '{node}' not found in all_proxy_names")
+                        
+                        print(f"[DEBUG] Valid nodes after filtering: {len(valid_nodes)} nodes")
+                        
+                        # Combine: group refs + user selected nodes (including DIRECT/REJECT)
+                        if valid_nodes:
+                            new_group['proxies'] = group_refs + valid_nodes
+                        else:
+                            # If no valid nodes, use group refs + all available nodes
+                            new_group['proxies'] = group_refs + ["DIRECT", "REJECT"] + all_proxy_names
+                    else:
+                        # No user config for this group - keep original template structure
+                        # but replace actual proxy nodes with user's available nodes
+                        original_proxies = group.get('proxies', [])
+                        new_proxies = []
+                        
+                        # Keep group references and special keywords (DIRECT, REJECT)
+                        for item in original_proxies:
+                            if item in ['DIRECT', 'REJECT'] or item in [g.get('name') for g in template_proxy_groups]:
+                                # Keep DIRECT, REJECT, and group references
+                                new_proxies.append(item)
+                        
+                        # Add user's available proxy nodes
+                        new_proxies.extend(all_proxy_names)
+                        
+                        # Remove duplicates while preserving order
+                        seen = set()
+                        new_group['proxies'] = [x for x in new_proxies if not (x in seen or seen.add(x))]
+                else:
+                    # No user config at all - keep original template structure
+                    # but replace actual proxy nodes with user's available nodes
+                    original_proxies = group.get('proxies', [])
+                    new_proxies = []
+                    
+                    # Keep group references and special keywords (DIRECT, REJECT)
+                    for item in original_proxies:
+                        if item in ['DIRECT', 'REJECT'] or item in [g.get('name') for g in template_proxy_groups]:
+                            # Keep DIRECT, REJECT, and group references
+                            new_proxies.append(item)
+                    
+                    # Add user's available proxy nodes
+                    new_proxies.extend(all_proxy_names)
+                    
+                    # Remove duplicates while preserving order
+                    seen = set()
+                    new_group['proxies'] = [x for x in new_proxies if not (x in seen or seen.add(x))]
+                
+                custom_groups.append(new_group)
             
             proxy_groups = custom_groups
         # Get custom config name
-        # Priority: admin_token_info's sub_name > global sub_name
-        if admin_token_info and admin_token_info.get('sub_name'):
-            sub_name = admin_token_info['sub_name']
-        else:
-            sub_name = auth.get('sub_name', 'Aggregated')
-        
+        # Priority: user's sub_name > admin_token's sub_name > global sub_name
         if user_info:
-            sub_name = f"{sub_name} - {user_info['name']}"
+            # User subscription - use user's sub_name if set
+            if user_info.get('sub_name'):
+                sub_name = f"{user_info['sub_name']} - {user_info['name']}"
+            else:
+                # Fallback to global sub_name
+                sub_name = f"{auth.get('sub_name', 'Aggregated')} - {user_info['name']}"
+        else:
+            # Admin token subscription - use admin token's sub_name or global sub_name
+            if admin_token_info and admin_token_info.get('sub_name'):
+                sub_name = admin_token_info['sub_name']
+            else:
+                sub_name = auth.get('sub_name', 'Aggregated')
         
         # Generate traffic info nodes for each subscription
         def format_bytes(b):
@@ -3597,9 +4569,7 @@ def get_merged_subscription(
             )
         
         # Clash YAML format output (default)
-        # Remove trailing empty lines from header and add name field at the beginning
-        header_clean = header.rstrip()
-        output_parts = [f'name: {sub_name}\n' + header_clean]
+        output_parts = [f'name: {sub_name}\n' + header.rstrip()]
         
         # Generate listeners based on port mappings
         port_mappings = config.get('port_mappings', {})
@@ -3630,10 +4600,18 @@ def get_merged_subscription(
         output_parts.append('\nproxy-groups:')
         for group in proxy_groups:
             output_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')
-        output_parts.append('\n' + suffix)
+        
+        if suffix:
+            output_parts.append('\n' + suffix)
         
         # Get custom filename and config name
-        filename = auth.get('sub_filename', 'config.yaml')
+        # Priority: user's sub_filename > admin_token's sub_filename > global sub_filename
+        if user_info and user_info.get('sub_filename'):
+            filename = user_info['sub_filename']
+        elif admin_token_info and admin_token_info.get('sub_filename'):
+            filename = admin_token_info['sub_filename']
+        else:
+            filename = auth.get('sub_filename', 'config.yaml')
         
         # Use URL encoding for names
         from urllib.parse import quote
@@ -3643,15 +4621,30 @@ def get_merged_subscription(
         if not safe_name:
             safe_name = filename.replace('.yaml', '').replace('.yml', '')
         
-        return PlainTextResponse(
-            "\n".join(output_parts), 
-            media_type='text/yaml',
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}",
-                "profile-title": encoded_name,
-                "profile-update-interval": "24",
-                "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+        yaml_content = "\n".join(output_parts)
+        response_headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}",
+            "profile-title": encoded_name,
+            "profile-update-interval": "24",
+            "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+        }
+        
+        # Cache the generated YAML for user subscriptions
+        if user_info:
+            # Update cache in user object
+            user_info['sub_cache'] = {
+                'content': yaml_content,
+                'headers': response_headers,
+                'timestamp': time.time()
             }
+            # Save config with updated cache
+            save_config(config)
+            print(f"Cached subscription for user {user_info['name']}")
+        
+        return PlainTextResponse(
+            yaml_content, 
+            media_type='text/yaml',
+            headers=response_headers
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -3732,19 +4725,26 @@ def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_sessio
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
     
-    # Extract proxy-groups for placeholder processing
+    # Extract proxy-groups structure for visual editor (before clearing)
     template_proxy_groups = parsed.get('proxy-groups', [])
     
-    # Split into header and suffix
+    # Add _editable: true to all groups by default (for visual editor)
+    if template_proxy_groups and isinstance(template_proxy_groups, list):
+        for group in template_proxy_groups:
+            if isinstance(group, dict) and '_editable' not in group:
+                group['_editable'] = True
+    
+    # Split the original content to get header and suffix
+    # This removes proxies and proxy-groups sections
     header, suffix = split_template(data.content)
     
     template_id = f"tpl_{int(time.time() * 1000)}"
     template = {
         'id': template_id,
         'name': data.name,
-        'header': header,
-        'suffix': suffix,
-        'proxy_groups': template_proxy_groups,  # Save proxy-groups for placeholder processing
+        'header': header,  # Header without proxies/proxy-groups
+        'suffix': suffix,  # Rules and other sections
+        'proxy_groups': template_proxy_groups,  # Save original proxy-groups structure for visual editor
         'created_at': int(time.time())
     }
     
@@ -3771,17 +4771,56 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
         if not t:
             raise HTTPException(status_code=404, detail="Template not found")
         t['is_builtin'] = False
+        
+        # Auto-migrate old format templates to new format
+        if 'header' not in t or 'suffix' not in t:
+            if 'content' in t:
+                # Parse content to extract proxy-groups
+                try:
+                    parsed = yaml.safe_load(t['content'])
+                    if isinstance(parsed, dict):
+                        # Split the content
+                        header, suffix = split_template(t['content'])
+                        t['header'] = header
+                        t['suffix'] = suffix
+                        if 'proxy_groups' not in t:
+                            t['proxy_groups'] = parsed.get('proxy-groups', [])
+                        # Remove old content field
+                        del t['content']
+                        # Save migrated template
+                        save_config(config)
+                except:
+                    pass  # If migration fails, keep old format
     
-    # Reconstruct full content including proxy-groups
-    proxy_groups = t.get('proxy_groups', [])
-    if proxy_groups and isinstance(proxy_groups, list) and len(proxy_groups) > 0:
-        # Include saved proxy-groups in content
-        proxy_groups_yaml = yaml.dump({'proxy-groups': proxy_groups}, allow_unicode=True, sort_keys=False, default_flow_style=False)
-        proxy_groups_section = proxy_groups_yaml.strip()
+    # Check if template has old format (content field) or new format (header/suffix)
+    if 'header' not in t or 'suffix' not in t:
+        # Old format or incomplete migration - use content field if available
+        if 'content' in t:
+            content = t['content']
+        else:
+            # Fallback to empty template
+            content = "proxies: []\n\nproxy-groups: []"
     else:
-        proxy_groups_section = "proxy-groups: []"
-    
-    content = t['header'].strip() + "\n\nproxies: []\n\n" + proxy_groups_section + "\n\n" + t['suffix'].strip()
+        # New format - reconstruct from components
+        proxy_groups = t.get('proxy_groups', [])
+        
+        # Build proxy-groups section manually to ensure clean format
+        if proxy_groups and isinstance(proxy_groups, list) and len(proxy_groups) > 0:
+            proxy_groups_lines = ["proxy-groups:"]
+            for group in proxy_groups:
+                # Convert each group to YAML and indent properly
+                group_yaml = yaml.dump([group], allow_unicode=True, sort_keys=False, default_flow_style=False)
+                # Remove the leading "- " and indent each line
+                for line in group_yaml.strip().split('\n'):
+                    if line.startswith('- '):
+                        proxy_groups_lines.append('  ' + line)
+                    else:
+                        proxy_groups_lines.append('    ' + line)
+            proxy_groups_section = '\n'.join(proxy_groups_lines)
+        else:
+            proxy_groups_section = "proxy-groups: []"
+        
+        content = t['header'].strip() + "\n\nproxies: []\n\n" + proxy_groups_section + "\n\n" + t['suffix'].strip()
     
     return {
         "id": t['id'],
@@ -3813,8 +4852,8 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
         except yaml.YAMLError as e:
             raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
         
-        header, suffix = split_template(data.content)
         proxy_groups = parsed.get('proxy-groups', [])
+        header, suffix = split_template(data.content)
         
         # Save as override
         config['builtin_template_override'] = {
@@ -3841,12 +4880,11 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
         except yaml.YAMLError as e:
             raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
         
-        # Extract proxy-groups for placeholder processing
-        template['proxy_groups'] = parsed.get('proxy-groups', [])
-        
+        # Split and save
         header, suffix = split_template(data.content)
         template['header'] = header
         template['suffix'] = suffix
+        template['proxy_groups'] = parsed.get('proxy-groups', [])
     
     save_config(config)
     return {"status": "success", "message": "Template updated"}
@@ -3893,22 +4931,37 @@ def reset_builtin_template(_: bool = Depends(verify_session)):
 # ==================== Template API (Legacy - single template) ====================
 
 def split_template(full_content: str) -> Tuple[str, str]:
+    """
+    Split template into header (config before proxies) and suffix (rules after proxy-groups).
+    Removes proxies: and proxy-groups: sections completely.
+    """
     lines = full_content.splitlines(keepends=True)
     header_lines, suffix_lines = [], []
-    state = 0
+    state = 0  # 0=header, 1=skip(proxies/groups), 2=suffix
+    
     for line in lines:
         stripped = line.strip()
+        
         if state == 0:
+            # In header section
             if stripped.startswith('proxies:') or stripped.startswith('proxy-groups:'):
+                # Start skipping proxies/proxy-groups sections
                 state = 1
                 continue
             header_lines.append(line)
+            
         elif state == 1:
+            # Skipping proxies/proxy-groups sections
+            # Check if we've reached the suffix (rules, etc.)
             if any(stripped.startswith(k) for k in ['rules:', 'rule-providers:', 'script:', 'url-rewrite:']):
                 state = 2
                 suffix_lines.append(line)
+            # Otherwise, skip this line (it's part of proxies/proxy-groups)
+            
         elif state == 2:
+            # In suffix section
             suffix_lines.append(line)
+    
     return "".join(header_lines).strip(), "".join(suffix_lines).strip()
 
 @app.get("/api/template")
@@ -4097,13 +5150,15 @@ def generate_preview(template: TemplateContent, _: bool = Depends(verify_session
         proxies = cfg.get('proxies', [])
         proxy_groups = cfg.get('proxy-groups', [])
         
-        output_parts = [header, '\nproxies:']
+        output_parts = [header.rstrip(), '\nproxies:']
         for proxy in proxies:
             output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
         output_parts.append('\nproxy-groups:')
         for group in proxy_groups:
             output_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')
-        output_parts.append('\n' + suffix)
+        
+        if suffix:
+            output_parts.append('\n' + suffix)
         return {"content": "\n".join(output_parts)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -5246,7 +6301,15 @@ def get_color_thresholds():
 
 @app.get("/api/stats/overview")
 def get_stats_overview(_: bool = Depends(verify_session)):
-    """Get dashboard statistics"""
+    """Get dashboard statistics with caching"""
+    import time
+    
+    # Check cache
+    current_time = time.time()
+    if (STATS_CACHE['overview'] is not None and 
+        current_time - STATS_CACHE['last_update'] < STATS_CACHE['cache_duration']):
+        return STATS_CACHE['overview']
+    
     config = load_config()
     subs = config.get('subscriptions', [])
     custom_nodes = config.get('custom_nodes', [])
@@ -5319,7 +6382,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     # Sort protocols
     sorted_protocols = dict(sorted(protocol_counts.items(), key=lambda item: item[1], reverse=True))
     
-    return {
+    result = {
         "subscriptions": {
             "total": len(subs),
             "active": active_subs
@@ -5335,10 +6398,24 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         },
         "best_node": best_node
     }
+    
+    # Update cache
+    STATS_CACHE['overview'] = result
+    STATS_CACHE['last_update'] = current_time
+    
+    return result
 
 @app.get("/api/stats/nodes-by-country")
 def get_nodes_by_country(_: bool = Depends(verify_session)):
-    """Get node distribution by country"""
+    """Get node distribution by country with caching"""
+    import time
+    
+    # Check cache
+    current_time = time.time()
+    if (STATS_CACHE['countries'] is not None and 
+        current_time - STATS_CACHE['last_update'] < STATS_CACHE['cache_duration']):
+        return STATS_CACHE['countries']
+    
     config = load_config()
     subs = config.get('subscriptions', [])
     custom_nodes = config.get('custom_nodes', [])
@@ -5396,7 +6473,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         if not nodes:
             continue
             
-        # Parse flag and name from group_name (e.g., "flag + country_name")
+        # Parse flag and name from group_name (e.g., "🇭🇰 香港")
         parts = group_name.split(' ', 1)
         if len(parts) == 2:
             flag, name = parts
@@ -5406,11 +6483,23 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         count = len(nodes)
         
         # Try to find code in COUNTRY_NAMES for chart usage
+        # Priority: 1. Exact match  2. Longest partial match (to avoid "俄罗斯" matching "白俄罗斯")
         code = 'XX'
+        best_match_len = 0
+        
         for c, n in COUNTRY_NAMES.items():
+            # Exact match - highest priority
             if n == name:
                 code = c
                 break
+            # Partial match - prefer longer matches to avoid substring issues
+            # e.g., "白俄罗斯" should match "白俄罗斯" not "俄罗斯"
+            if name in n or n in name:
+                # Use the longer of the two as match length
+                match_len = len(n)
+                if match_len > best_match_len:
+                    best_match_len = match_len
+                    code = c
         
         processed_stats.append({
             'name': name,
@@ -5422,7 +6511,14 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
     # Sort by count desc
     processed_stats.sort(key=lambda x: x['count'], reverse=True)
     
-    return {"countries": processed_stats, "total": len(all_nodes)}
+    result = {"countries": processed_stats, "total": len(all_nodes)}
+    
+    # Update cache
+    STATS_CACHE['countries'] = result
+    if STATS_CACHE['overview'] is None:
+        STATS_CACHE['last_update'] = current_time
+    
+    return result
 
 @app.get("/api/stats/nodes-by-country/{country_code}")
 def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_session)):
@@ -5431,7 +6527,6 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
     subs = config.get('subscriptions', [])
     custom_nodes = config.get('custom_nodes', [])
     
-    nodes = []
     # Keywords to filter out info nodes (not real proxy nodes)
     info_keywords = [
         '剩余流量', '套餐到期', '距离下次重置', '建议', '官网', '未到期',
@@ -5440,38 +6535,17 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
         '使用说明', '教程', '更新', '通知', '邀请', '返利', '📊'
     ]
     
-    # Process subscription nodes (use cached geoip if available)
+    # Collect all nodes
+    all_nodes = []
     for sub in subs:
         if sub.get('enabled', True):
             # First check nodes stored in config (with cached geoip)
             config_nodes = sub.get('nodes', [])
             for node in config_nodes:
                 name = node.get('name', '')
-                if any(kw in name for kw in info_keywords):
-                    continue
-                
-                server = node.get('server', '')
-                cached_geoip = node.get('geoip')
-                
-                # Determine country code from cached geoip or node name
-                code = 'Unknown'
-                if cached_geoip and cached_geoip.get('country_code'):
-                    code = cached_geoip.get('country_code')
-                else:
-                    # Try to extract from node name
-                    extracted = extract_country_from_name(name)
-                    if extracted:
-                        code = extracted
-                
-                if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
-                    nodes.append({
-                        "name": name,
-                        "type": node.get('type', ''),
-                        "server": server,
-                        "source": sub.get('name', ''),
-                        "latency": node.get('last_latency'),
-                        "geoip": cached_geoip,
-                    })
+                if not any(kw in name for kw in info_keywords):
+                    node['_source'] = sub['name']
+                    all_nodes.append(node)
             
             # If no nodes in config, try loading from file
             if not config_nodes:
@@ -5480,54 +6554,69 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
                     try:
                         with open(filepath, 'r', encoding='utf-8') as f:
                             cfg = yaml.safe_load(f)
-                        sub_nodes = cfg.get('proxies', []) if cfg else []
-                        for node in sub_nodes:
+                        nodes_list = cfg.get('proxies', []) if cfg else []
+                        for node in nodes_list:
                             name = node.get('name', '')
-                            if any(kw in name for kw in info_keywords):
-                                continue
-                            server = node.get('server', '')
-                            # Try to extract country from node name
-                            code = extract_country_from_name(name) or 'Unknown'
-                            if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
-                                nodes.append({
-                                    "name": name,
-                                    "type": node.get('type', ''),
-                                    "server": server,
-                                    "source": sub.get('name', ''),
-                                })
+                            if not any(kw in name for kw in info_keywords):
+                                node['_source'] = sub['name']
+                                all_nodes.append(node)
                     except:
                         pass
     
-    # Process custom nodes
+    # Add custom nodes
     for node in custom_nodes:
-        name = node.get('name', '')
-        if any(kw in name for kw in info_keywords):
-            continue
-        
-        server = node.get('server', '')
-        cached_geoip = node.get('geoip')
-        
-        # Determine country code from cached geoip or node name
-        code = 'Unknown'
-        if cached_geoip and cached_geoip.get('country_code'):
-            code = cached_geoip.get('country_code')
-        else:
-            # Try to extract from node name
-            extracted = extract_country_from_name(name)
-            if extracted:
-                code = extracted
-        
-        if code == country_code or (country_code == 'Unknown' and code == 'Unknown'):
-            nodes.append({
-                "name": name,
-                "type": node.get('type', ''),
-                "server": server,
-                "source": '自建节点',
-                "latency": node.get('last_latency'),
-                "geoip": cached_geoip,
-            })
+        node_copy = dict(node)
+        node_copy['_source'] = '自建节点'
+        all_nodes.append(node_copy)
     
-    return {"nodes": nodes, "count": len(nodes)}
+    # Use CountryGrouper to group nodes
+    grouped_nodes = CountryGrouper.group_by_country(all_nodes)
+    
+    # Find the matching country group
+    result_nodes = []
+    for group_name, nodes_in_group in grouped_nodes.items():
+        # Check if this group matches the country code
+        # group_name format: "🇺🇸 美国" or "🇹🇼 台湾"
+        # We need to match against country_code like "US" or "TW"
+        
+        # Extract the country name from group_name (remove emoji)
+        parts = group_name.split(' ', 1)
+        group_country_name = parts[1] if len(parts) == 2 else group_name
+        
+        # Try to find matching code
+        # Priority: 1. Exact match  2. Longest partial match (to avoid "俄罗斯" matching "白俄罗斯")
+        group_code = None
+        best_match_len = 0
+        
+        for code, name in COUNTRY_NAMES.items():
+            # Exact match - highest priority
+            if group_country_name == name:
+                group_code = code
+                break
+            # Partial match - prefer longer matches to avoid substring issues
+            if group_country_name in name or name in group_country_name:
+                match_len = len(name)
+                if match_len > best_match_len:
+                    best_match_len = match_len
+                    group_code = code
+        
+        if group_code == country_code:
+            # nodes_in_group is a list of node names (strings), not node dicts
+            # We need to find the actual node objects from all_nodes
+            for node_name in nodes_in_group:
+                # Find the node dict in all_nodes by name
+                node_dict = next((n for n in all_nodes if n.get('name') == node_name), None)
+                if node_dict:
+                    result_nodes.append({
+                        "name": node_dict.get('name', ''),
+                        "type": node_dict.get('type', ''),
+                        "server": node_dict.get('server', ''),
+                        "source": node_dict.get('_source', ''),
+                        "latency": node_dict.get('last_latency'),
+                    })
+            break
+    
+    return {"nodes": result_nodes}
 
 # ==================== Speed Test Profiles API ====================
 

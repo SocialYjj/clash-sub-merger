@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode } from 'lucide-react';
+import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
+import UserConfigEditor from '../components/UserConfigEditor';
 
 const API_BASE = '/api';
 
@@ -8,6 +9,8 @@ const API_BASE = '/api';
 const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
   const [templates, setTemplates] = useState([]);
   const [selectedTemplate, setSelectedTemplate] = useState(user.template_id || 'builtin');
+  const [subName, setSubName] = useState(user.sub_name || '');
+  const [subFilename, setSubFilename] = useState(user.sub_filename || '');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -30,7 +33,9 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
     setSaving(true);
     try {
       await axios.put(`${API_BASE}/users/${user.id}`, {
-        template_id: selectedTemplate
+        template_id: selectedTemplate,
+        sub_name: subName.trim() || '',
+        sub_filename: subFilename.trim() || ''
       });
       showToast?.('用户设置已保存');
       onSuccess?.();
@@ -81,6 +86,32 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
               </select>
             )}
             <p className="text-xs text-gray-500 mt-1">选择该用户使用的配置模版</p>
+          </div>
+
+          <div className="border-t border-gray-700 pt-4">
+            <p className="text-xs text-gray-500 mb-3">订阅设置（留空使用全局设置）</p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                <input
+                  type="text"
+                  value={subName}
+                  onChange={(e) => setSubName(e.target.value)}
+                  placeholder="客户端显示的配置名称"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                <input
+                  type="text"
+                  value={subFilename}
+                  onChange={(e) => setSubFilename(e.target.value)}
+                  placeholder="下载时的文件名"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -465,8 +496,33 @@ export default function Users({
   const [editingUser, setEditingUser] = useState(null);
   const [tokenUser, setTokenUser] = useState(null);
   const [settingsUser, setSettingsUser] = useState(null);  // For user settings modal
+  const [configUser, setConfigUser] = useState(null);  // For visual config editor
   const [newName, setNewName] = useState('');
   const [newExpire, setNewExpire] = useState('');
+  const [templates, setTemplates] = useState([]);
+
+  // Load templates on mount
+  useEffect(() => {
+    fetchTemplates();
+  }, []);
+
+  const fetchTemplates = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/templates`);
+      setTemplates(res.data.templates || []);
+    } catch (err) {
+      console.error('Failed to fetch templates', err);
+    }
+  };
+
+  // Helper function to get template name by ID
+  const getTemplateName = (templateId) => {
+    if (!templateId || templateId === 'builtin') {
+      return '内置模版';
+    }
+    const template = templates.find(t => t.id === templateId);
+    return template ? template.name : templateId;
+  };
 
   const handleAdd = async () => {
     if (!newName.trim()) return;
@@ -570,7 +626,7 @@ export default function Users({
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-500">使用模版</span>
                   <span className="text-xs text-purple-400">
-                    {user.template_id === 'builtin' || !user.template_id ? '内置模版' : user.template_id}
+                    {getTemplateName(user.template_id)}
                   </span>
                 </div>
 
@@ -618,6 +674,18 @@ export default function Users({
                     title="编辑分配"
                   >
                     <Edit2 size={16} />
+                  </button>
+                  <button
+                    onClick={() => setConfigUser(user)}
+                    disabled={!user.template_id || user.template_id === 'builtin'}
+                    className={`p-2 rounded-lg transition-colors ${
+                      !user.template_id || user.template_id === 'builtin'
+                        ? 'text-gray-600 cursor-not-allowed'
+                        : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                    }`}
+                    title={!user.template_id || user.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '配置节点'}
+                  >
+                    <Sliders size={16} />
                   </button>
                   <button
                     onClick={() => setSettingsUser(user)}
@@ -722,6 +790,16 @@ export default function Users({
           onClose={() => setSettingsUser(null)}
           showToast={showToast || ((msg) => alert(msg))}
           onSuccess={() => onRefreshUsers && onRefreshUsers()}
+        />
+      )}
+
+      {/* User Config Editor */}
+      {configUser && (
+        <UserConfigEditor
+          user={configUser}
+          onClose={() => setConfigUser(null)}
+          onSave={() => onRefreshUsers && onRefreshUsers()}
+          showToast={showToast || ((msg, type) => alert(msg))}
         />
       )}
     </div>

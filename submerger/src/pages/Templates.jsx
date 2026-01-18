@@ -146,6 +146,11 @@ export default function Templates({ showToast }) {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Extract template name from filename (remove extension)
+    const fileName = file.name;
+    const templateNameFromFile = fileName.replace(/\.(yaml|yml)$/i, '');
+    setNewTemplateName(templateNameFromFile);
+
     try {
       // Call backend API to parse and clean the uploaded file
       const formData = new FormData();
@@ -368,13 +373,11 @@ export default function Templates({ showToast }) {
                 <div className="mb-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
                   <div className="flex items-center gap-2 text-blue-400 text-xs mb-2">
                     <Info size={14} />
-                    <span className="font-medium">可用占位符</span>
+                    <span className="font-medium">提示</span>
                   </div>
-                  <div className="grid grid-cols-3 gap-1 text-xs">
-                    <code className="px-2 py-1 bg-gray-800 text-cyan-400 rounded">{`{{ALL_PROXIES}}`}</code>
-                    <code className="px-2 py-1 bg-gray-800 text-cyan-400 rounded">{`{{COUNTRY_GROUPS}}`}</code>
-                    <code className="px-2 py-1 bg-gray-800 text-cyan-400 rounded">{`{{HK}} {{US}} {{JP}}`}</code>
-                  </div>
+                  <p className="text-xs text-gray-500">
+                    上传模板后，proxies 和 proxy-groups 的 proxies 列表会被清空，通过可视化编辑器配置。
+                  </p>
                 </div>
 
                 <textarea
@@ -430,73 +433,35 @@ export default function Templates({ showToast }) {
             </div>
 
             <div className="p-6 overflow-y-auto flex-1">
-              <div className="flex gap-4">
-                {/* Left: Editor */}
-                <div className="flex-1 space-y-4">
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">模版名称</label>
-                    <input
-                      type="text"
-                      value={templateName}
-                      onChange={(e) => setTemplateName(e.target.value)}
-                      disabled={selectedTemplate.is_builtin}
-                      className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      placeholder={selectedTemplate.is_builtin ? '内置模版名称不可修改' : ''}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">模版内容</label>
-                    <textarea
-                      value={templateContent}
-                      onChange={(e) => setTemplateContent(e.target.value)}
-                      className="w-full h-[400px] px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
-                      spellCheck={false}
-                    />
-                  </div>
+              <div className="space-y-4">
+                {/* Template Name */}
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">模版名称</label>
+                  <input
+                    type="text"
+                    value={templateName}
+                    onChange={(e) => setTemplateName(e.target.value)}
+                    disabled={selectedTemplate.is_builtin}
+                    className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    placeholder={selectedTemplate.is_builtin ? '内置模版名称不可修改' : ''}
+                  />
                 </div>
 
-                {/* Right: Placeholder Help */}
-                <div className="w-52 shrink-0">
-                  <div className="sticky top-0 bg-gray-800/50 border border-blue-500/30 rounded-lg p-4">
-                    <div className="flex items-center gap-2 text-blue-400 text-sm mb-3">
-                      <Info size={16} />
-                      <span className="font-medium">占位符</span>
+                {/* Template Content */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm text-gray-400">模版内容</label>
+                    <div className="flex items-center gap-2 text-blue-400 text-xs">
+                      <Info size={14} />
+                      <span>在 proxy-groups 中使用占位符，proxies 部分会自动填充</span>
                     </div>
-                    <div className="space-y-2 text-xs">
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{ALL_PROXIES}}`}</code>
-                        <span className="text-gray-500">所有代理节点</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{COUNTRY_GROUPS}}`}</code>
-                        <span className="text-gray-500">所有国家分组</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{HK}}`}</code>
-                        <span className="text-gray-500">香港节点</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{US}}`}</code>
-                        <span className="text-gray-500">美国节点</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{JP}}`}</code>
-                        <span className="text-gray-500">日本节点</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{SG}}`}</code>
-                        <span className="text-gray-500">新加坡节点</span>
-                      </div>
-                      <div className="bg-gray-900 px-3 py-2 rounded">
-                        <code className="text-cyan-400 block">{`{{TW}} {{KR}} ...`}</code>
-                        <span className="text-gray-500">其他国家代码</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-3 italic">
-                      在 proxies 列表中使用
-                    </p>
                   </div>
+                  <textarea
+                    value={templateContent}
+                    onChange={(e) => setTemplateContent(e.target.value)}
+                    className="w-full h-[400px] px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
+                    spellCheck={false}
+                  />
                 </div>
               </div>
             </div>

@@ -1004,6 +1004,7 @@ COUNTRY_NAMES_FROM_CODE = {
     'PT': '葡萄牙', 'GR': '希腊', 'PL': '波兰', 'CZ': '捷克', 'AT': '奥地利',
     'CH': '瑞士', 'SE': '瑞典', 'NO': '挪威', 'FI': '芬兰', 'DK': '丹麦',
     'IE': '爱尔兰', 'BE': '比利时', 'NZ': '新西兰', 'IL': '以色列', 'UA': '乌克兰',
+    'BY': '白俄罗斯', 'MD': '摩尔多瓦', 'NG': '尼日利亚', 'AQ': '南极洲',
 }
 
 def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:

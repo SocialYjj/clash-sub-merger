@@ -67,6 +67,10 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 
 - 👥 **Multi-user Support** - Create users with individual subscriptions
 - 🎛️ **Node Allocation** - Assign specific nodes/subscriptions to users
+- 🎨 **Visual Template Editor** (v2.4.0) - Configure proxy groups for each user with visual interface
+  - Edit node selection for each proxy group
+  - Real-time YAML preview
+  - Support for admin tokens
 - ⏱️ **Expiration Control** - Set user expiration dates
 
 ### Subscription Output

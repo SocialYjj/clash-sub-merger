@@ -4,7 +4,7 @@ import axios from 'axios';
 import * as echarts from 'echarts';
 import { RefreshCw, Server, Globe, ExternalLink, X } from 'lucide-react';
 import worldJson from '../assets/world.json';
-import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP } from './countryData';
+import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
 
 // Register map
 echarts.registerMap('world', worldJson);
@@ -173,16 +173,18 @@ export default function NodeMap() {
     if (!chartInstance.current) {
       chartInstance.current = echarts.init(chartRef.current);
 
-      // Handle click events on map items
+      // Handle click events on map items (scatter points and target point)
       chartInstance.current.on('click', (params) => {
+        console.log('Click event:', params); // Debug log
+        
         if (params.componentType === 'series' && params.seriesType === 'effectScatter') {
-          // Check if it's a country point
+          // Check if it's a country point with data (not CN target point)
           const code = params.value && params.value[3]; // [lon, lat, count, code]
-          if (code) {
+          if (code && code !== 'CN') {
+            console.log('Clicking country point:', code); // Debug log
             fetchCountryNodes(code);
-          } else if (params.name === 'CN' || (params.data && params.data.name === 'CN')) {
-            fetchCountryNodes('CN');
           }
+          // CN target point should not be clickable
         }
       });
 
@@ -191,11 +193,14 @@ export default function NodeMap() {
         if (params.componentType === 'geo') {
           const countryName = params.name;
           const code = findCountryCode(countryName);
+          console.log('Clicking geo region:', countryName, 'code:', code, 'has data:', !!rawData[code]); // Debug log
           if (code && rawData[code]) {
             fetchCountryNodes(code);
           }
         }
       });
+
+
     }
 
     const option = {
@@ -209,36 +214,51 @@ export default function NodeMap() {
         textStyle: { color: '#fff', fontFamily: 'sans-serif' },
         padding: [10, 15],
         formatter: (params) => {
+          // Disable tooltip for lines
           if (params.seriesType === 'lines') return '';
 
+          // Handle CN target point
           if (params.name === 'CN' || (params.data && params.data.name === 'CN')) {
             const cnCount = rawData['CN'] || 0;
-            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">中国 (本地区域)</div>
+            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">中国大陆 (本地区域)</div>
                     ${cnCount > 0 ? `<div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
                        <span style="color: #9ca3af;">节点数量</span>
                        <span style="font-weight: bold; color: #facc15;">${cnCount}</span>
                     </div>` : ''}`;
           }
 
+          // Handle scatter points (nodes)
           const valCode = params.value && params.value[3];
-          if (!valCode) return '';
+          if (valCode) {
+            const count = params.value[2];
+            // Get full country name from countryData
+            const countryInfo = countryData.find(c => c.code === valCode);
+            const countryName = countryInfo?.name || COUNTRY_CHINESE_NAMES[valCode] || valCode;
 
-          const count = params.value[2];
-          // Get full country name from countryData
-          const countryInfo = countryData.find(c => c.code === valCode);
-          const countryName = countryInfo?.name || valCode;
+            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
+                    <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
+                      <span style="color: #9ca3af;">节点数量</span>
+                      <span style="font-weight: bold; color: #22d3ee;">${count}</span>
+                    </div>`;
+          }
 
-          return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
-                  <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
-                    <span style="color: #9ca3af;">节点数量</span>
-                    <span style="font-weight: bold; color: #22d3ee;">${count}</span>
-                  </div>`;
+          // For geo component, return undefined to let geo's own tooltip handle it
+          if (params.componentType === 'geo') {
+            return undefined;
+          }
+
+          return '';
         }
       },
       geo: {
         map: 'world',
         roam: true,
-        zoom: 1.2,
+        zoom: 1,  // Set to minimum zoom as default
+        scaleLimit: {
+          min: 1,
+          max: 20  // Increased from 5 to 20 for better zoom
+        },
+        center: [0, 10],
         label: { emphasis: { show: false } },
         itemStyle: {
           normal: {
@@ -250,7 +270,42 @@ export default function NodeMap() {
             areaColor: '#334155' // slate-700
           }
         },
-        regions: [{ name: 'China', itemStyle: { areaColor: '#334155' } }]
+        regions: [
+          { name: 'China', itemStyle: { areaColor: '#334155' } },
+          { name: 'Hong Kong', itemStyle: { areaColor: '#475569', borderColor: '#0cecdb', borderWidth: 2 } },
+          { name: 'Macao', itemStyle: { areaColor: '#475569', borderColor: '#0cecdb', borderWidth: 2 } },
+          { name: 'Antarctica', itemStyle: { areaColor: '#1e293b', borderColor: '#0f172a' } }
+        ],
+        tooltip: {
+          show: true,
+          trigger: 'item',
+          formatter: (params) => {
+            const regionName = params.name;
+            const code = findCountryCode(regionName);
+            
+            // If country has nodes, show count
+            if (code && rawData[code]) {
+              const count = rawData[code];
+              const countryInfo = countryData.find(c => c.code === code);
+              const countryName = countryInfo?.name || COUNTRY_CHINESE_NAMES[code] || regionName;
+              
+              return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
+                      <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
+                        <span style="color: #9ca3af;">节点数量</span>
+                        <span style="font-weight: bold; color: #22d3ee;">${count}</span>
+                      </div>`;
+            }
+            
+            // Show country name even without nodes - use Chinese name from mapping
+            if (code) {
+              const chineseName = COUNTRY_CHINESE_NAMES[code] || regionName;
+              return `<div style="font-weight: bold; color: #fff; font-size: 14px;">${chineseName}</div>`;
+            }
+            
+            // Fallback to English name if no code found
+            return `<div style="font-weight: bold; color: #fff; font-size: 14px;">${regionName}</div>`;
+          }
+        }
       },
       series: [
         // 1. Flying Lines
@@ -267,6 +322,9 @@ export default function NodeMap() {
           lineStyle: {
             normal: { color: '#0cecdb', width: 0, curveness: 0.2 }
           },
+          tooltip: {
+            show: false  // Disable tooltip for flying lines
+          },
           data: lines
         },
         // 2. Flying Lines (Arrows)
@@ -274,16 +332,20 @@ export default function NodeMap() {
           type: 'lines',
           zlevel: 2,
           symbol: ['none', 'arrow'],
-          symbolSize: 5,
+          symbolSize: 8,
           effect: {
             show: true,
             period: 6,
             trailLength: 0,
             symbol: 'arrow',
-            symbolSize: 6
+            symbolSize: 8,
+            color: '#0cecdb'
           },
           lineStyle: {
             normal: { color: '#0cecdb', width: 1, opacity: 0.4, curveness: 0.2 }
+          },
+          tooltip: {
+            show: false  // Disable tooltip for arrow lines
           },
           data: lines
         },
@@ -298,7 +360,9 @@ export default function NodeMap() {
             position: 'right',
             formatter: (params) => {
               const code = params.value[3];
-              return code;  // Just show country code, emoji doesn't render well
+              // Find country name from countryData
+              const country = countryData.find(c => c.code === code);
+              return country ? country.name : code;
             },
             fontSize: 12,
             color: '#fff',
@@ -319,7 +383,11 @@ export default function NodeMap() {
           itemStyle: { color: '#fbbf24' },
           label: {
             show: true,
-            formatter: 'CN',
+            formatter: () => {
+              // Find CN in countryData
+              const cnCountry = countryData.find(c => c.code === 'CN');
+              return cnCountry ? cnCountry.name : '中国大陆';
+            },
             position: 'right',
             fontSize: 12,
             color: '#fff',
@@ -344,7 +412,7 @@ export default function NodeMap() {
       // chartInstance.current?.dispose(); 
       // chartInstance.current = null;
     };
-  }, [points, lines, targetPoint, loading]); // Re-run when data changes
+  }, [points, lines, targetPoint, loading, countryData, rawData]); // Re-run when data changes
 
   // Dispose chart on unmount
   useEffect(() => {

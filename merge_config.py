@@ -725,8 +725,8 @@ class GeoIPLookup:
                 except Exception as e:
                     print(f"Warning: Failed to load GeoIP database {path}: {e}")
         
-        print("Warning: GeoLite2-Country.mmdb not found. GeoIP lookup disabled.")
-        print("Download from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data")
+        # GeoIP database not found - silently disable (no warning needed)
+        # Users can still use the service without GeoIP lookup
     
     def resolve_domain(self, domain: str) -> Optional[str]:
         """Resolve domain to IP address with caching"""
@@ -844,7 +844,8 @@ class CountryGrouper:
         '🇩🇪 德国': ['🇩🇪', 'germany', 'de', 'deutsch', '德国', '德', 'frankfurt', '法兰克福'],
         '🇫🇷 法国': ['🇫🇷', 'france', 'fr', '法国', '法', 'paris', '巴黎'],
         '🇳🇱 荷兰': ['🇳🇱', 'netherlands', 'nl', 'holland', '荷兰', '荷', 'amsterdam', '阿姆斯特丹'],
-        '🇷🇺 俄罗斯': ['🇷🇺', 'russia', 'ru', '俄罗斯', '俄', 'moscow', '莫斯科'],
+        '🇧🇾 白俄罗斯': ['🇧🇾', 'belarus', 'by', '白俄罗斯', 'minsk', '明斯克'],  # MUST be before Russia!
+        '🇷🇺 俄罗斯': ['🇷🇺', 'russia', 'ru', '俄罗斯', 'moscow', '莫斯科'],
         '🇨🇦 加拿大': ['🇨🇦', 'canada', 'ca', '加拿大', '加', 'toronto', 'vancouver', '多伦多', '温哥华'],
         '🇦🇺 澳大利亚': ['🇦🇺', 'australia', 'au', '澳大利亚', '澳洲', '澳', 'sydney', '悉尼'],
         '🇮🇳 印度': ['🇮🇳', 'india', '印度', 'mumbai', '孟买'],
@@ -921,7 +922,6 @@ class CountryGrouper:
         '🇱🇹 立陶宛': ['🇱🇹', 'lithuania', 'lt', '立陶宛', 'vilnius', '维尔纽斯'],
         '🇱🇻 拉脱维亚': ['🇱🇻', 'latvia', 'lv', '拉脱维亚', 'riga', '里加'],
         '🇪🇪 爱沙尼亚': ['🇪🇪', 'estonia', 'ee', '爱沙尼亚', 'tallinn', '塔林'],
-        '🇧🇾 白俄罗斯': ['🇧🇾', 'belarus', 'by', '白俄罗斯', 'minsk', '明斯克'],
         '🇬🇪 格鲁吉亚': ['🇬🇪', 'georgia', 'ge', '格鲁吉亚', 'tbilisi', '第比利斯'],
         '🇦🇲 亚美尼亚': ['🇦🇲', 'armenia', 'am', '亚美尼亚', 'yerevan', '埃里温'],
         '🇦🇿 阿塞拜疆': ['🇦🇿', 'azerbaijan', 'az', '阿塞拜疆', 'baku', '巴库'],
@@ -969,7 +969,7 @@ class CountryGrouper:
     @staticmethod
     def identify_country(proxy_name: str, proxy_server: str = None) -> str:
         """Identify country/region of proxy node
-        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching  4. GeoIP lookup  5. Unknown
+        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching (longest match)  4. GeoIP lookup  5. Unknown
         """
         # Priority 1: Check if name STARTS with a flag emoji (most reliable)
         for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
@@ -983,24 +983,38 @@ class CountryGrouper:
             if flag in proxy_name:
                 return country
         
-        # Priority 3: Try keyword matching
+        # Priority 3: Try keyword matching with LONGEST MATCH principle
+        # This is critical to avoid "俄罗斯" matching "白俄罗斯"
         import re
+        best_match_country = None
+        best_match_len = 0
+        
         for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
             for pattern in patterns[1:]:  # Skip the flag emoji
                 # Check if pattern contains Chinese characters
                 has_chinese = any('\u4e00' <= c <= '\u9fff' for c in pattern)
+                matched = False
+                
                 if has_chinese:
-                    # For Chinese patterns, simple contains is fine
+                    # For Chinese patterns, simple contains check
                     if pattern in proxy_name:
-                        return country
+                        matched = True
                 elif len(pattern) <= 3:
                     # For short English patterns, require word boundary
                     if re.search(r'(?<![A-Za-z])' + re.escape(pattern) + r'(?![A-Za-z])', proxy_name, re.IGNORECASE):
-                        return country
+                        matched = True
                 else:
                     # For longer English patterns, simple contains is fine
                     if pattern.upper() in proxy_name.upper():
-                        return country
+                        matched = True
+                
+                # Use longest match to avoid substring issues (e.g., "俄罗斯" in "白俄罗斯")
+                if matched and len(pattern) > best_match_len:
+                    best_match_len = len(pattern)
+                    best_match_country = country
+        
+        if best_match_country:
+            return best_match_country
         
         # Priority 4: GeoIP lookup (if server address provided)
         if proxy_server and GEOIP_AVAILABLE:
