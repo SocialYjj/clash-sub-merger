@@ -65,7 +65,10 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, showToa
             }
             showToast?.('订阅已更新');
             onClose();
-            onRefresh?.(sub.id);
+            // Only refresh URL subscriptions, not local ones
+            if (!isLocal) {
+                onRefresh?.(sub.id);
+            }
         } catch (err) {
             showToast?.('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
         } finally {

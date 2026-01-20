@@ -3,22 +3,55 @@ import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square,
 import axios from 'axios';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
+import { COUNTRY_CHINESE_NAMES } from './countryData';
 
 const API_BASE = '/api';
 
 // Keywords to filter out info nodes (not real proxy nodes)
 const INFO_NODE_KEYWORDS = [
-  '剩余流量', '套餐到期', '距离下次重置', '建议', '官网', '未到期',
+  '剩余流量', '套餐到期', '距离下次重置', '建议', '未到期',
   '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
   '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-  '使用说明', '教程', '更新', '通知', '邀请', '返利'
+  '使用说明', '教程', '更新', '通知', '邀请', '返利',
+  '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
+  '官网:', '官网：', '免注册'  // 官网+冒号，免注册等广告词
+];
+
+// Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
+const REGION_KEYWORDS = [
+  ...Object.values(COUNTRY_CHINESE_NAMES),  // All 236 Chinese country names
+  // Common abbreviations and English names
+  'HK', 'TW', 'MO', 'JP', 'KR', 'SG', 'US', 'UK', 
+  'DE', 'FR', 'CA', 'AU', 'RU', 'IN', 'TH', 'VN', 'MY', 'PH', 'ID',
+  'CN', 'GB', 'IT', 'ES', 'PT', 'NL', 'BE', 'CH', 'AT', 'CZ', 'PL',
+  'SE', 'NO', 'FI', 'DK', 'IE', 'NZ', 'BR', 'AR', 'CL', 'MX', 'TR',
+  'SA', 'AE', 'IL', 'EG', 'ZA', 'NG', 'KE', 'UA', 'BY', 'KZ', 'UZ',
+  '海外',  // Generic "overseas"
+  // Short forms for Chinese regions (COUNTRY_CHINESE_NAMES has "中国香港" but nodes use "香港")
+  '香港', '台湾', '澳门'
 ];
 
 // Check if a node is an info node (not a real proxy)
 const isInfoNode = (node) => {
   if (!node || !node.name) return true;
   const name = node.name;
-  return INFO_NODE_KEYWORDS.some(keyword => name.includes(keyword));
+  
+  // Check basic keywords
+  if (INFO_NODE_KEYWORDS.some(keyword => name.includes(keyword))) {
+    return true;
+  }
+  
+  // Check if starts with "官网" but has no region name
+  if (name.startsWith('官网')) {
+    // If it contains a region name, it's a valid node
+    if (REGION_KEYWORDS.some(region => name.includes(region))) {
+      return false;
+    }
+    // Otherwise it's an info node
+    return true;
+  }
+  
+  return false;
 };
 
 // Latency color helper
@@ -378,9 +411,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   }, [allNodes]);
 
   const sources = useMemo(() => {
-    const srcs = new Set(allNodes.map(n => n.source));
+    // Include all subscriptions, even if they have no nodes
+    const srcs = new Set();
+    
+    // Add all subscription names
+    subscriptions?.forEach(sub => {
+      srcs.add(sub.name);
+    });
+    
+    // Add custom nodes source
+    if (customNodes && customNodes.length > 0) {
+      srcs.add('自建节点');
+    }
+    
     return ['all', ...Array.from(srcs)];
-  }, [allNodes]);
+  }, [subscriptions, customNodes]);
 
   // Filter and sort
   const filteredNodes = useMemo(() => {

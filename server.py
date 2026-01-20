@@ -2103,7 +2103,44 @@ def refresh_subscription(sub_id: str, _: bool = Depends(verify_session)):
     for s in config['subscriptions']:
         if s['id'] == sub_id:
             try:
+                # Load old YAML to preserve cached data
+                old_proxies = {}
+                old_filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+                if os.path.exists(old_filepath):
+                    try:
+                        with open(old_filepath, 'r', encoding='utf-8') as f:
+                            old_cfg = yaml.safe_load(f)
+                            if old_cfg and 'proxies' in old_cfg:
+                                # Build a map: server+port+name -> proxy data
+                                for proxy in old_cfg['proxies']:
+                                    key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                                    old_proxies[key] = proxy
+                    except:
+                        pass
+                
+                # Fetch new subscription content
                 content, sub_info, node_count = fetch_subscription(s['url'])
+                
+                # Parse new content and merge cached data
+                try:
+                    new_cfg = yaml.safe_load(content)
+                    if new_cfg and 'proxies' in new_cfg:
+                        for proxy in new_cfg['proxies']:
+                            key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                            if key in old_proxies:
+                                old_proxy = old_proxies[key]
+                                # Preserve cached data: geoip, last_latency, last_speed
+                                if 'geoip' in old_proxy:
+                                    proxy['geoip'] = old_proxy['geoip']
+                                if 'last_latency' in old_proxy:
+                                    proxy['last_latency'] = old_proxy['last_latency']
+                                if 'last_speed' in old_proxy:
+                                    proxy['last_speed'] = old_proxy['last_speed']
+                        # Write merged content
+                        content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False)
+                except:
+                    pass  # If parsing fails, use original content
+                
                 s.update({
                     'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
                     'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
@@ -2129,7 +2166,44 @@ def refresh_all_subscriptions(_: bool = Depends(verify_session)):
     for s in config['subscriptions']:
         if s['enabled']:
             try:
+                # Load old YAML to preserve cached data
+                old_proxies = {}
+                old_filepath = os.path.join(YAML_SOURCE_DIR, f"{s['id']}.yaml")
+                if os.path.exists(old_filepath):
+                    try:
+                        with open(old_filepath, 'r', encoding='utf-8') as f:
+                            old_cfg = yaml.safe_load(f)
+                            if old_cfg and 'proxies' in old_cfg:
+                                # Build a map: server+port+name -> proxy data
+                                for proxy in old_cfg['proxies']:
+                                    key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                                    old_proxies[key] = proxy
+                    except:
+                        pass
+                
+                # Fetch new subscription content
                 content, sub_info, node_count = fetch_subscription(s['url'])
+                
+                # Parse new content and merge cached data
+                try:
+                    new_cfg = yaml.safe_load(content)
+                    if new_cfg and 'proxies' in new_cfg:
+                        for proxy in new_cfg['proxies']:
+                            key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                            if key in old_proxies:
+                                old_proxy = old_proxies[key]
+                                # Preserve cached data: geoip, last_latency, last_speed
+                                if 'geoip' in old_proxy:
+                                    proxy['geoip'] = old_proxy['geoip']
+                                if 'last_latency' in old_proxy:
+                                    proxy['last_latency'] = old_proxy['last_latency']
+                                if 'last_speed' in old_proxy:
+                                    proxy['last_speed'] = old_proxy['last_speed']
+                        # Write merged content
+                        content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False)
+                except:
+                    pass  # If parsing fails, use original content
+                
                 s.update({
                     'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
                     'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
@@ -6321,11 +6395,68 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     
     # Filter keywords for info nodes
     info_keywords = [
-        '剩余流量', '套餐到期', '距离下次重置', '建议', '官网', '未到期',
+        '剩余流量', '套餐到期', '距离下次重置', '建议', '未到期',
         '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
         '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-        '使用说明', '教程', '更新', '通知', '邀请', '返利', '📊'
+        '使用说明', '教程', '更新', '通知', '邀请', '返利', '📊',
+        '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
+        '官网:', '官网：', '免注册'  # 官网+冒号，免注册等广告词
     ]
+    
+    # Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
+    region_keywords = [
+        '安道尔', '阿联酋', '阿富汗', '安提瓜和巴布达', '安圭拉', '阿尔巴尼亚', '亚美尼亚', '安哥拉',
+        '南极洲', '阿根廷', '美属萨摩亚', '奥地利', '澳大利亚', '阿鲁巴', '奥兰群岛', '阿塞拜疆',
+        '波黑', '巴巴多斯', '孟加拉国', '比利时', '布基纳法索', '保加利亚', '巴林', '布隆迪',
+        '贝宁', '圣巴泰勒米', '百慕大', '文莱', '玻利维亚', '巴西', '巴哈马', '不丹',
+        '博茨瓦纳', '白俄罗斯', '伯利兹', '加拿大', '刚果民主共和国', '中非共和国', '刚果共和国', '瑞士',
+        '科特迪瓦', '库克群岛', '智利', '喀麦隆', '中国大陆', '哥伦比亚', '哥斯达黎加', '古巴',
+        '佛得角', '库拉索', '塞浦路斯', '捷克', '德国', '吉布提', '丹麦', '多米尼克',
+        '多米尼加', '阿尔及利亚', '厄瓜多尔', '爱沙尼亚', '埃及', '西撒哈拉', '厄立特里亚', '西班牙',
+        '埃塞俄比亚', '芬兰', '斐济', '福克兰群岛', '密克罗尼西亚', '法罗群岛', '法国', '加蓬',
+        '英国', '格林纳达', '格鲁吉亚', '根西岛', '加纳', '格陵兰岛', '冈比亚', '几内亚',
+        '赤道几内亚', '希腊', '南乔治亚和南桑威奇群岛', '危地马拉', '关岛', '几内亚比绍', '圭亚那', '中国香港',
+        '赫德岛和麦克唐纳群岛', '洪都拉斯', '克罗地亚', '海地', '匈牙利', '印尼', '爱尔兰', '以色列',
+        '马恩岛', '印度', '英属印度洋领地', '伊拉克', '伊朗', '冰岛', '意大利', '泽西岛',
+        '牙买加', '约旦', '日本', '肯尼亚', '吉尔吉斯斯坦', '柬埔寨', '基里巴斯', '科摩罗',
+        '圣基茨和尼维斯', '朝鲜', '韩国', '科威特', '开曼群岛', '哈萨克斯坦', '老挝', '黎巴嫩',
+        '圣卢西亚', '列支敦士登', '斯里兰卡', '利比里亚', '莱索托', '立陶宛', '卢森堡', '拉脱维亚',
+        '利比亚', '摩洛哥', '摩纳哥', '摩尔多瓦', '黑山', '法属圣马丁', '马达加斯加', '马绍尔群岛',
+        '北马其顿', '马里', '缅甸', '蒙古', '中国澳门', '北马里亚纳群岛', '毛里塔尼亚', '蒙特塞拉特',
+        '马耳他', '毛里求斯', '马尔代夫', '马拉维', '墨西哥', '马来西亚', '莫桑比克', '纳米比亚',
+        '新喀里多尼亚', '尼日尔', '诺福克岛', '尼日利亚', '尼加拉瓜', '荷兰', '挪威', '尼泊尔',
+        '瑙鲁', '纽埃', '新西兰', '阿曼', '巴拿马', '秘鲁', '法属波利尼西亚', '巴布亚新几内亚',
+        '菲律宾', '巴基斯坦', '波兰', '圣皮埃尔和密克隆', '皮特凯恩群岛', '波多黎各', '巴勒斯坦', '葡萄牙',
+        '帕劳', '巴拉圭', '卡塔尔', '罗马尼亚', '塞尔维亚', '俄罗斯', '卢旺达', '沙特阿拉伯',
+        '所罗门群岛', '塞舌尔', '苏丹', '瑞典', '新加坡', '圣赫勒拿', '斯洛文尼亚', '斯洛伐克',
+        '塞拉利昂', '圣马力诺', '塞内加尔', '索马里', '苏里南', '南苏丹', '圣多美和普林西比', '萨尔瓦多',
+        '荷属圣马丁', '叙利亚', '斯威士兰', '特克斯和凯科斯群岛', '乍得', '法属南部领地', '多哥', '泰国',
+        '塔吉克斯坦', '东帝汶', '土库曼斯坦', '突尼斯', '汤加', '土耳其', '特立尼达和多巴哥', '中国台湾',
+        '坦桑尼亚', '乌克兰', '乌干达', '美国', '乌拉圭', '乌兹别克斯坦', '梵蒂冈', '圣文森特和格林纳丁斯',
+        '委内瑞拉', '英属维尔京群岛', '美属维尔京群岛', '越南', '瓦努阿图', '瓦利斯和富图纳', '萨摩亚', '科索沃',
+        '也门', '南非', '赞比亚', '津巴布韦',
+        # Common abbreviations and English names
+        '香港', '台湾', '澳门', 'HK', 'TW', 'MO', 'JP', 'KR', 'SG', 'US', 'UK', 
+        'DE', 'FR', 'CA', 'AU', 'RU', 'IN', 'TH', 'VN', 'MY', 'PH', 'ID',
+        'CN', 'GB', 'IT', 'ES', 'PT', 'NL', 'BE', 'CH', 'AT', 'CZ', 'PL',
+        'SE', 'NO', 'FI', 'DK', 'IE', 'NZ', 'BR', 'AR', 'CL', 'MX', 'TR',
+        'SA', 'AE', 'IL', 'EG', 'ZA', 'NG', 'KE', 'UA', 'BY', 'KZ', 'UZ',
+        '海外'  # Generic "overseas"
+    ]
+    
+    # Helper function to check if node is info node
+    def is_info_node(name):
+        # Check basic keywords
+        if any(kw in name for kw in info_keywords):
+            return True
+        # Check if starts with "官网" but has no region name
+        if name.startswith('官网'):
+            # If it contains a region name, it's a valid node
+            if any(region in name for region in region_keywords):
+                return False
+            # Otherwise it's an info node
+            return True
+        return False
     
     # Helper to process proxies
     best_node = None
@@ -6336,7 +6467,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         if not proxies: return 0
         count = 0
         for p in proxies:
-            if any(kw in p.get('name', '') for kw in info_keywords):
+            if is_info_node(p.get('name', '')):
                 continue
             count += 1
             ptype = p.get('type', 'unknown').lower()
