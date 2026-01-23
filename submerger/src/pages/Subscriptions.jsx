@@ -172,6 +172,7 @@ export default function Subscriptions({
           sub={selectedSub}
           onClose={() => setShowEditModal(false)}
           onRefresh={onRefresh}
+          onRefreshList={onRefreshList}
           showToast={showToast}
         />
       )}

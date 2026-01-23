@@ -242,9 +242,31 @@ def migrate_legacy_sub_token():
     save_config(config)
     print(f"Legacy sub_token migrated to admin_tokens: {legacy_token[:8]}...")
 
+def migrate_subscription_fields():
+    """Migrate subscriptions to add missing cron_expr and next_update fields"""
+    config = load_config()
+    subs = config.get('subscriptions', [])
+    
+    updated = False
+    for sub in subs:
+        # Add cron_expr field if missing
+        if 'cron_expr' not in sub:
+            sub['cron_expr'] = None
+            updated = True
+        
+        # Add next_update field if missing
+        if 'next_update' not in sub:
+            sub['next_update'] = None
+            updated = True
+    
+    if updated:
+        save_config(config)
+        print(f"Subscription fields migrated: added cron_expr and next_update to {len(subs)} subscriptions")
+
 # Run migration on startup
 migrate_old_config()
 migrate_legacy_sub_token()
+migrate_subscription_fields()
 
 # ==================== Country Detection from Node Name ====================
 
@@ -1951,7 +1973,9 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
             'type': 'url',  # Mark as URL subscription
             'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
             'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
-            'node_count': node_count, 'last_update': int(time.time())
+            'node_count': node_count, 'last_update': int(time.time()),
+            'cron_expr': None,  # Initialize cron expression field
+            'next_update': None  # Initialize next update time field
         }
         
         with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
@@ -1976,7 +2000,9 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
         new_sub = {
             'id': sub_id, 'name': data.name, 'enabled': True,
             'type': 'local',  # Mark as local subscription
-            'node_count': node_count, 'last_update': int(time.time())
+            'node_count': node_count, 'last_update': int(time.time()),
+            'cron_expr': None,  # Local subscriptions don't support auto-update
+            'next_update': None
         }
         
         with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
@@ -2002,19 +2028,27 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
     if sub.get('type') != 'local':
         raise HTTPException(status_code=400, detail="Not a local subscription")
     
+    # Track if any changes were made
+    updated = False
+    
     if data.name:
         sub['name'] = data.name
+        updated = True
     
     if data.content:
         try:
             yaml_content, proxies, node_count = parse_local_subscription(data.content)
             sub['node_count'] = node_count
-            sub['last_update'] = int(time.time())
             
             with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
                 f.write(yaml_content)
+            updated = True
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+    
+    # Update last_update timestamp whenever any change is made
+    if updated:
+        sub['last_update'] = int(time.time())
     
     save_config(config)
     return {"status": "success", "subscription": sub}
@@ -2037,6 +2071,10 @@ def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(ver
 @app.delete("/api/subscriptions/{sub_id}")
 def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     config = load_config()
+    
+    # Remove scheduler job if exists
+    scheduler.remove_job(f"sub_{sub_id}")
+    
     config['subscriptions'] = [s for s in config['subscriptions'] if s['id'] != sub_id]
     save_config(config)
     invalidate_stats_cache()  # Clear stats cache
@@ -2052,6 +2090,20 @@ def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
     for s in config['subscriptions']:
         if s['id'] == sub_id:
             s['enabled'] = not s['enabled']
+            
+            # Update scheduler based on enabled status
+            if s['enabled'] and s.get('cron_expr'):
+                # Re-enable scheduler job
+                scheduler.add_job(
+                    f"sub_{sub_id}",
+                    s['cron_expr'],
+                    scheduled_subscription_update,
+                    sub_id
+                )
+            else:
+                # Disable scheduler job
+                scheduler.remove_job(f"sub_{sub_id}")
+            
             break
     save_config(config)
     invalidate_stats_cache()  # Clear stats cache
@@ -2146,6 +2198,12 @@ def refresh_subscription(sub_id: str, _: bool = Depends(verify_session)):
                     'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
                     'node_count': node_count, 'last_update': int(time.time())
                 })
+                
+                # Update next_update time if cron is set
+                if s.get('cron_expr'):
+                    next_run = scheduler.get_next_run_time(s['cron_expr'])
+                    s['next_update'] = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None
+                
                 with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
                     f.write(content)
                 # Invalidate all user caches when subscription is refreshed
@@ -5627,15 +5685,28 @@ def load_scheduled_subscriptions():
     config = load_config()
     subs = config.get('subscriptions', [])
     
+    loaded_count = 0
     for sub in subs:
         cron_expr = sub.get('cron_expr')
         if cron_expr and sub.get('enabled', True):
-            scheduler.add_job(
+            job_id = scheduler.add_job(
                 f"sub_{sub['id']}",
                 cron_expr,
                 scheduled_subscription_update,
                 sub['id']
             )
+            if job_id:
+                loaded_count += 1
+                # Update next_update time on load
+                next_run = scheduler.get_next_run_time(cron_expr)
+                sub['next_update'] = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None
+    
+    # Save updated next_update times
+    if loaded_count > 0:
+        save_config(config)
+        print(f"Loaded {loaded_count} scheduled subscriptions")
+    else:
+        print("No scheduled subscriptions found")
 
 async def scheduled_subscription_update(sub_id: str):
     """Called by scheduler to update a subscription"""

@@ -5,7 +5,7 @@ import axios from 'axios';
 
 const API_BASE = '/api';
 
-export default function EditSubscriptionModal({ sub, onClose, onRefresh, showToast }) {
+export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefreshList, showToast }) {
     const [editName, setEditName] = useState('');
     const [editUrl, setEditUrl] = useState('');
     const [editContent, setEditContent] = useState('');
@@ -65,9 +65,18 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, showToa
             }
             showToast?.('订阅已更新');
             onClose();
-            // Only refresh URL subscriptions, not local ones
-            if (!isLocal) {
-                onRefresh?.(sub.id);
+            // For local subscriptions, just refresh the list without calling refresh API
+            // For URL subscriptions, call refresh API to update content
+            if (isLocal) {
+                // Just refresh the list to show updated last_update time
+                if (onRefreshList) {
+                    onRefreshList();
+                }
+            } else {
+                // Refresh URL subscription content
+                if (onRefresh) {
+                    onRefresh(sub.id);
+                }
             }
         } catch (err) {
             showToast?.('更新失败: ' + (err.response?.data?.detail || err.message), 'error');

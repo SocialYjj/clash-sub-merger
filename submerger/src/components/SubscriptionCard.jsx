@@ -111,7 +111,7 @@ export default function SubscriptionCard({
                                 下次运行
                             </div>
                             <div className="text-gray-300 font-medium">
-                                {sub.cron_expr ? '按计划' : '-'}
+                                {sub.next_update || '-'}
                             </div>
                         </div>
                     )}
@@ -146,24 +146,10 @@ export default function SubscriptionCard({
                             )}
                         </div>
                     ) : (
-                        <div className="text-sm font-bold text-red-400/80 padding-y-1">
+                        <div className="text-sm text-gray-500 py-1">
                             未获取到用量
                         </div>
                     )}
-                </div>
-
-                {/* Node Test Stats Placeholder */}
-                <div>
-                    <div className="text-xs text-gray-500 mb-1">节点预览</div>
-                    <div className="text-xs text-gray-400">
-                        {sub.nodes && sub.nodes.length > 0 ? (
-                            <div className="flex gap-1 overflow-hidden h-1.5 rounded-full bg-gray-700">
-                                <div className="bg-blue-500 w-full opacity-50"></div>
-                            </div>
-                        ) : (
-                            "暂未测试"
-                        )}
-                    </div>
                 </div>
 
                 {/* Actions Bar */}
