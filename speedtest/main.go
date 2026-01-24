@@ -55,6 +55,22 @@ type SpeedResponse struct {
 	Error     string  `json:"error,omitempty"`
 }
 
+type FetchURLRequest struct {
+	Link    string                 `json:"link"`
+	Node    map[string]interface{} `json:"node"`
+	Chain   []map[string]interface{} `json:"chain"`
+	URL     string                 `json:"url"`     // Target URL to fetch
+	Timeout int                    `json:"timeout"` // seconds
+}
+
+type FetchURLResponse struct {
+	Success    bool              `json:"success"`
+	Content    string            `json:"content,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	StatusCode int               `json:"statusCode,omitempty"`
+	Error      string            `json:"error,omitempty"`
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -64,6 +80,7 @@ func main() {
 	http.HandleFunc("/api/delay", handleDelay)
 	http.HandleFunc("/api/ip", handleIP)
 	http.HandleFunc("/api/speed", handleSpeed)
+	http.HandleFunc("/api/fetch-url", handleFetchURL)
 	http.HandleFunc("/health", handleHealth)
 
 	log.Printf("Speedtest service starting on port %s", port)
@@ -210,6 +227,53 @@ func handleSpeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSON(w, SpeedResponse{Success: true, Speed: speed, PeakSpeed: peakSpeed, Latency: latency, Bytes: bytes})
+}
+
+func handleFetchURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req FetchURLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSON(w, FetchURLResponse{Success: false, Error: "Invalid request"})
+		return
+	}
+
+	if req.Link == "" && req.Node == nil && len(req.Chain) == 0 {
+		sendJSON(w, FetchURLResponse{Success: false, Error: "Link, node, or chain is required"})
+		return
+	}
+
+	if req.URL == "" {
+		sendJSON(w, FetchURLResponse{Success: false, Error: "URL is required"})
+		return
+	}
+
+	if req.Timeout <= 0 {
+		req.Timeout = 30
+	}
+
+	var content string
+	var headers map[string]string
+	var statusCode int
+	var err error
+
+	if len(req.Chain) > 0 {
+		content, headers, statusCode, err = fetchURLWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Second)
+	} else if req.Node != nil {
+		content, headers, statusCode, err = fetchURLWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Second)
+	} else {
+		content, headers, statusCode, err = fetchURL(req.Link, req.URL, time.Duration(req.Timeout)*time.Second)
+	}
+
+	if err != nil {
+		sendJSON(w, FetchURLResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	sendJSON(w, FetchURLResponse{Success: true, Content: content, Headers: headers, StatusCode: statusCode})
 }
 
 func sendJSON(w http.ResponseWriter, v interface{}) {

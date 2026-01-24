@@ -39,7 +39,7 @@ app.add_middleware(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
+DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
 YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 OUTPUT_FILE = os.path.join(DATA_DIR, 'myconfig.yaml')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
@@ -1026,6 +1026,133 @@ def get_sub_token(_: bool = Depends(verify_session)):
     config = load_config()
     return {"sub_token": config['auth'].get('sub_token', '')}
 
+# ==================== Proxy Node Settings ====================
+
+@app.get("/api/settings/proxy-node")
+def get_proxy_node_setting(_: bool = Depends(verify_session)):
+    """Get proxy node setting for subscription fetching"""
+    config = load_config()
+    settings = config.get('settings', {})
+    return {
+        "proxy_node_id": settings.get('proxy_node_id'),
+        "proxy_node_name": settings.get('proxy_node_name')
+    }
+
+@app.put("/api/settings/proxy-node")
+def update_proxy_node_setting(data: dict, _: bool = Depends(verify_session)):
+    """Update proxy node setting"""
+    config = load_config()
+    if 'settings' not in config:
+        config['settings'] = {}
+    
+    config['settings']['proxy_node_id'] = data.get('proxy_node_id')
+    config['settings']['proxy_node_name'] = data.get('proxy_node_name')
+    
+    save_config(config)
+    return {"status": "success"}
+
+@app.get("/api/settings/available-proxy-nodes")
+def get_available_proxy_nodes(_: bool = Depends(verify_session)):
+    """Get all available nodes that can be used as proxy"""
+    config = load_config()
+    nodes = []
+    
+    # Add custom nodes (use same logic as /api/custom-nodes)
+    custom_nodes = config.get('custom_nodes', [])
+    for i, node in enumerate(custom_nodes):
+        # Generate final name using NameTransformer
+        transformed = NameTransformer.transform_name(node, 'Custom')
+        final_name = transformed.get('name', node.get('name', 'Unknown'))
+        
+        nodes.append({
+            "id": f"custom_{i}",
+            "name": node.get('name', 'Unknown'),  # Original name
+            "display_name": final_name,  # Processed name with flag
+            "type": node.get('type', 'unknown'),
+            "server": node.get('server', ''),
+            "source": "custom"
+        })
+    
+    # Add subscription nodes (use same logic as /api/subscriptions/{sub_id}/nodes)
+    for sub in config.get('subscriptions', []):
+        sub_id = sub.get('id')
+        sub_name = sub.get('name', 'Unknown')
+        sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+        
+        if os.path.exists(sub_file):
+            try:
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                proxies = sub_data.get('proxies', []) if sub_data else []
+                
+                for i, proxy in enumerate(proxies):
+                    # Skip non-proxy nodes (traffic info, etc.)
+                    if not proxy.get('server'):
+                        continue
+                    
+                    # Generate final name using NameTransformer
+                    transformed = NameTransformer.transform_name(proxy, sub_name)
+                    final_name = transformed.get('name', proxy.get('name', 'Unknown'))
+                    
+                    nodes.append({
+                        "id": f"sub_{sub_id}_{i}",
+                        "name": proxy.get('name', 'Unknown'),  # Original name
+                        "display_name": final_name,  # Processed name with flag
+                        "type": proxy.get('type', 'unknown'),
+                        "server": proxy.get('server', ''),
+                        "source": f"subscription:{sub_name}"
+                    })
+            except:
+                pass
+    
+    return {"nodes": nodes}
+
+def get_proxy_node_by_id(node_id: str) -> dict:
+    """Get proxy node config by ID"""
+    if not node_id:
+        return None
+    
+    config = load_config()
+    
+    # Check custom nodes
+    if node_id.startswith('custom_'):
+        try:
+            idx = int(node_id.split('_')[1])
+            custom_nodes = config.get('custom_nodes', [])
+            if 0 <= idx < len(custom_nodes):
+                return custom_nodes[idx]
+        except:
+            pass
+    
+    # Check subscription nodes
+    if node_id.startswith('sub_'):
+        try:
+            parts = node_id.split('_')
+            sub_id = f"sub_{parts[1]}"
+            node_idx = int(parts[2])
+            
+            sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+            if os.path.exists(sub_file):
+                with open(sub_file, 'r', encoding='utf-8') as f:
+                    sub_data = yaml.safe_load(f)
+                proxies = sub_data.get('proxies', [])
+                if 0 <= node_idx < len(proxies):
+                    return proxies[node_idx]
+        except:
+            pass
+    
+    return None
+
+
+def get_configured_proxy_node() -> dict:
+    """Get the configured proxy node from settings"""
+    config = load_config()
+    settings = config.get('settings', {})
+    proxy_node_id = settings.get('proxy_node_id')
+    if proxy_node_id:
+        return get_proxy_node_by_id(proxy_node_id)
+    return None
+
 # ==================== Node Parsing ====================
 
 import base64
@@ -1783,27 +1910,105 @@ def parse_subscription_info(headers: dict) -> dict:
                     pass
     return info
 
-def fetch_subscription(url: str) -> Tuple[str, dict, int]:
+def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = False) -> Tuple[str, dict, int]:
+    """
+    Fetch subscription content from URL
+    
+    Args:
+        url: Subscription URL
+        proxy_node: Optional proxy node config to use for fetching
+        force_proxy: If True, always use proxy; if False, try direct first then fallback to proxy
+    
+    Returns:
+        Tuple of (content, subscription_info, node_count)
+    """
     headers = {'User-Agent': 'FlClash/v0.8.91 clash-verge Platform/windows', 'Accept': '*/*'}
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
     
-    sub_info = parse_subscription_info(dict(response.headers))
+    # Try direct connection first (unless force_proxy is True)
+    if not force_proxy:
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            sub_info = parse_subscription_info(dict(response.headers))
+            content = _process_subscription_content(response)
+            return content, sub_info, _count_nodes(content)
+        except requests.exceptions.HTTPError as e:
+            # If 403 or other HTTP error and proxy is available, try with proxy
+            if proxy_node and e.response.status_code in [403, 429]:
+                print(f"Direct connection failed with {e.response.status_code}, trying with proxy...")
+            else:
+                raise
+        except Exception as e:
+            # If other error and proxy is available, try with proxy
+            if proxy_node:
+                print(f"Direct connection failed: {e}, trying with proxy...")
+            else:
+                raise
     
-    # Use response.content (bytes) instead of response.text to avoid encoding issues
-    # Some subscriptions contain emoji or special characters that cause decoding problems
+    # Use proxy if available
+    if proxy_node:
+        try:
+            print(f"Fetching subscription via proxy node: {proxy_node.get('name', 'Unknown')}")
+            return _fetch_via_proxy(url, proxy_node)
+        except Exception as e:
+            raise Exception(f"Proxy fetch failed: {e}")
+    
+    # No proxy available and direct failed
+    raise Exception("Direct connection failed and no proxy configured")
+
+
+def _fetch_via_proxy(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
+    """Fetch subscription via speedtest service proxy"""
+    try:
+        payload = {
+            "node": proxy_node,
+            "url": url,
+            "timeout": 30
+        }
+        
+        resp = requests.post("http://127.0.0.1:9876/api/fetch-url", json=payload, timeout=35)
+        result = resp.json()
+        
+        if not result.get("success"):
+            raise Exception(result.get("error", "Unknown error"))
+        
+        content = result.get("content", "")
+        headers = result.get("headers", {})
+        
+        # Parse subscription info from headers
+        sub_info = {}
+        if "subscription-userinfo" in headers:
+            sub_info = parse_subscription_info({"subscription-userinfo": headers["subscription-userinfo"]})
+        
+        # Process content
+        processed_content = _process_subscription_content_str(content)
+        node_count = _count_nodes(processed_content)
+        
+        return processed_content, sub_info, node_count
+        
+    except Exception as e:
+        raise Exception(f"Proxy service error: {e}")
+
+
+def _process_subscription_content(response) -> str:
+    """Process subscription content from response object"""
     try:
         content = response.content.decode('utf-8', errors='ignore').strip()
     except:
         content = response.text.strip()
     
+    return _process_subscription_content_str(content)
+
+
+def _process_subscription_content_str(content: str) -> str:
+    """Process subscription content string and return YAML format"""
+    
     # Try to parse as YAML first
-    node_count = 0
     try:
         cfg = yaml.safe_load(content)
         if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-            node_count = len(cfg.get('proxies', []))
-            return content, sub_info, node_count
+            return content
     except:
         pass
     
@@ -1817,8 +2022,7 @@ def fetch_subscription(url: str) -> Tuple[str, dict, int]:
         try:
             cfg = yaml.safe_load(decoded)
             if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-                node_count = len(cfg.get('proxies', []))
-                return decoded, sub_info, node_count
+                return decoded
         except:
             pass
         
@@ -1838,8 +2042,7 @@ def fetch_subscription(url: str) -> Tuple[str, dict, int]:
         if proxies:
             # Convert to YAML format
             yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
-            node_count = len(proxies)
-            return yaml_content, sub_info, node_count
+            return yaml_content
     except Exception as e:
         # Base64 decode failed, might be plain URI list
         pass
@@ -1858,11 +2061,21 @@ def fetch_subscription(url: str) -> Tuple[str, dict, int]:
     
     if proxies:
         yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
-        node_count = len(proxies)
-        return yaml_content, sub_info, node_count
+        return yaml_content
     
     # If all parsing failed, return original content
-    return content, sub_info, 0
+    return content
+
+
+def _count_nodes(content: str) -> int:
+    """Count number of nodes in YAML content"""
+    try:
+        cfg = yaml.safe_load(content)
+        if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
+            return len(cfg.get('proxies', []))
+    except:
+        pass
+    return 0
 
 import base64
 
@@ -1967,7 +2180,8 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
     sub_id = f"sub_{int(time.time() * 1000)}"
     
     try:
-        content, sub_info, node_count = fetch_subscription(data.url)
+        proxy_node = get_configured_proxy_node()
+        content, sub_info, node_count = fetch_subscription(data.url, proxy_node=proxy_node)
         new_sub = {
             'id': sub_id, 'name': data.name, 'url': data.url, 'enabled': True,
             'type': 'url',  # Mark as URL subscription
@@ -2134,7 +2348,8 @@ def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends
                 s['name'] = data.name
             if data.url and data.url != s['url']:
                 try:
-                    content, sub_info, node_count = fetch_subscription(data.url)
+                    proxy_node = get_configured_proxy_node()
+                    content, sub_info, node_count = fetch_subscription(data.url, proxy_node=proxy_node)
                     s['url'] = data.url
                     s.update({
                         'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
@@ -2170,8 +2385,12 @@ def refresh_subscription(sub_id: str, _: bool = Depends(verify_session)):
                     except:
                         pass
                 
-                # Fetch new subscription content
-                content, sub_info, node_count = fetch_subscription(s['url'])
+                # Get proxy node if configured
+                proxy_node = get_configured_proxy_node()
+                force_proxy = s.get('force_proxy', False)
+                
+                # Fetch new subscription content (with proxy support)
+                content, sub_info, node_count = fetch_subscription(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
                 
                 # Parse new content and merge cached data
                 try:
@@ -2239,8 +2458,12 @@ def refresh_all_subscriptions(_: bool = Depends(verify_session)):
                     except:
                         pass
                 
-                # Fetch new subscription content
-                content, sub_info, node_count = fetch_subscription(s['url'])
+                # Get proxy node if configured
+                proxy_node = get_configured_proxy_node()
+                force_proxy = s.get('force_proxy', False)
+                
+                # Fetch new subscription content (with proxy support)
+                content, sub_info, node_count = fetch_subscription(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
                 
                 # Parse new content and merge cached data
                 try:
@@ -4129,9 +4352,11 @@ def get_merged_subscription(
     # If there are missing subscription files, fetch them now
     if missing_subs:
         print(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
+        proxy_node = get_configured_proxy_node()
         for sub in missing_subs:
             try:
-                content, sub_info, node_count = fetch_subscription(sub['url'])
+                force_proxy = sub.get('force_proxy', False)
+                content, sub_info, node_count = fetch_subscription(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
                 sub.update({
                     'upload': sub_info.get('upload', 0),
                     'download': sub_info.get('download', 0),

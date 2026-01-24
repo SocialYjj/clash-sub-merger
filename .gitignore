@@ -19,12 +19,13 @@ speedtest/*.exe
 speedtest/*.exe~
 
 # User Data & Secrets
-uploads/
 data/
+!data/.gitkeep
 config.json
 myconfig.yaml
 *.yaml
 !docker-compose.yml
+!kernel_config.yaml
 !submerger/src/**/*.yaml
 
 # Logs

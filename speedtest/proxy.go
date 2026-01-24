@@ -478,3 +478,105 @@ func buildChainAdapter(chain []map[string]interface{}) (constant.Proxy, error) {
 	// Return the last adapter in the chain
 	return proxyMap[currentProxyName], nil
 }
+
+// fetchURL fetches a URL through a proxy and returns content, headers, and status code
+func fetchURL(link string, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
+	proxyAdapter, err := getProxyAdapter(link)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	return fetchURLWithAdapter(proxyAdapter, targetURL, timeout)
+}
+
+// fetchURLWithNode fetches a URL through a proxy node
+func fetchURLWithNode(node map[string]interface{}, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
+	proxyAdapter, err := getProxyAdapterFromNode(node)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	return fetchURLWithAdapter(proxyAdapter, targetURL, timeout)
+}
+
+// fetchURLWithChain fetches a URL through a proxy chain
+func fetchURLWithChain(chain []map[string]interface{}, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
+	proxyAdapter, err := buildProxyChain(chain)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	return fetchURLWithAdapter(proxyAdapter, targetURL, timeout)
+}
+
+// fetchURLWithAdapter fetches a URL using an existing adapter
+func fetchURLWithAdapter(proxyAdapter constant.Proxy, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Create HTTP client with proxy dialer
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			portNum, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, err
+			}
+
+			metadata := &constant.Metadata{
+				Host:    host,
+				DstPort: uint16(portNum),
+			}
+
+			return proxyAdapter.DialContext(ctx, metadata)
+		},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false,
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("create request error: %v", err)
+	}
+
+	// Set User-Agent to mimic FlClash
+	req.Header.Set("User-Agent", "FlClash/v0.8.91 clash-verge Platform/windows")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("fetch error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, resp.StatusCode, fmt.Errorf("read body error: %v", err)
+	}
+
+	// Extract important headers
+	headers := make(map[string]string)
+	importantHeaders := []string{
+		"subscription-userinfo",
+		"profile-update-interval",
+		"content-disposition",
+		"content-type",
+	}
+	for _, key := range importantHeaders {
+		if value := resp.Header.Get(key); value != "" {
+			headers[key] = value
+		}
+	}
+
+	return string(body), headers, resp.StatusCode, nil
+}

@@ -1,10 +1,142 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
 import axios from 'axios';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
 
 const API_BASE = '/api';
+
+// Proxy Node Settings Component
+const ProxyNodeSection = ({ showToast }) => {
+  const [proxyNodeSetting, setProxyNodeSetting] = useState({ proxy_node_id: null, proxy_node_name: null });
+  const [availableNodes, setAvailableNodes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [settingRes, nodesRes] = await Promise.all([
+        axios.get(`${API_BASE}/settings/proxy-node`),
+        axios.get(`${API_BASE}/settings/available-proxy-nodes`)
+      ]);
+      setProxyNodeSetting(settingRes.data);
+      setAvailableNodes(nodesRes.data.nodes || []);
+    } catch (err) {
+      console.error('Failed to fetch proxy node settings', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveProxyNode = async (nodeId, nodeName) => {
+    setSaving(true);
+    try {
+      await axios.put(`${API_BASE}/settings/proxy-node`, {
+        proxy_node_id: nodeId,
+        proxy_node_name: nodeName
+      });
+      setProxyNodeSetting({ proxy_node_id: nodeId, proxy_node_name: nodeName });
+      showToast?.('代理节点设置已保存');
+    } catch (err) {
+      showToast?.('保存失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleNodeChange = (e) => {
+    const nodeId = e.target.value;
+    if (nodeId === '') {
+      saveProxyNode(null, null);
+    } else {
+      const node = availableNodes.find(n => n.id === nodeId);
+      if (node) {
+        saveProxyNode(nodeId, node.name);
+      }
+    }
+  };
+
+  // Group nodes by source
+  const groupedNodes = availableNodes.reduce((acc, node) => {
+    const source = node.source === 'custom' ? '自建节点' : node.source.replace('subscription:', '订阅: ');
+    if (!acc[source]) acc[source] = [];
+    acc[source].push(node);
+    return acc;
+  }, {});
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          <Shield size={20} />
+          订阅获取代理设置
+        </h2>
+      </div>
+
+      <p className="text-xs text-gray-400 mb-4">
+        当订阅直连失败时，自动使用此节点作为代理获取订阅内容
+      </p>
+
+      {loading ? (
+        <div className="text-center py-4 text-gray-500">加载中...</div>
+      ) : (
+        <div>
+          <label className="block text-sm text-gray-400 mb-2">代理节点</label>
+          <select
+            value={proxyNodeSetting.proxy_node_id || ''}
+            onChange={handleNodeChange}
+            disabled={saving}
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value="">不使用代理</option>
+            {Object.entries(groupedNodes).map(([source, nodes]) => (
+              <optgroup key={source} label={source}>
+                {nodes.map(node => (
+                  <option key={node.id} value={node.id}>
+                    {node.display_name || node.name}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+
+          {proxyNodeSetting.proxy_node_id && (
+            <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <div className="flex items-start gap-2">
+                <CheckCircle size={16} className="text-blue-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-blue-300">
+                  <p className="font-medium">当前使用: {proxyNodeSetting.proxy_node_name}</p>
+                  <p className="text-xs text-blue-400 mt-1">
+                    订阅刷新时会先尝试直连，失败后自动切换到此代理节点
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {availableNodes.length === 0 && (
+            <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={16} className="text-yellow-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-yellow-300">
+                  <p>没有可用的节点</p>
+                  <p className="text-xs text-yellow-400 mt-1">
+                    请先添加自建节点或订阅，然后才能选择代理节点
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // Admin Token Management Component
 const AdminTokenSection = ({ showToast }) => {
@@ -1051,6 +1183,9 @@ export default function Settings({
           type="danger"
         />
       )}
+
+      {/* Proxy Node Settings */}
+      <ProxyNodeSection showToast={showToast} />
 
       {/* Password Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
