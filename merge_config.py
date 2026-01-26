@@ -587,30 +587,60 @@ class NameTransformer:
         '🇦🇷': ['AR', 'Argentina', '阿根廷'],
     }
     
+    # Pre-compiled regex for flag removal (performance optimization)
+    _FLAG_PATTERN = None
+    
+    @staticmethod
+    def _get_flag_pattern():
+        """Lazy compile flag removal pattern"""
+        if NameTransformer._FLAG_PATTERN is None:
+            import re
+            # Create regex pattern from all flags
+            flags_escaped = [re.escape(flag) for flag in NameTransformer.FLAG_EMOJIS]
+            NameTransformer._FLAG_PATTERN = re.compile('|'.join(flags_escaped))
+        return NameTransformer._FLAG_PATTERN
+    
     @staticmethod
     def remove_flags(name: str) -> str:
-        """Remove all flag emojis from node name"""
-        result = name
-        for flag in NameTransformer.FLAG_EMOJIS:
-            result = result.replace(flag, '')
+        """Remove all flag emojis from node name (optimized with regex)"""
+        pattern = NameTransformer._get_flag_pattern()
+        result = pattern.sub('', name)
         # Clean up extra spaces
         result = ' '.join(result.split())
         return result.strip()
+    
+    # Flag emoji set for fast lookup (performance optimization)
+    _FLAG_SET = None
+    
+    @staticmethod
+    def _get_flag_set():
+        """Lazy create flag set"""
+        if NameTransformer._FLAG_SET is None:
+            NameTransformer._FLAG_SET = set(NameTransformer.FLAG_EMOJIS) - {'🔰', '🌏', '🌍', '🌎', '🏳️'}
+        return NameTransformer._FLAG_SET
     
     @staticmethod
     def identify_flag(name: str, server: str = None) -> str:
         """Identify country flag based on node name
         Priority: 1. Flag emoji at the START of name  2. Any flag emoji in name  3. Keyword matching  4. GeoIP lookup  5. Default flag
         """
+        flag_set = NameTransformer._get_flag_set()
+        
         # Priority 1: Check if name STARTS with a country flag emoji (most reliable)
-        for flag in NameTransformer.FLAG_EMOJIS:
-            if name.startswith(flag) and flag != '🔰' and flag != '🌏' and flag != '🌍' and flag != '🌎' and flag != '🏳️':
-                return flag
+        # Check first 2 characters (emoji can be 1-2 chars)
+        if len(name) >= 2:
+            first_char = name[0]
+            if first_char in flag_set:
+                return first_char
+            # Some emojis are 2 chars
+            first_two = name[:2]
+            if first_two in flag_set:
+                return first_two
         
         # Priority 2: Check if name contains a country flag emoji anywhere
-        for flag in NameTransformer.FLAG_EMOJIS:
-            if flag in name and flag != '🔰' and flag != '🌏' and flag != '🌍' and flag != '🌎' and flag != '🏳️':
-                return flag
+        for char in name:
+            if char in flag_set:
+                return char
         
         # Priority 3: Try to identify by keywords
         import re
@@ -888,6 +918,40 @@ class GeoIPLookup:
 class CountryGrouper:
     """Group proxy nodes by country/region"""
     
+    # Pre-compiled patterns cache (performance optimization)
+    _compiled_patterns = None
+    _flag_to_country = None
+    
+    @staticmethod
+    def _init_patterns():
+        """Initialize pre-compiled patterns for fast matching"""
+        if CountryGrouper._compiled_patterns is not None:
+            return
+        
+        import re
+        CountryGrouper._compiled_patterns = {}
+        CountryGrouper._flag_to_country = {}
+        
+        for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
+            flag = patterns[0]
+            CountryGrouper._flag_to_country[flag] = country
+            
+            compiled_list = []
+            for pattern in patterns[1:]:  # Skip flag emoji
+                has_chinese = any('\u4e00' <= c <= '\u9fff' for c in pattern)
+                if has_chinese:
+                    # For Chinese, use simple string matching (faster)
+                    compiled_list.append(('chinese', pattern))
+                elif len(pattern) <= 3:
+                    # For short English, compile word boundary regex
+                    regex = re.compile(r'(?<![A-Za-z])' + re.escape(pattern) + r'(?![A-Za-z])', re.IGNORECASE)
+                    compiled_list.append(('regex', regex, len(pattern)))
+                else:
+                    # For longer English, use uppercase string matching
+                    compiled_list.append(('english', pattern.upper(), len(pattern)))
+            
+            CountryGrouper._compiled_patterns[country] = compiled_list
+    
     # Country identification patterns: Group name -> keyword list
     COUNTRY_PATTERNS = {
         '🇭🇰 香港': ['🇭🇰', 'hongkong', 'hong kong', 'hk', '香港', '港'],
@@ -1024,49 +1088,56 @@ class CountryGrouper:
     
     @staticmethod
     def identify_country(proxy_name: str, proxy_server: str = None) -> str:
-        """Identify country/region of proxy node
+        """Identify country/region of proxy node (optimized with pre-compiled patterns)
         Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching (longest match)  4. GeoIP lookup  5. Unknown
         """
+        CountryGrouper._init_patterns()
+        
         # Priority 1: Check if name STARTS with a flag emoji (most reliable)
-        for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
-            flag = patterns[0]  # First pattern is always the flag emoji
-            if proxy_name.startswith(flag):
-                return country
+        if len(proxy_name) >= 2:
+            first_char = proxy_name[0]
+            if first_char in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[first_char]
+            # Some emojis are 2 chars
+            first_two = proxy_name[:2]
+            if first_two in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[first_two]
         
         # Priority 2: Check for any flag emoji in name
-        for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
-            flag = patterns[0]
-            if flag in proxy_name:
-                return country
+        for char in proxy_name:
+            if char in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[char]
         
-        # Priority 3: Try keyword matching with LONGEST MATCH principle
-        # This is critical to avoid "俄罗斯" matching "白俄罗斯"
-        import re
+        # Priority 3: Try keyword matching with LONGEST MATCH principle (optimized)
         best_match_country = None
         best_match_len = 0
+        name_upper = proxy_name.upper()
         
-        for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
-            for pattern in patterns[1:]:  # Skip the flag emoji
-                # Check if pattern contains Chinese characters
-                has_chinese = any('\u4e00' <= c <= '\u9fff' for c in pattern)
+        for country, compiled_list in CountryGrouper._compiled_patterns.items():
+            for item in compiled_list:
                 matched = False
+                pattern_len = 0
                 
-                if has_chinese:
-                    # For Chinese patterns, simple contains check
+                if item[0] == 'chinese':
+                    # Chinese pattern - simple contains
+                    pattern = item[1]
                     if pattern in proxy_name:
                         matched = True
-                elif len(pattern) <= 3:
-                    # For short English patterns, require word boundary
-                    if re.search(r'(?<![A-Za-z])' + re.escape(pattern) + r'(?![A-Za-z])', proxy_name, re.IGNORECASE):
+                        pattern_len = len(pattern)
+                elif item[0] == 'regex':
+                    # Short English with word boundary
+                    regex, pattern_len = item[1], item[2]
+                    if regex.search(proxy_name):
                         matched = True
-                else:
-                    # For longer English patterns, simple contains is fine
-                    if pattern.upper() in proxy_name.upper():
+                else:  # english
+                    # Longer English - uppercase contains
+                    pattern, pattern_len = item[1], item[2]
+                    if pattern in name_upper:
                         matched = True
                 
-                # Use longest match to avoid substring issues (e.g., "俄罗斯" in "白俄罗斯")
-                if matched and len(pattern) > best_match_len:
-                    best_match_len = len(pattern)
+                # Use longest match to avoid substring issues
+                if matched and pattern_len > best_match_len:
+                    best_match_len = pattern_len
                     best_match_country = country
         
         if best_match_country:
@@ -1084,6 +1155,7 @@ class CountryGrouper:
                     if len(parts) == 2:
                         flag, name = parts
                         CountryGrouper.COUNTRY_PATTERNS[country_group] = [flag, name]
+                        CountryGrouper._flag_to_country[flag] = country_group
                 return country_group
         
         return '🔰 未知'

@@ -1,6 +1,6 @@
 [project]
 name = "submerger"
-version = "2.5.0"
+version = "2.5.1"
 description = "Modern subscription aggregation management panel for Clash/Mihomo"
 requires-python = ">=3.10"
 dependencies = [

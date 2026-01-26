@@ -136,8 +136,14 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 # ==================== Config Management ====================
 
+# Config cache for performance (avoid repeated file I/O)
+_config_cache = None
+_config_mtime = None
+
 def load_config() -> dict:
-    """Load unified config"""
+    """Load unified config with caching"""
+    global _config_cache, _config_mtime
+    
     default = {
         'auth': {},
         'subscriptions': [],
@@ -147,23 +153,45 @@ def load_config() -> dict:
         'templates': [],  # Multi-template management
         'admin_tokens': []  # Admin multi-token management
     }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            # Ensure all required keys exist
-            for key in default:
-                if key not in config:
-                    config[key] = default[key]
-            return config
-        except:
-            pass
-    return default
+    
+    if not os.path.exists(CONFIG_FILE):
+        return default
+    
+    try:
+        # Check if file has been modified
+        current_mtime = os.path.getmtime(CONFIG_FILE)
+        
+        # Return cached config if file hasn't changed
+        if _config_cache is not None and _config_mtime == current_mtime:
+            return _config_cache.copy()  # Return copy to prevent external modifications
+        
+        # Load from file
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        # Ensure all required keys exist
+        for key in default:
+            if key not in config:
+                config[key] = default[key]
+        
+        # Update cache
+        _config_cache = config
+        _config_mtime = current_mtime
+        
+        return config.copy()
+    except:
+        return default
 
 def save_config(config: dict):
-    """Save unified config"""
+    """Save unified config and invalidate cache"""
+    global _config_cache, _config_mtime
+    
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+    
+    # Invalidate cache
+    _config_cache = None
+    _config_mtime = None
 
 def migrate_old_config():
     """Migrate old config files to unified config"""
@@ -2136,9 +2164,10 @@ def update_custom_nodes_yaml():
     proxies = []
     
     for node in nodes:
-        proxy = parse_node_link(node['link'])
-        if proxy:
-            proxy['name'] = node['name']
+        # Use stored node config instead of re-parsing to avoid performance issues
+        # Only exclude 'id' and 'link' fields which are not part of proxy config
+        proxy = {k: v for k, v in node.items() if k not in ['id', 'link']}
+        if proxy and 'type' in proxy:  # Ensure it's a valid proxy config
             proxies.append(proxy)
     
     filepath = os.path.join(YAML_SOURCE_DIR, 'custom_nodes.yaml')
