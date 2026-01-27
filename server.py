@@ -42,7 +42,7 @@ from speedtest_service import (
     get_speedtest_service, SpeedTestConfig, SpeedTestResult,
     get_latency_color, get_speed_color, format_speed, format_latency
 )
-from logger_config import get_logger
+from logger_config import get_logger, LOG_LEVEL
 from helpers import (
     Constants, YAMLCache, yaml_cache,
     load_subscription_yaml, save_subscription_yaml, save_subscription_content,
@@ -71,10 +71,13 @@ class AppConfig:
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
     GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
     
-    # Timeouts (seconds)
+    # Timeouts (seconds) - fine-grained control
     DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
     SPEEDTEST_TIMEOUT = int(os.environ.get('SPEEDTEST_TIMEOUT', '10'))
     HEALTH_CHECK_TIMEOUT = int(os.environ.get('HEALTH_CHECK_TIMEOUT', '2'))
+    CONNECT_TIMEOUT = int(os.environ.get('CONNECT_TIMEOUT', '10'))  # Connection establishment
+    READ_TIMEOUT = int(os.environ.get('READ_TIMEOUT', '30'))  # Reading response
+    WRITE_TIMEOUT = int(os.environ.get('WRITE_TIMEOUT', '10'))  # Writing request
     
     # Retry settings
     MAX_RETRIES = int(os.environ.get('MAX_RETRIES', '3'))
@@ -94,8 +97,18 @@ class AppConfig:
     RATE_LIMIT_SPEEDTEST = os.environ.get('RATE_LIMIT_SPEEDTEST', '5/minute')
     RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
     
+    # CORS settings
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')  # Comma-separated or *
+    
+    # GZip compression threshold (bytes)
+    GZIP_MIN_SIZE = int(os.environ.get('GZIP_MIN_SIZE', '500'))
+    
+    # HTTP connection pool settings
+    HTTP_MAX_KEEPALIVE = int(os.environ.get('HTTP_MAX_KEEPALIVE', '20'))
+    HTTP_MAX_CONNECTIONS = int(os.environ.get('HTTP_MAX_CONNECTIONS', '50'))
+    
     # Version
-    VERSION = "2.6.0"
+    VERSION = "2.7.0"
 
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
@@ -122,14 +135,25 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=AppConfig.CORS_ORIGINS.split(',') if AppConfig.CORS_ORIGINS != '*' else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # GZip compression middleware for large responses
-app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
+app.add_middleware(GZipMiddleware, minimum_size=AppConfig.GZIP_MIN_SIZE)
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses"""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # Request ID middleware
 
@@ -215,13 +239,18 @@ os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
 
 # ==================== HTTP Client ====================
 # Create global async HTTP client for better performance
-# Connection pool optimized for concurrent subscription refreshes (max 5 concurrent)
+# Connection pool optimized for concurrent subscription refreshes
 http_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(Constants.TIMEOUT_SUBSCRIPTION_FETCH),
+    timeout=httpx.Timeout(
+        connect=AppConfig.CONNECT_TIMEOUT,
+        read=AppConfig.READ_TIMEOUT,
+        write=AppConfig.WRITE_TIMEOUT,
+        pool=AppConfig.CONNECT_TIMEOUT
+    ),
     follow_redirects=True,
     limits=httpx.Limits(
-        max_keepalive_connections=10,  # Keep 10 connections alive for reuse
-        max_connections=20  # Max 20 total connections (4x concurrent refreshes)
+        max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
+        max_connections=AppConfig.HTTP_MAX_CONNECTIONS
     )
 )
 
@@ -6628,6 +6657,15 @@ def clear_online_geoip_api_cache(_: bool = Depends(verify_session)):
 @app.on_event("startup")
 async def startup_event():
     """Initialize scheduler and load scheduled tasks on startup"""
+    # Log startup configuration
+    from logger_config import get_log_format
+    logger.info("=" * 50)
+    logger.info(f"Starting Clash Sub Merger v{AppConfig.VERSION}")
+    logger.info(f"Log level: {LOG_LEVEL}, Format: {get_log_format()}")
+    logger.info(f"Data directory: {DATA_DIR}")
+    logger.info(f"Rate limits: Login={AppConfig.RATE_LIMIT_LOGIN}, Default={AppConfig.RATE_LIMIT_DEFAULT}")
+    logger.info("=" * 50)
+    
     # Start Go speedtest service
     start_go_speedtest_service()
     
@@ -7952,7 +7990,7 @@ async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Dep
 
 frontend_dist = os.path.join(BASE_DIR, 'submerger', 'dist')
 if os.path.exists(frontend_dist):
-    # 1. Mount assets for performance
+    # 1. Mount assets with cache headers for performance
     assets_path = os.path.join(frontend_dist, 'assets')
     if os.path.exists(assets_path):
         app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
@@ -7960,7 +7998,10 @@ if os.path.exists(frontend_dist):
     # 2. Serve root requests
     @app.get("/")
     async def serve_index():
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
+        response = FileResponse(os.path.join(frontend_dist, "index.html"))
+        # No cache for HTML to ensure fresh content
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 
     # 3. Catch-all for SPA routes (e.g. /settings, /nodes)
     @app.get("/{full_path:path}")
@@ -7972,10 +8013,20 @@ if os.path.exists(frontend_dist):
         # Try to serve static file if it exists (e.g. favicon.ico)
         file_path = os.path.join(frontend_dist, full_path)
         if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
+            response = FileResponse(file_path)
+            # Cache static assets (js, css, images) for 1 year (immutable with hash)
+            if full_path.endswith(('.js', '.css', '.woff', '.woff2', '.ttf', '.eot')):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif full_path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp')):
+                response.headers["Cache-Control"] = "public, max-age=86400"  # 1 day for images
+            elif full_path.endswith('.json'):
+                response.headers["Cache-Control"] = "public, max-age=3600"  # 1 hour for JSON
+            return response
             
         # Fallback to index.html for React Router
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
+        response = FileResponse(os.path.join(frontend_dist, "index.html"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 
 if __name__ == "__main__":
     import uvicorn
@@ -8022,3 +8073,313 @@ def list_loggers(_: bool = Depends(verify_session)):
         "loggers": list_all_loggers(),
         "count": len(list_all_loggers())
     }
+
+
+# ==================== Backup and Import/Export API ====================
+
+import shutil
+from datetime import datetime as dt
+
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+# Auto backup configuration
+AUTO_BACKUP_ENABLED = os.environ.get('AUTO_BACKUP_ENABLED', 'true').lower() == 'true'
+AUTO_BACKUP_INTERVAL_HOURS = int(os.environ.get('AUTO_BACKUP_INTERVAL_HOURS', '24'))
+AUTO_BACKUP_KEEP_COUNT = int(os.environ.get('AUTO_BACKUP_KEEP_COUNT', '7'))
+
+
+def create_backup(reason: str = 'manual') -> str:
+    """Create a backup of config.json"""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    
+    timestamp = dt.now().strftime('%Y%m%d_%H%M%S')
+    backup_filename = f"config_{timestamp}_{reason}.json"
+    backup_path = os.path.join(BACKUP_DIR, backup_filename)
+    
+    shutil.copy2(CONFIG_FILE, backup_path)
+    logger.info(f"Backup created: {backup_filename}")
+    
+    # Cleanup old backups
+    cleanup_old_backups()
+    
+    return backup_filename
+
+
+def cleanup_old_backups():
+    """Keep only the most recent backups"""
+    backups = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.startswith('config_') and f.endswith('.json')],
+        reverse=True
+    )
+    
+    for old_backup in backups[AUTO_BACKUP_KEEP_COUNT:]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old_backup))
+            logger.info(f"Deleted old backup: {old_backup}")
+        except Exception as e:
+            logger.error(f"Failed to delete old backup {old_backup}: {e}")
+
+
+def schedule_auto_backup():
+    """Schedule automatic backups"""
+    if not AUTO_BACKUP_ENABLED:
+        return
+    
+    from apscheduler.triggers.interval import IntervalTrigger
+    
+    scheduler.add_job(
+        lambda: create_backup('auto'),
+        trigger=IntervalTrigger(hours=AUTO_BACKUP_INTERVAL_HOURS),
+        id='auto_backup',
+        replace_existing=True
+    )
+    logger.info(f"Auto backup scheduled every {AUTO_BACKUP_INTERVAL_HOURS} hours")
+
+
+@app.get("/api/system/backups", tags=["system"])
+@handle_api_errors
+def list_backups(_: bool = Depends(verify_session)):
+    """List all available backups"""
+    backups = []
+    for f in os.listdir(BACKUP_DIR):
+        if f.startswith('config_') and f.endswith('.json'):
+            filepath = os.path.join(BACKUP_DIR, f)
+            stat = os.stat(filepath)
+            backups.append({
+                'filename': f,
+                'size': stat.st_size,
+                'created_at': int(stat.st_mtime)
+            })
+    
+    backups.sort(key=lambda x: x['created_at'], reverse=True)
+    return {'backups': backups, 'count': len(backups)}
+
+
+@app.post("/api/system/backups", tags=["system"])
+@handle_api_errors
+def create_manual_backup(_: bool = Depends(verify_session)):
+    """Create a manual backup"""
+    filename = create_backup('manual')
+    if filename:
+        return {'status': 'success', 'filename': filename}
+    raise HTTPException(status_code=500, detail="Failed to create backup")
+
+
+@app.post("/api/system/backups/{filename}/restore", tags=["system"])
+@handle_api_errors
+def restore_backup(filename: str, _: bool = Depends(verify_session)):
+    """Restore from a backup"""
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    
+    if not os.path.exists(backup_path):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    
+    # Validate backup file
+    try:
+        with open(backup_path, 'r', encoding='utf-8') as f:
+            json.load(f)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid backup file")
+    
+    # Create backup before restore
+    create_backup('pre_restore')
+    
+    # Restore
+    shutil.copy2(backup_path, CONFIG_FILE)
+    
+    # Invalidate cache
+    global _config_cache, _config_mtime
+    _config_cache = None
+    _config_mtime = None
+    
+    logger.info(f"Config restored from backup: {filename}")
+    return {'status': 'success', 'message': f'Restored from {filename}'}
+
+
+@app.delete("/api/system/backups/{filename}", tags=["system"])
+@handle_api_errors
+def delete_backup(filename: str, _: bool = Depends(verify_session)):
+    """Delete a backup"""
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    
+    if not os.path.exists(backup_path):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    
+    os.remove(backup_path)
+    logger.info(f"Backup deleted: {filename}")
+    return {'status': 'success'}
+
+
+@app.get("/api/system/export", tags=["system"])
+@handle_api_errors
+def export_config(_: bool = Depends(verify_session)):
+    """Export full configuration for migration"""
+    config = load_config()
+    
+    # Add export metadata
+    export_data = {
+        'version': AppConfig.VERSION,
+        'exported_at': int(time.time()),
+        'config': config
+    }
+    
+    return Response(
+        content=json.dumps(export_data, ensure_ascii=False, indent=2),
+        media_type='application/json',
+        headers={
+            'Content-Disposition': f'attachment; filename="submerger_export_{int(time.time())}.json"'
+        }
+    )
+
+
+class ImportRequest(BaseModel):
+    data: dict
+    merge: bool = False  # If true, merge with existing config; if false, replace
+
+
+@app.post("/api/system/import", tags=["system"])
+@handle_api_errors
+def import_config(req: ImportRequest, _: bool = Depends(verify_session)):
+    """Import configuration from export file"""
+    import_data = req.data
+    
+    # Validate import data
+    if 'config' not in import_data:
+        raise HTTPException(status_code=400, detail="Invalid import data: missing 'config' field")
+    
+    new_config = import_data['config']
+    
+    # Create backup before import
+    create_backup('pre_import')
+    
+    if req.merge:
+        # Merge with existing config
+        current_config = load_config()
+        
+        # Merge subscriptions (avoid duplicates by URL)
+        existing_urls = {s['url'] for s in current_config.get('subscriptions', [])}
+        for sub in new_config.get('subscriptions', []):
+            if sub['url'] not in existing_urls:
+                current_config.setdefault('subscriptions', []).append(sub)
+        
+        # Merge custom nodes (avoid duplicates by name)
+        existing_names = {n['name'] for n in current_config.get('custom_nodes', [])}
+        for node in new_config.get('custom_nodes', []):
+            if node['name'] not in existing_names:
+                current_config.setdefault('custom_nodes', []).append(node)
+        
+        # Merge users (avoid duplicates by name)
+        existing_user_names = {u['name'] for u in current_config.get('users', [])}
+        for user in new_config.get('users', []):
+            if user['name'] not in existing_user_names:
+                current_config.setdefault('users', []).append(user)
+        
+        # Merge templates (avoid duplicates by name)
+        existing_template_names = {t['name'] for t in current_config.get('templates', [])}
+        for template in new_config.get('templates', []):
+            if template['name'] not in existing_template_names:
+                current_config.setdefault('templates', []).append(template)
+        
+        save_config(current_config)
+        logger.info("Config merged from import")
+        return {'status': 'success', 'mode': 'merge'}
+    else:
+        # Replace entire config
+        save_config(new_config)
+        logger.info("Config replaced from import")
+        return {'status': 'success', 'mode': 'replace'}
+
+
+# ==================== API Key Rotation Reminder ====================
+
+# Key rotation configuration
+KEY_ROTATION_DAYS = int(os.environ.get('KEY_ROTATION_DAYS', '90'))  # Remind after 90 days
+KEY_ROTATION_CHECK_ENABLED = os.environ.get('KEY_ROTATION_CHECK_ENABLED', 'true').lower() == 'true'
+
+
+def check_key_rotation_needed() -> list:
+    """Check which API keys need rotation"""
+    config = load_config()
+    now = int(time.time())
+    rotation_threshold = KEY_ROTATION_DAYS * 24 * 60 * 60
+    
+    keys_needing_rotation = []
+    
+    # Check admin tokens
+    for token in config.get('admin_tokens', []):
+        created_at = token.get('created_at', 0)
+        age_days = (now - created_at) // (24 * 60 * 60)
+        
+        if now - created_at > rotation_threshold:
+            keys_needing_rotation.append({
+                'type': 'admin_token',
+                'id': token['id'],
+                'name': token.get('name', 'Unknown'),
+                'created_at': created_at,
+                'age_days': age_days,
+                'recommended_action': 'regenerate'
+            })
+    
+    # Check user tokens
+    for user in config.get('users', []):
+        created_at = user.get('created_at', 0)
+        age_days = (now - created_at) // (24 * 60 * 60)
+        
+        if now - created_at > rotation_threshold:
+            keys_needing_rotation.append({
+                'type': 'user_token',
+                'id': user['id'],
+                'name': user.get('name', 'Unknown'),
+                'created_at': created_at,
+                'age_days': age_days,
+                'recommended_action': 'regenerate'
+            })
+    
+    return keys_needing_rotation
+
+
+@app.get("/api/system/key-rotation", tags=["system"])
+@handle_api_errors
+def get_key_rotation_status(_: bool = Depends(verify_session)):
+    """Get API key rotation status and recommendations"""
+    keys_needing_rotation = check_key_rotation_needed()
+    
+    return {
+        'rotation_threshold_days': KEY_ROTATION_DAYS,
+        'keys_needing_rotation': keys_needing_rotation,
+        'count': len(keys_needing_rotation),
+        'check_enabled': KEY_ROTATION_CHECK_ENABLED
+    }
+
+
+def schedule_key_rotation_check():
+    """Schedule daily key rotation check"""
+    if not KEY_ROTATION_CHECK_ENABLED:
+        return
+    
+    from apscheduler.triggers.cron import CronTrigger
+    
+    def log_rotation_reminder():
+        keys = check_key_rotation_needed()
+        if keys:
+            logger.warning(f"API key rotation reminder: {len(keys)} keys are older than {KEY_ROTATION_DAYS} days")
+            for key in keys:
+                logger.warning(f"  - {key['type']}: {key['name']} (age: {key['age_days']} days)")
+    
+    scheduler.add_job(
+        log_rotation_reminder,
+        trigger=CronTrigger(hour=9, minute=0),  # Check daily at 9:00 AM
+        id='key_rotation_check',
+        replace_existing=True
+    )
+    logger.info("Key rotation check scheduled daily at 9:00 AM")
+
+
+# Schedule auto backup and key rotation check on startup
+@app.on_event("startup")
+async def schedule_maintenance_tasks():
+    """Schedule maintenance tasks after main startup"""
+    schedule_auto_backup()
+    schedule_key_rotation_check()

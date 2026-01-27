@@ -1,0 +1,17 @@
+{
+  "name": "SubMerger",
+  "short_name": "SubMerger",
+  "description": "Clash/Mihomo 订阅聚合管理面板",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

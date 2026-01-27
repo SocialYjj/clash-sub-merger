@@ -9,3 +9,20 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=text
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8666/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # Resource limits (optional, uncomment if needed)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 128M

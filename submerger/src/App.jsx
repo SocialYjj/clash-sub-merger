@@ -1,7 +1,7 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import axios from 'axios';
 import { Eye, EyeOff, Lock } from 'lucide-react';
+import request from './utils/request';
 
 // Components (keep these as regular imports since they're small and used frequently)
 import Layout from './components/Layout';
@@ -18,26 +18,6 @@ const Settings = lazy(() => import('./pages/Settings'));
 const Templates = lazy(() => import('./pages/Templates'));
 
 const API_BASE = '/api';
-
-// Configure axios interceptors
-axios.interceptors.request.use(config => {
-  const session = localStorage.getItem('session');
-  if (session) {
-    config.headers.Authorization = session;
-  }
-  return config;
-});
-
-axios.interceptors.response.use(
-  response => response,
-  error => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('session');
-      window.location.reload();
-    }
-    return Promise.reject(error);
-  }
-);
 
 // Login Page Component
 function LoginPage({ hasPassword, onLogin, onSetup }) {
@@ -173,7 +153,7 @@ export default function App() {
 
   const checkAuthStatus = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/auth/status`);
+      const res = await request.get(`${API_BASE}/auth/status`);
       setHasPassword(res.data.has_password);
       setSubToken(res.data.sub_token || '');
       setSubFilename(res.data.sub_filename || 'config.yaml');
@@ -182,7 +162,7 @@ export default function App() {
       const session = localStorage.getItem('session');
       if (session && res.data.has_password) {
         try {
-          await axios.get(`${API_BASE}/subscriptions`);
+          await request.get(`${API_BASE}/subscriptions`);
           setIsLoggedIn(true);
         } catch {
           localStorage.removeItem('session');
@@ -196,13 +176,13 @@ export default function App() {
   };
 
   const handleLogin = async (password) => {
-    const res = await axios.post(`${API_BASE}/auth/login`, { password });
+    const res = await request.post(`${API_BASE}/auth/login`, { password });
     localStorage.setItem('session', res.data.session);
     setIsLoggedIn(true);
   };
 
   const handleSetup = async (password) => {
-    const res = await axios.post(`${API_BASE}/auth/setup`, { password });
+    const res = await request.post(`${API_BASE}/auth/setup`, { password });
     localStorage.setItem('session', res.data.session);
     setSubToken(res.data.sub_token);
     setHasPassword(true);
@@ -211,7 +191,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await axios.post(`${API_BASE}/auth/logout`);
+      await request.post(`${API_BASE}/auth/logout`);
     } catch { }
     localStorage.removeItem('session');
     setIsLoggedIn(false);
@@ -227,7 +207,7 @@ export default function App() {
 
   const fetchSubscriptions = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/subscriptions`);
+      const res = await request.get(`${API_BASE}/subscriptions`);
       setSubscriptions(res.data.subscriptions || []);
     } catch (err) {
       console.error('Failed to fetch subscriptions', err);
@@ -236,7 +216,7 @@ export default function App() {
 
   const fetchCustomNodes = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/custom-nodes`);
+      const res = await request.get(`${API_BASE}/custom-nodes`);
       setCustomNodes(res.data.nodes || []);
     } catch (err) {
       console.error('Failed to fetch custom nodes', err);
@@ -245,7 +225,7 @@ export default function App() {
 
   const fetchUsers = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/users`);
+      const res = await request.get(`${API_BASE}/users`);
       setUsers(res.data.users || []);
     } catch (err) {
       console.error('Failed to fetch users', err);
@@ -256,7 +236,7 @@ export default function App() {
   const addSubscription = async (name, url) => {
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/subscriptions`, { name, url });
+      await request.post(`${API_BASE}/subscriptions`, { name, url });
       await fetchSubscriptions();
       showToast('订阅添加成功');
     } catch (err) {
@@ -269,7 +249,7 @@ export default function App() {
   const deleteSubscription = async (id) => {
     showConfirm('删除订阅', '确定要删除这个订阅吗？', async () => {
       try {
-        await axios.delete(`${API_BASE}/subscriptions/${id}`);
+        await request.delete(`${API_BASE}/subscriptions/${id}`);
         await fetchSubscriptions();
         showToast('订阅已删除');
       } catch (err) {
@@ -281,7 +261,7 @@ export default function App() {
   const refreshSubscription = async (id) => {
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/subscriptions/${id}/refresh`);
+      await request.post(`${API_BASE}/subscriptions/${id}/refresh`);
       await fetchSubscriptions();
       showToast('订阅已更新');
     } catch (err) {
@@ -294,7 +274,7 @@ export default function App() {
   const refreshAllSubscriptions = async () => {
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/subscriptions/refresh-all`);
+      await request.post(`${API_BASE}/subscriptions/refresh-all`);
       await fetchSubscriptions();
       showToast('全部订阅已更新');
     } catch (err) {
@@ -306,7 +286,7 @@ export default function App() {
 
   const toggleSubscription = async (id) => {
     try {
-      await axios.put(`${API_BASE}/subscriptions/${id}/toggle`);
+      await request.put(`${API_BASE}/subscriptions/${id}/toggle`);
       await fetchSubscriptions();
     } catch (err) {
       showToast('操作失败', 'error');
@@ -317,7 +297,7 @@ export default function App() {
   const addUser = async (name, expireTime) => {
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/users`, { name, expire_time: expireTime });
+      await request.post(`${API_BASE}/users`, { name, expire_time: expireTime });
       await fetchUsers();
       showToast('用户创建成功');
     } catch (err) {
@@ -330,7 +310,7 @@ export default function App() {
   const deleteUser = async (id) => {
     showConfirm('删除用户', '确定要删除这个用户吗？', async () => {
       try {
-        await axios.delete(`${API_BASE}/users/${id}`);
+        await request.delete(`${API_BASE}/users/${id}`);
         await fetchUsers();
         showToast('用户已删除');
       } catch (err) {
@@ -341,7 +321,7 @@ export default function App() {
 
   const toggleUser = async (id, currentEnabled) => {
     try {
-      await axios.put(`${API_BASE}/users/${id}`, { enabled: !currentEnabled });
+      await request.put(`${API_BASE}/users/${id}`, { enabled: !currentEnabled });
       await fetchUsers();
       showToast(currentEnabled ? '用户已禁用' : '用户已启用');
     } catch (err) {
@@ -351,7 +331,7 @@ export default function App() {
 
   const copyUserSubUrl = async (user) => {
     try {
-      const res = await axios.get(`${API_BASE}/users/${user.id}`);
+      const res = await request.get(`${API_BASE}/users/${user.id}`);
       const url = `${window.location.origin}/sub?token=${res.data.user.token}`;
       navigator.clipboard.writeText(url);
       showToast('订阅地址已复制');
@@ -363,7 +343,7 @@ export default function App() {
   const regenerateUserToken = async (id) => {
     showConfirm('重新生成 Token', '重新生成 token 后，旧的订阅地址将失效，确定继续？', async () => {
       try {
-        await axios.post(`${API_BASE}/users/${id}/regenerate-token`);
+        await request.post(`${API_BASE}/users/${id}/regenerate-token`);
         await fetchUsers();
         showToast('Token 已重新生成');
       } catch (err) {
@@ -375,7 +355,7 @@ export default function App() {
   // Settings handlers
   const updateFilename = async (filename) => {
     try {
-      const res = await axios.post(`${API_BASE}/auth/sub-filename`, { filename });
+      const res = await request.post(`${API_BASE}/auth/sub-filename`, { filename });
       setSubFilename(res.data.sub_filename);
       showToast('文件名已更新');
     } catch (err) {
@@ -385,7 +365,7 @@ export default function App() {
 
   const updateSubName = async (name) => {
     try {
-      const res = await axios.post(`${API_BASE}/auth/sub-name`, { name });
+      const res = await request.post(`${API_BASE}/auth/sub-name`, { name });
       setSubName(res.data.sub_name);
       showToast('配置名称已更新');
     } catch (err) {
@@ -396,7 +376,7 @@ export default function App() {
   const regenerateToken = async () => {
     showConfirm('重新生成订阅 Token', '重新生成 token 后，旧的订阅地址将失效，确定继续？', async () => {
       try {
-        const res = await axios.post(`${API_BASE}/auth/regenerate-token`);
+        const res = await request.post(`${API_BASE}/auth/regenerate-token`);
         setSubToken(res.data.sub_token);
         showToast('订阅 token 已重新生成');
       } catch (err) {
@@ -407,7 +387,7 @@ export default function App() {
 
   const changePassword = async (newPassword) => {
     try {
-      const res = await axios.post(`${API_BASE}/auth/change-password`, { password: newPassword });
+      const res = await request.post(`${API_BASE}/auth/change-password`, { password: newPassword });
       localStorage.setItem('session', res.data.session);
       showToast('密码修改成功');
     } catch (err) {

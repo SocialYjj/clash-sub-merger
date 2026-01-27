@@ -1,14 +1,20 @@
 """
 Logging configuration for the application
+Supports both plain text and JSON structured logging formats
 """
+import json
 import logging
 import os
+import re
 import sys
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # Get log level from environment variable
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+# Enable JSON logging with LOG_FORMAT=json
+LOG_FORMAT_TYPE = os.environ.get('LOG_FORMAT', 'text').lower()
 DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.dirname(__file__), 'data'))
 
 # Ensure logs directory exists
@@ -22,8 +28,92 @@ LOG_FILE = os.path.join(LOGS_DIR, 'app.log')
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
+
+class JSONFormatter(logging.Formatter):
+    """
+    JSON formatter for structured logging
+    Outputs logs in JSON format for easy parsing by log aggregation tools
+    """
+    
+    def format(self, record: logging.LogRecord) -> str:
+        log_data = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': self._sanitize_message(record.getMessage()),
+            'module': record.module,
+            'function': record.funcName,
+            'line': record.lineno,
+        }
+        
+        # Add exception info if present
+        if record.exc_info:
+            log_data['exception'] = self.formatException(record.exc_info)
+        
+        # Add extra fields if any
+        if hasattr(record, 'extra_data'):
+            log_data['extra'] = record.extra_data
+        
+        return json.dumps(log_data, ensure_ascii=False)
+    
+    def _sanitize_message(self, message: str) -> str:
+        """Sanitize sensitive information from log messages"""
+        return SensitiveDataFilter.sanitize(message)
+
+
+class SensitiveDataFilter(logging.Filter):
+    """
+    Filter to sanitize sensitive data from log messages
+    Masks tokens, passwords, API keys, etc.
+    """
+    
+    # Patterns for sensitive data
+    PATTERNS = [
+        # API tokens and keys (generic)
+        (re.compile(r'(token["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (re.compile(r'(api[_-]?key["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (re.compile(r'(secret["\s:=]+)["\']?([a-zA-Z0-9_-]{8,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        # Passwords
+        (re.compile(r'(password["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (re.compile(r'(passwd["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        # Authorization headers
+        (re.compile(r'(Authorization["\s:=]+)["\']?(Bearer\s+)?([a-zA-Z0-9_.-]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        # URLs with credentials
+        (re.compile(r'(https?://)[^:]+:[^@]+@', re.IGNORECASE), r'\1***:***@'),
+    ]
+    
+    @classmethod
+    def sanitize(cls, message: str) -> str:
+        """Apply all sanitization patterns to a message"""
+        for pattern, replacement in cls.PATTERNS:
+            message = pattern.sub(replacement, message)
+        return message
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Filter and sanitize the log record"""
+        if record.msg:
+            record.msg = self.sanitize(str(record.msg))
+        if record.args:
+            record.args = tuple(
+                self.sanitize(str(arg)) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        return True
+
 # Store all loggers for dynamic level adjustment
 _all_loggers = {}
+
+
+def _get_formatter() -> logging.Formatter:
+    """
+    Get the appropriate formatter based on LOG_FORMAT_TYPE
+    
+    Returns:
+        JSONFormatter for 'json', standard Formatter for 'text'
+    """
+    if LOG_FORMAT_TYPE == 'json':
+        return JSONFormatter()
+    return logging.Formatter(LOG_FORMAT, DATE_FORMAT)
 
 
 def setup_logger(name: str = None) -> logging.Logger:
@@ -35,6 +125,10 @@ def setup_logger(name: str = None) -> logging.Logger:
     
     Returns:
         Configured logger instance
+    
+    Environment Variables:
+        LOG_LEVEL: Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        LOG_FORMAT: Set output format ('text' or 'json')
     """
     logger = logging.getLogger(name or 'submerger')
     
@@ -47,11 +141,16 @@ def setup_logger(name: str = None) -> logging.Logger:
     
     logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
     
+    # Add sensitive data filter
+    logger.addFilter(SensitiveDataFilter())
+    
+    # Get formatter based on configuration
+    formatter = _get_formatter()
+    
     # Console handler (stdout)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)
-    console_handler.setFormatter(console_formatter)
+    console_handler.setFormatter(formatter)
     
     # File handler (rotating)
     file_handler = RotatingFileHandler(
@@ -61,8 +160,7 @@ def setup_logger(name: str = None) -> logging.Logger:
         encoding='utf-8'
     )
     file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)
-    file_handler.setFormatter(file_formatter)
+    file_handler.setFormatter(formatter)
     
     # Add handlers
     logger.addHandler(console_handler)
@@ -135,4 +233,14 @@ def list_all_loggers() -> dict:
         name: logging.getLevelName(logger_instance.level)
         for name, logger_instance in _all_loggers.items()
     }
+
+
+def get_log_format() -> str:
+    """
+    Get current log format type
+    
+    Returns:
+        Current log format ('text' or 'json')
+    """
+    return LOG_FORMAT_TYPE
 

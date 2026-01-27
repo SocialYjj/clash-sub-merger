@@ -2,7 +2,7 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/submerger
 COPY submerger/package*.json ./
-RUN npm ci
+RUN npm ci --prefer-offline
 COPY submerger/ ./
 RUN npm run build
 
@@ -15,8 +15,14 @@ COPY speedtest/*.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o speedtest .
 
 # Final image - Python backend + Go speedtest
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime
 WORKDIR /app
+
+# Labels
+LABEL org.opencontainers.image.title="Clash Sub Merger"
+LABEL org.opencontainers.image.description="Modern subscription aggregation management panel for Clash/Mihomo"
+LABEL org.opencontainers.image.source="https://github.com/SocialYjj/clash-sub-merger"
+LABEL org.opencontainers.image.licenses="MIT"
 
 # Install system dependencies (minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,10 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Create non-root user for security
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install Python dependencies
+# Install Python dependencies (separate layer for better caching)
 COPY requirements.txt ./
 RUN uv pip install --system --no-cache -r requirements.txt
 
@@ -42,25 +51,26 @@ COPY --from=go-builder /app/speedtest/speedtest /app/speedtest
 # Copy frontend build
 COPY --from=frontend-builder /app/submerger/dist ./submerger/dist
 
-# Create data directory
-RUN mkdir -p /app/data/uploads /app/data/logs
+# Create data directory and startup script with proper permissions
+RUN mkdir -p /app/data/uploads /app/data/logs \
+    && echo '#!/bin/sh\n/app/speedtest &\nexec python server.py' > /app/start.sh \
+    && chmod +x /app/start.sh \
+    && chown -R appuser:appgroup /app
 
-# Create startup script
-RUN echo '#!/bin/sh\n\
-/app/speedtest &\n\
-exec python server.py' > /app/start.sh && chmod +x /app/start.sh
-
-# Healthcheck - use the new /health endpoint that doesn't require auth
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8666/health || exit 1
 
 # Environment variables
-ENV PYTHONUNBUFFERED=1
-ENV DATA_DIR=/app/data
-ENV TZ=Asia/Shanghai
-ENV GO_SPEEDTEST_URL=http://localhost:9876
+ENV PYTHONUNBUFFERED=1 \
+    DATA_DIR=/app/data \
+    TZ=Asia/Shanghai \
+    GO_SPEEDTEST_URL=http://localhost:9876
 
-# Expose port (only main service, speedtest is internal)
+# Switch to non-root user
+USER appuser
+
+# Expose port
 EXPOSE 8666
 
 # Start both services
