@@ -51,6 +51,8 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
   - Token security protection
   - City name translations (Tokyo→东京, Seoul→首尔)
   - Special region display (HK→中国香港, TW→中国台湾)
+  - **Async GeoIP lookup** (v2.6.0) - Reduce "unknown" nodes with IP-based country detection
+  - **Case-insensitive city mapping** (v2.6.0) - Support all case formats (Boydton/boydton/BOYDTON)
 - 🔗 **Proxy Chain** - Create chained proxy configurations (Node A → Node B → Target)
 - 🔌 **Port Mapping** - Map nodes to local ports for direct access (generates Clash listeners)
 - 🏷️ **Smart Filtering** - Filter by country, protocol, subscription, latency status

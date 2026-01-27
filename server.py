@@ -1,5 +1,4 @@
 import os
-import requests
 import yaml
 import json
 import time
@@ -10,15 +9,31 @@ import httpx
 import subprocess
 import sys
 import atexit
+import base64  # Used for node parsing
+import asyncio  # Used for async operations
+import uuid  # Used for request IDs
+import signal  # Used for signal handling
+
+# Use C-accelerated YAML loader for better performance
+try:
+    from yaml import CLoader as YAMLLoader, CDumper as YAMLDumper
+except ImportError:
+    from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, unquote, quote
 from typing import Optional, Tuple, Dict, List
 from collections import OrderedDict
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, BackgroundTasks
-from fastapi.responses import FileResponse, PlainTextResponse   
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, BackgroundTasks, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, Field, validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from filelock import FileLock, Timeout
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 from merge_config import ConfigMerger, NameTransformer, CountryGrouper
 from geoip_service import GeoIPService, lookup_ip_online
@@ -27,8 +42,83 @@ from speedtest_service import (
     get_speedtest_service, SpeedTestConfig, SpeedTestResult,
     get_latency_color, get_speed_color, format_speed, format_latency
 )
+from logger_config import get_logger
+from helpers import (
+    Constants, YAMLCache, yaml_cache,
+    load_subscription_yaml, save_subscription_yaml, save_subscription_content,
+    get_subscription_node, save_custom_nodes_yaml, generate_timestamp_id,
+    find_item_by_id, load_yaml_file_cached,
+    Validators, handle_api_errors,
+    cache_hits_total as helper_cache_hits,
+    cache_misses_total as helper_cache_misses,
+    file_operations_total as helper_file_ops,
+    file_operation_duration_seconds as helper_file_duration
+)
 
-app = FastAPI(title="Clash Config Merger")
+# Setup logger for this module
+logger = get_logger(__name__)
+
+# ==================== Application Configuration ====================
+
+class AppConfig:
+    """Centralized application configuration"""
+    
+    # Directories
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
+    
+    # Go Speedtest Service
+    GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
+    GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
+    
+    # Timeouts (seconds)
+    DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
+    SPEEDTEST_TIMEOUT = int(os.environ.get('SPEEDTEST_TIMEOUT', '10'))
+    HEALTH_CHECK_TIMEOUT = int(os.environ.get('HEALTH_CHECK_TIMEOUT', '2'))
+    
+    # Retry settings
+    MAX_RETRIES = int(os.environ.get('MAX_RETRIES', '3'))
+    RETRY_DELAY = int(os.environ.get('RETRY_DELAY', '1'))
+    
+    # Cache settings
+    STATS_CACHE_DURATION = int(os.environ.get('STATS_CACHE_DURATION', '60'))
+    CONFIG_CACHE_DURATION = int(os.environ.get('CONFIG_CACHE_DURATION', '5'))
+    
+    # File lock timeout
+    FILE_LOCK_TIMEOUT = int(os.environ.get('FILE_LOCK_TIMEOUT', '10'))
+    
+    # Rate limiting
+    RATE_LIMIT_LOGIN = os.environ.get('RATE_LIMIT_LOGIN', '10/minute')
+    RATE_LIMIT_REFRESH_SINGLE = os.environ.get('RATE_LIMIT_REFRESH_SINGLE', '10/minute')
+    RATE_LIMIT_REFRESH_ALL = os.environ.get('RATE_LIMIT_REFRESH_ALL', '5/minute')
+    RATE_LIMIT_SPEEDTEST = os.environ.get('RATE_LIMIT_SPEEDTEST', '5/minute')
+    RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
+    
+    # Version
+    VERSION = "2.6.0"
+
+# Setup rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
+
+app = FastAPI(
+    title="Clash Config Merger API",
+    description="Modern subscription aggregation management panel for Clash/Mihomo",
+    version=AppConfig.VERSION,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {"name": "health", "description": "Health check and metrics"},
+        {"name": "auth", "description": "Authentication operations"},
+        {"name": "subscriptions", "description": "Subscription management"},
+        {"name": "nodes", "description": "Node management"},
+        {"name": "users", "description": "User management"},
+        {"name": "templates", "description": "Template management"},
+        {"name": "speedtest", "description": "Speed test operations"},
+        {"name": "stats", "description": "Statistics and analytics"},
+    ]
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,8 +128,84 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
+# GZip compression middleware for large responses
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
+
+# Request ID middleware
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add unique request ID to each request"""
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+    
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+# Request size limit middleware
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    """Limit request body size"""
+    if request.headers.get("content-length"):
+        content_length = int(request.headers["content-length"])
+        if content_length > Constants.MAX_REQUEST_SIZE:
+            raise HTTPException(status_code=413, detail="Request too large")
+    
+    return await call_next(request)
+
+# Slow request logging middleware
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Log slow requests"""
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    
+    # Log slow requests
+    if duration > Constants.SLOW_REQUEST_THRESHOLD:
+        logger.warning(
+            f"Slow request: {request.method} {request.url.path} "
+            f"took {duration:.2f}s (request_id: {getattr(request.state, 'request_id', 'unknown')})"
+        )
+    
+    return response
+
+# Metrics middleware
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Collect HTTP request metrics"""
+    start_time = time.time()
+    
+    # Get endpoint path (remove query params)
+    endpoint = request.url.path
+    method = request.method
+    
+    # Track concurrent requests
+    concurrent_requests.inc()
+    
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        
+        # Record metrics
+        http_requests_total.labels(method=method, endpoint=endpoint, status=status).inc()
+        duration = time.time() - start_time
+        http_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(duration)
+        
+        return response
+    except Exception as e:
+        # Record error
+        http_requests_total.labels(method=method, endpoint=endpoint, status=500).inc()
+        duration = time.time() - start_time
+        http_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(duration)
+        raise
+    finally:
+        concurrent_requests.dec()
+
+# Use config values
+BASE_DIR = AppConfig.BASE_DIR
+DATA_DIR = AppConfig.DATA_DIR
 YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 OUTPUT_FILE = os.path.join(DATA_DIR, 'myconfig.yaml')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
@@ -47,13 +213,143 @@ CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
 
+# ==================== HTTP Client ====================
+# Create global async HTTP client for better performance
+# Connection pool optimized for concurrent subscription refreshes (max 5 concurrent)
+http_client = httpx.AsyncClient(
+    timeout=httpx.Timeout(Constants.TIMEOUT_SUBSCRIPTION_FETCH),
+    follow_redirects=True,
+    limits=httpx.Limits(
+        max_keepalive_connections=10,  # Keep 10 connections alive for reuse
+        max_connections=20  # Max 20 total connections (4x concurrent refreshes)
+    )
+)
+
+# ==================== Config Helper Functions ====================
+
+def find_subscription_by_id(config: dict, sub_id: str) -> Optional[dict]:
+    """Fast subscription lookup by ID (O(n) but with early return)"""
+    for s in config.get('subscriptions', []):
+        if s['id'] == sub_id:
+            return s
+    return None
+
+def find_custom_node_by_id(config: dict, node_id: str) -> Optional[dict]:
+    """Fast custom node lookup by ID"""
+    for node in config.get('custom_nodes', []):
+        if node['id'] == node_id:
+            return node
+    return None
+
+def find_user_by_id(config: dict, user_id: str) -> Optional[dict]:
+    """Fast user lookup by ID"""
+    for user in config.get('users', []):
+        if user['id'] == user_id:
+            return user
+    return None
+
+def find_template_by_id(config: dict, template_id: str) -> Optional[dict]:
+    """Fast template lookup by ID"""
+    for template in config.get('templates', []):
+        if template['id'] == template_id:
+            return template
+    return None
+
+def find_admin_token_by_id(config: dict, token_id: str) -> Optional[dict]:
+    """Fast admin token lookup by ID"""
+    for token in config.get('admin_tokens', []):
+        if token['id'] == token_id:
+            return token
+    return None
+
+def find_proxy_chain_by_id(config: dict, chain_id: str) -> Optional[dict]:
+    """Fast proxy chain lookup by ID"""
+    for chain in config.get('proxy_chains', []):
+        if chain['id'] == chain_id:
+            return chain
+    return None
+
+# ==================== Request Deduplication ====================
+# Track ongoing subscription refresh operations to prevent duplicates
+from typing import Set
+
+_ongoing_refresh_locks: Dict[str, asyncio.Lock] = {}
+_ongoing_refresh_lock = asyncio.Lock()  # Lock for accessing the locks dict
+
+async def get_refresh_lock(sub_id: str) -> asyncio.Lock:
+    """Get or create a lock for a subscription refresh operation"""
+    async with _ongoing_refresh_lock:
+        if sub_id not in _ongoing_refresh_locks:
+            _ongoing_refresh_locks[sub_id] = asyncio.Lock()
+        return _ongoing_refresh_locks[sub_id]
+
+# ==================== Prometheus Metrics ====================
+# Define metrics for monitoring
+
+# HTTP request metrics
+http_requests_total = Counter(
+    'http_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+
+http_request_duration_seconds = Histogram(
+    'http_request_duration_seconds',
+    'HTTP request duration in seconds',
+    ['method', 'endpoint']
+)
+
+# Subscription metrics
+subscription_refresh_total = Counter(
+    'subscription_refresh_total',
+    'Total subscription refreshes',
+    ['status']  # success, failed
+)
+
+subscription_refresh_duration_seconds = Histogram(
+    'subscription_refresh_duration_seconds',
+    'Subscription refresh duration in seconds'
+)
+
+# Node metrics
+nodes_total = Gauge(
+    'nodes_total',
+    'Total number of nodes',
+    ['type']  # subscription, custom
+)
+
+# Speedtest metrics
+speedtest_total = Counter(
+    'speedtest_total',
+    'Total speed tests',
+    ['status']  # success, failed, timeout
+)
+
+speedtest_latency_milliseconds = Histogram(
+    'speedtest_latency_milliseconds',
+    'Node latency in milliseconds'
+)
+
+# Config operations
+config_operations_total = Counter(
+    'config_operations_total',
+    'Total config file operations',
+    ['operation', 'status']  # read/write, success/failed
+)
+
+# Concurrent requests
+concurrent_requests = Gauge(
+    'concurrent_requests',
+    'Current concurrent requests'
+)
+
 # ==================== Stats Cache ====================
 # Cache stats data to improve dashboard performance
 STATS_CACHE = {
     'overview': None,
     'countries': None,
     'last_update': 0,
-    'cache_duration': 60  # Cache for 60 seconds
+    'cache_duration': AppConfig.STATS_CACHE_DURATION
 }
 
 def invalidate_stats_cache():
@@ -72,7 +368,7 @@ def start_go_speedtest_service():
     
     # Check if already running
     if GO_SPEEDTEST_PROCESS is not None and GO_SPEEDTEST_PROCESS.poll() is None:
-        print("Go speedtest service already running")
+        logger.info("Go speedtest service already running")
         return True
     
     # Find the speedtest executable
@@ -83,7 +379,7 @@ def start_go_speedtest_service():
         speedtest_exe = os.path.join(speedtest_dir, 'speedtest')
     
     if not os.path.exists(speedtest_exe):
-        print(f"Go speedtest executable not found at {speedtest_exe}")
+        logger.error("Go speedtest executable not found at %s", speedtest_exe)
         return False
     
     try:
@@ -95,10 +391,13 @@ def start_go_speedtest_service():
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
-        print(f"Go speedtest service started (PID: {GO_SPEEDTEST_PROCESS.pid})")
+        logger.info("Go speedtest service started (PID: %s)", GO_SPEEDTEST_PROCESS.pid)
         return True
+    except FileNotFoundError:
+        logger.error("Go speedtest binary not found: %s", speedtest_path)
+        return False
     except Exception as e:
-        print(f"Failed to start Go speedtest service: {e}")
+        logger.error("Failed to start Go speedtest service: %s", e, exc_info=True)
         return False
 
 def stop_go_speedtest_service():
@@ -108,25 +407,28 @@ def stop_go_speedtest_service():
     if GO_SPEEDTEST_PROCESS is not None:
         try:
             GO_SPEEDTEST_PROCESS.terminate()
-            GO_SPEEDTEST_PROCESS.wait(timeout=5)
-            print("Go speedtest service stopped")
-        except Exception as e:
-            print(f"Error stopping Go speedtest service: {e}")
+            GO_SPEEDTEST_PROCESS.wait(timeout=Constants.TIMEOUT_PROCESS_TERMINATE)
+            logger.info("Go speedtest service stopped gracefully")
+        except subprocess.TimeoutExpired:
+            logger.warning("Go speedtest service did not stop gracefully, forcing kill")
             try:
                 GO_SPEEDTEST_PROCESS.kill()
-            except:
-                pass
-        GO_SPEEDTEST_PROCESS = None
+                logger.info("Go speedtest service killed")
+            except Exception as kill_error:
+                logger.error("Failed to kill Go speedtest service: %s", kill_error)
+        except Exception as e:
+            logger.error("Error stopping Go speedtest service: %s", e, exc_info=True)
+        finally:
+            GO_SPEEDTEST_PROCESS = None
 
 # Register cleanup on exit
 atexit.register(stop_go_speedtest_service)
 
 # Also handle signals for proper cleanup
-import signal
 
 def signal_handler(signum, frame):
     """Handle termination signals to ensure Go service is stopped"""
-    print(f"\nReceived signal {signum}, stopping Go speedtest service...")
+    logger.info("Received signal %s, stopping Go speedtest service...", signum)
     stop_go_speedtest_service()
     sys.exit(0)
 
@@ -155,6 +457,7 @@ def load_config() -> dict:
     }
     
     if not os.path.exists(CONFIG_FILE):
+        logger.debug("Config file not found: %s, using default config", CONFIG_FILE)
         return default
     
     try:
@@ -178,20 +481,62 @@ def load_config() -> dict:
         _config_cache = config
         _config_mtime = current_mtime
         
+        logger.debug("Config loaded successfully from %s", CONFIG_FILE)
         return config.copy()
-    except:
+    except json.JSONDecodeError as e:
+        logger.error("Config file is corrupted (invalid JSON): %s, error: %s", CONFIG_FILE, e)
+        # Backup corrupted file
+        backup_file = f"{CONFIG_FILE}.corrupted.{int(time.time())}"
+        try:
+            import shutil
+            shutil.copy(CONFIG_FILE, backup_file)
+            logger.info("Corrupted config backed up to: %s", backup_file)
+        except Exception as backup_error:
+            logger.error("Failed to backup corrupted config: %s", backup_error)
+        return default
+    except Exception as e:
+        logger.error("Unexpected error loading config: %s", e, exc_info=True)
         return default
 
 def save_config(config: dict):
-    """Save unified config and invalidate cache"""
+    """Save unified config with file locking to prevent concurrent write conflicts"""
     global _config_cache, _config_mtime
     
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    lock_file = f"{CONFIG_FILE}.lock"
+    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
     
-    # Invalidate cache
-    _config_cache = None
-    _config_mtime = None
+    try:
+        with lock:
+            # Write to temporary file first
+            temp_file = f"{CONFIG_FILE}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            
+            # Backup existing config
+            if os.path.exists(CONFIG_FILE):
+                backup_file = f"{CONFIG_FILE}.backup"
+                import shutil
+                shutil.copy(CONFIG_FILE, backup_file)
+            
+            # Atomic replace
+            os.replace(temp_file, CONFIG_FILE)
+            
+            # Invalidate cache
+            _config_cache = None
+            _config_mtime = None
+            
+            # Record success metric
+            config_operations_total.labels(operation='write', status='success').inc()
+            
+            logger.debug("Config saved successfully to %s", CONFIG_FILE)
+    except Timeout:
+        config_operations_total.labels(operation='write', status='timeout').inc()
+        logger.error("Timeout waiting for config file lock")
+        raise HTTPException(status_code=503, detail="Configuration is being updated by another request, please try again")
+    except Exception as e:
+        config_operations_total.labels(operation='write', status='failed').inc()
+        logger.error("Failed to save config: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save configuration: {str(e)}")
 
 def migrate_old_config():
     """Migrate old config files to unified config"""
@@ -225,7 +570,7 @@ def migrate_old_config():
             config['source_order'] = json.load(f)
     
     save_config(config)
-    print("Config migration completed")
+    logger.info("Config migration completed")
 
 def migrate_legacy_sub_token():
     """Migrate legacy auth.sub_token to admin_tokens if not already migrated"""
@@ -245,7 +590,7 @@ def migrate_legacy_sub_token():
     
     # Create new admin token from legacy settings
     migrated_token = {
-        'id': f"tpl_{int(time.time() * 1000)}",
+        'id': generate_timestamp_id('tpl_'),
         'name': auth.get('sub_name', '默认'),  # Use original config name
         'token': legacy_token,  # Keep the same token value for backward compatibility
         'template_id': 'builtin',
@@ -268,7 +613,7 @@ def migrate_legacy_sub_token():
         del config['auth']['sub_name']
     
     save_config(config)
-    print(f"Legacy sub_token migrated to admin_tokens: {legacy_token[:8]}...")
+    logger.info("Legacy sub_token migrated to admin_tokens: %s...", legacy_token[:8])
 
 def migrate_subscription_fields():
     """Migrate subscriptions to add missing cron_expr and next_update fields"""
@@ -289,7 +634,7 @@ def migrate_subscription_fields():
     
     if updated:
         save_config(config)
-        print(f"Subscription fields migrated: added cron_expr and next_update to {len(subs)} subscriptions")
+        logger.info("Subscription fields migrated: added cron_expr and next_update to %s subscriptions", len(subs))
 
 # Run migration on startup
 migrate_old_config()
@@ -843,26 +1188,62 @@ def verify_session(authorization: Optional[str] = Header(None)) -> bool:
 # ==================== Data Models ====================
 
 class SetPassword(BaseModel):
-    password: str
+    password: str = Field(min_length=8, max_length=100)
+    
+    @validator('password')
+    def validate_password(cls, v):
+        v = v.strip()
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Za-z]', v):
+            raise ValueError('Password must contain at least one letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one number')
+        return v
 
 class Login(BaseModel):
-    password: str
+    password: str = Field(max_length=100)
 
 class AddSubscription(BaseModel):
-    name: str
-    url: str
+    name: str = Field(min_length=1, max_length=100)
+    url: HttpUrl  # Automatically validates URL format
+    
+    @validator('name')
+    def validate_name(cls, v):
+        # Prevent path traversal
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v.strip()
 
 class AddLocalSubscription(BaseModel):
-    name: str
-    content: str  # YAML or Base64 encoded content
+    name: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=10*1024*1024)  # Max 10MB
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v.strip()
 
 class UpdateSubscription(BaseModel):
-    name: Optional[str] = None
-    url: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=100)
+    url: Optional[HttpUrl] = None
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v and ('/' in v or '\\' in v or '..' in v):
+            raise ValueError('Name contains invalid characters')
+        return v.strip() if v else v
 
 class UpdateLocalSubscription(BaseModel):
-    name: Optional[str] = None
-    content: Optional[str] = None  # YAML or Base64 encoded content
+    name: Optional[str] = Field(None, max_length=100)
+    content: Optional[str] = Field(None, max_length=10*1024*1024)
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v and ('/' in v or '\\' in v or '..' in v):
+            raise ValueError('Name contains invalid characters')
+        return v.strip() if v else v
 
 class ReorderSubscriptions(BaseModel):
     order: List[str]
@@ -876,47 +1257,83 @@ class FinalContent(BaseModel):
     save_path: Optional[str] = None
 
 class CustomNode(BaseModel):
-    link: str
-    name: Optional[str] = None
+    link: str = Field(min_length=1, max_length=2000)
+    name: Optional[str] = Field(None, max_length=200)
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v and ('/' in v or '\\' in v or '..' in v):
+            raise ValueError('Name contains invalid characters')
+        return v
 
 class UpdateNodeName(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v
 
 class UpdateNodeFull(BaseModel):
     node: dict
 
 class UpdateSubNode(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v
 
 class UpdateSubNodeFull(BaseModel):
     node: dict
 
 # User management models
 class CreateUser(BaseModel):
-    name: str
-    expire_time: Optional[int] = 0  # 0 = never expire, timestamp for expiry
+    name: str = Field(min_length=1, max_length=100)
+    expire_time: Optional[int] = Field(0, ge=0)  # 0 = never expire, timestamp for expiry
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v.strip()
 
 class UpdateUser(BaseModel):
-    name: Optional[str] = None
-    expire_time: Optional[int] = None
+    name: Optional[str] = Field(None, max_length=100)
+    expire_time: Optional[int] = Field(None, ge=0)
     enabled: Optional[bool] = None
-    template_id: Optional[str] = None  # Template to use for this user
-    sub_name: Optional[str] = None  # Subscription config name
-    sub_filename: Optional[str] = None  # Subscription filename
+    template_id: Optional[str] = None
+    sub_name: Optional[str] = Field(None, max_length=100)
+    sub_filename: Optional[str] = Field(None, max_length=100)
+    
+    @validator('name', 'sub_name', 'sub_filename')
+    def validate_names(cls, v):
+        if v and ('/' in v or '\\' in v or '..' in v):
+            raise ValueError('Name contains invalid characters')
+        return v.strip() if v else v
 
 class UserNodeAllocation(BaseModel):
-    subscriptions: Dict[str, List[str]]  # {sub_id: [node_names] or ["*"] for all}
+    subscriptions: Dict[str, List[str]]
 
 class UpdateUserGroupConfig(BaseModel):
     group_config: Dict[str, List[str]]  # {group_name: [node_names]}
 
 # Port mapping models
 class PortMappingCreate(BaseModel):
-    final_name: str  # The final transformed node name
-    port: int  # Port number to map (e.g., 52001)
+    final_name: str = Field(min_length=1, max_length=200)
+    port: int = Field(ge=1024, le=65535)  # Valid port range
+    
+    @validator('final_name')
+    def validate_name(cls, v):
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Name contains invalid characters')
+        return v
 
 class PortMappingUpdate(BaseModel):
-    port: int  # New port number
+    port: int = Field(ge=1024, le=65535)
 
 # Proxy chain models
 class ProxyChainNode(BaseModel):
@@ -936,9 +1353,68 @@ class UpdateProxyChain(BaseModel):
     rows: Optional[List[ProxyChainRow]] = None
     enabled: Optional[bool] = None
 
+# ==================== Health Check API ====================
+
+@app.get("/health", tags=["health"], summary="Health Check", 
+    description="Check if the service is healthy. Does not require authentication.")
+async def health_check():
+    """
+    Health check endpoint for Docker/K8s.
+    Does not require authentication.
+    
+    Returns:
+        - status: "healthy" or "unhealthy"
+        - timestamp: Current Unix timestamp
+        - version: Application version
+        - services: Status of dependent services (config, speedtest)
+    """
+    # Check if Go speedtest service is running
+    speedtest_healthy = False
+    try:
+        response = await http_client.get(
+            f"{AppConfig.GO_SPEEDTEST_URL}/health", 
+            timeout=AppConfig.HEALTH_CHECK_TIMEOUT
+        )
+        speedtest_healthy = response.status_code == 200
+    except Exception:
+        speedtest_healthy = False
+    
+    # Check if config file is accessible
+    config_healthy = os.path.exists(CONFIG_FILE)
+    
+    # Overall health status
+    is_healthy = config_healthy  # Speedtest is optional
+    
+    return {
+        "status": "healthy" if is_healthy else "unhealthy",
+        "timestamp": int(time.time()),
+        "version": AppConfig.VERSION,
+        "services": {
+            "config": config_healthy,
+            "speedtest": speedtest_healthy
+        }
+    }
+
+@app.get("/metrics", tags=["health"], summary="Prometheus Metrics",
+    description="Prometheus metrics endpoint for monitoring. Does not require authentication.")
+def metrics():
+    """
+    Prometheus metrics endpoint.
+    Does not require authentication.
+    
+    Returns metrics in Prometheus text format including:
+    - HTTP request counts and durations
+    - Subscription refresh statistics
+    - Node counts
+    - Speed test statistics
+    - Config operation statistics
+    """
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 # ==================== Auth API ====================
 
 @app.get("/api/auth/status")
+@handle_api_errors
 def get_auth_status():
     config = load_config()
     auth = config.get('auth', {})
@@ -950,6 +1426,7 @@ def get_auth_status():
     }
 
 @app.post("/api/auth/setup")
+@handle_api_errors
 def setup_password(data: SetPassword):
     config = load_config()
     if config['auth'].get('password_hash'):
@@ -965,7 +1442,9 @@ def setup_password(data: SetPassword):
     return {"status": "success", "session": session_token, "sub_token": config['auth']['sub_token']}
 
 @app.post("/api/auth/login")
-def login(data: Login):
+@limiter.limit(AppConfig.RATE_LIMIT_LOGIN)
+@handle_api_errors
+def login(data: Login, request: Request):
     config = load_config()
     auth = config.get('auth', {})
     
@@ -983,6 +1462,7 @@ def login(data: Login):
     return {"status": "success", "session": session_token}
 
 @app.post("/api/auth/logout")
+@handle_api_errors
 def logout(authorization: Optional[str] = Header(None)):
     if authorization:
         config = load_config()
@@ -994,6 +1474,7 @@ def logout(authorization: Optional[str] = Header(None)):
     return {"status": "success"}
 
 @app.post("/api/auth/change-password")
+@handle_api_errors
 def change_password(data: SetPassword, _: bool = Depends(verify_session)):
     config = load_config()
     session_token = generate_token()
@@ -1008,6 +1489,7 @@ def change_password(data: SetPassword, _: bool = Depends(verify_session)):
     return {"status": "success", "session": session_token}
 
 @app.post("/api/auth/regenerate-token")
+@handle_api_errors
 def regenerate_sub_token(_: bool = Depends(verify_session)):
     config = load_config()
     config['auth']['sub_token'] = generate_token()
@@ -1015,9 +1497,20 @@ def regenerate_sub_token(_: bool = Depends(verify_session)):
     return {"status": "success", "sub_token": config['auth']['sub_token']}
 
 class UpdateSubFilename(BaseModel):
-    filename: str
+    filename: str = Field(min_length=1, max_length=100)
+    
+    @validator('filename')
+    def validate_filename(cls, v):
+        # Prevent path traversal
+        if '/' in v or '\\' in v or '..' in v:
+            raise ValueError('Filename contains invalid characters')
+        # Must end with .yaml
+        if not v.endswith('.yaml'):
+            raise ValueError('Filename must end with .yaml')
+        return v.strip()
 
 @app.post("/api/auth/sub-filename")
+@handle_api_errors
 def update_sub_filename(data: UpdateSubFilename, _: bool = Depends(verify_session)):
     """Update subscription filename"""
     filename = data.filename.strip()
@@ -1038,6 +1531,7 @@ class UpdateSubName(BaseModel):
     name: str
 
 @app.post("/api/auth/sub-name")
+@handle_api_errors
 def update_sub_name(data: UpdateSubName, _: bool = Depends(verify_session)):
     """Update subscription config name (displayed in client)"""
     name = data.name.strip()
@@ -1050,6 +1544,7 @@ def update_sub_name(data: UpdateSubName, _: bool = Depends(verify_session)):
     return {"status": "success", "sub_name": name}
 
 @app.get("/api/auth/sub-token")
+@handle_api_errors
 def get_sub_token(_: bool = Depends(verify_session)):
     config = load_config()
     return {"sub_token": config['auth'].get('sub_token', '')}
@@ -1057,6 +1552,7 @@ def get_sub_token(_: bool = Depends(verify_session)):
 # ==================== Proxy Node Settings ====================
 
 @app.get("/api/settings/proxy-node")
+@handle_api_errors
 def get_proxy_node_setting(_: bool = Depends(verify_session)):
     """Get proxy node setting for subscription fetching"""
     config = load_config()
@@ -1067,6 +1563,7 @@ def get_proxy_node_setting(_: bool = Depends(verify_session)):
     }
 
 @app.put("/api/settings/proxy-node")
+@handle_api_errors
 def update_proxy_node_setting(data: dict, _: bool = Depends(verify_session)):
     """Update proxy node setting"""
     config = load_config()
@@ -1080,6 +1577,7 @@ def update_proxy_node_setting(data: dict, _: bool = Depends(verify_session)):
     return {"status": "success"}
 
 @app.get("/api/settings/available-proxy-nodes")
+@handle_api_errors
 def get_available_proxy_nodes(_: bool = Depends(verify_session)):
     """Get all available nodes that can be used as proxy"""
     config = load_config()
@@ -1109,8 +1607,8 @@ def get_available_proxy_nodes(_: bool = Depends(verify_session)):
         
         if os.path.exists(sub_file):
             try:
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
                 proxies = sub_data.get('proxies', []) if sub_data else []
                 
                 for i, proxy in enumerate(proxies):
@@ -1130,8 +1628,10 @@ def get_available_proxy_nodes(_: bool = Depends(verify_session)):
                         "server": proxy.get('server', ''),
                         "source": f"subscription:{sub_name}"
                     })
-            except:
-                pass
+            except yaml.YAMLError as e:
+                logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error processing subscription {sub_id}: {e}", exc_info=True)
     
     return {"nodes": nodes}
 
@@ -1149,8 +1649,10 @@ def get_proxy_node_by_id(node_id: str) -> dict:
             custom_nodes = config.get('custom_nodes', [])
             if 0 <= idx < len(custom_nodes):
                 return custom_nodes[idx]
-        except:
-            pass
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Invalid custom node ID format: {node_id}, error: {e}")
+        except Exception as e:
+            logger.error(f"Error getting custom node {node_id}: {e}", exc_info=True)
     
     # Check subscription nodes
     if node_id.startswith('sub_'):
@@ -1161,13 +1663,19 @@ def get_proxy_node_by_id(node_id: str) -> dict:
             
             sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
             if os.path.exists(sub_file):
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
                 proxies = sub_data.get('proxies', [])
                 if 0 <= node_idx < len(proxies):
                     return proxies[node_idx]
-        except:
-            pass
+                else:
+                    logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Invalid subscription node ID format: {node_id}, error: {e}")
+        except yaml.YAMLError as e:
+            logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
+        except Exception as e:
+            logger.error(f"Error getting subscription node {node_id}: {e}", exc_info=True)
     
     return None
 
@@ -1183,8 +1691,6 @@ def get_configured_proxy_node() -> dict:
 
 # ==================== Node Parsing ====================
 
-import base64
-
 def decode_base64(content: str) -> str:
     """Safely decode Base64"""
     content = content.strip().replace('-', '+').replace('_', '/')
@@ -1193,7 +1699,11 @@ def decode_base64(content: str) -> str:
         content += '=' * (4 - missing_padding)
     try:
         return base64.b64decode(content).decode('utf-8')
-    except:
+    except UnicodeDecodeError as e:
+        logger.warning(f"Base64 decode failed - invalid UTF-8: {e}")
+        return ""
+    except Exception as e:
+        logger.warning(f"Base64 decode failed: {e}")
         return ""
 
 def parse_vless_link(link: str) -> dict:
@@ -1623,7 +2133,7 @@ def parse_hysteria_link(link: str) -> dict:
         # Parse server and port
         if ':' in server_part:
             server, port_str = server_part.rsplit(':', 1)
-            port = int(port_str) if port_str.isdigit() else 443
+            port = int(port_str) if port_str.isdigit() else Constants.DEFAULT_PORT_HTTPS
         else:
             server = server_part
             port = 443
@@ -1682,7 +2192,7 @@ def parse_anytls_link(link: str) -> dict:
         params = parse_qs(parsed.query)
         
         password = unquote(parsed.username) if parsed.username else ''
-        port = parsed.port if parsed.port else 443
+        port = parsed.port if parsed.port else Constants.DEFAULT_PORT_HTTPS
         
         proxy = {
             'name': name,
@@ -1732,7 +2242,7 @@ def parse_wireguard_link(link: str) -> dict:
         params = parse_qs(parsed.query)
         
         private_key = unquote(parsed.username) if parsed.username else ''
-        port = parsed.port if parsed.port else 51820
+        port = parsed.port if parsed.port else Constants.DEFAULT_PORT_WIREGUARD
         
         proxy = {
             'name': name,
@@ -1795,7 +2305,7 @@ def parse_socks_link(link: str) -> dict:
         tls = '+tls' in link or link.startswith('socks5+tls://')
         
         parsed = urlparse(link)
-        port = parsed.port if parsed.port else (443 if tls else 1080)
+        port = parsed.port if parsed.port else (Constants.DEFAULT_PORT_HTTPS if tls else Constants.DEFAULT_PORT_SOCKS5)
         
         proxy = {
             'name': name,
@@ -1830,7 +2340,7 @@ def parse_http_link(link: str) -> dict:
         tls = link.startswith('https://')
         
         parsed = urlparse(link)
-        port = parsed.port if parsed.port else (443 if tls else 80)
+        port = parsed.port if parsed.port else (Constants.DEFAULT_PORT_HTTPS if tls else Constants.DEFAULT_PORT_HTTP)
         
         proxy = {
             'name': name,
@@ -1866,7 +2376,7 @@ def parse_snell_link(link: str) -> dict:
         params = parse_qs(parsed.query)
         
         psk = unquote(parsed.username) if parsed.username else ''
-        port = parsed.port if parsed.port else 443
+        port = parsed.port if parsed.port else Constants.DEFAULT_PORT_HTTPS
         
         proxy = {
             'name': name,
@@ -1926,6 +2436,7 @@ def parse_node_link(link: str) -> dict:
 # ==================== Subscription Helper Functions ====================
 
 def parse_subscription_info(headers: dict) -> dict:
+    """Parse subscription userinfo from headers"""
     info = {'upload': 0, 'download': 0, 'total': 0, 'expire': 0}
     userinfo = headers.get('subscription-userinfo', '') or headers.get('Subscription-Userinfo', '')
     if userinfo:
@@ -1934,11 +2445,21 @@ def parse_subscription_info(headers: dict) -> dict:
                 key, val = part.split('=', 1)
                 try:
                     info[key.strip().lower()] = int(val.strip())
-                except:
-                    pass
+                except ValueError as e:
+                    logger.debug(f"Invalid subscription info value for {key}: {val}, error: {e}")
+                except Exception as e:
+                    logger.warning(f"Error parsing subscription info: {e}")
     return info
 
 def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = False) -> Tuple[str, dict, int]:
+    """
+    Fetch subscription content from URL (synchronous wrapper for async call)
+    """
+    import asyncio
+    return asyncio.run(fetch_subscription_async(url, proxy_node, force_proxy))
+
+
+async def fetch_subscription_async(url: str, proxy_node: dict = None, force_proxy: bool = False) -> Tuple[str, dict, int]:
     """
     Fetch subscription content from URL
     
@@ -1955,30 +2476,30 @@ def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = Fa
     # Try direct connection first (unless force_proxy is True)
     if not force_proxy:
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            response = await http_client.get(url, headers=headers, timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
             response.raise_for_status()
             
             sub_info = parse_subscription_info(dict(response.headers))
             content = _process_subscription_content(response)
             return content, sub_info, _count_nodes(content)
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             # If 403 or other HTTP error and proxy is available, try with proxy
             if proxy_node and e.response.status_code in [403, 429]:
-                print(f"Direct connection failed with {e.response.status_code}, trying with proxy...")
+                logger.info(f"Direct connection failed with {e.response.status_code}, trying with proxy...")
             else:
                 raise
         except Exception as e:
             # If other error and proxy is available, try with proxy
             if proxy_node:
-                print(f"Direct connection failed: {e}, trying with proxy...")
+                logger.info(f"Direct connection failed: {e}, trying with proxy...")
             else:
                 raise
     
     # Use proxy if available
     if proxy_node:
         try:
-            print(f"Fetching subscription via proxy node: {proxy_node.get('name', 'Unknown')}")
-            return _fetch_via_proxy(url, proxy_node)
+            logger.info(f"Fetching subscription via proxy node: {proxy_node.get('name', 'Unknown')}")
+            return await _fetch_via_proxy_async(url, proxy_node)
         except Exception as e:
             raise Exception(f"Proxy fetch failed: {e}")
     
@@ -1987,6 +2508,12 @@ def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = Fa
 
 
 def _fetch_via_proxy(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
+    """Fetch subscription via speedtest service proxy (synchronous wrapper)"""
+    import asyncio
+    return asyncio.run(_fetch_via_proxy_async(url, proxy_node))
+
+
+async def _fetch_via_proxy_async(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
     """Fetch subscription via speedtest service proxy"""
     try:
         payload = {
@@ -1995,7 +2522,7 @@ def _fetch_via_proxy(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
             "timeout": 30
         }
         
-        resp = requests.post("http://127.0.0.1:9876/api/fetch-url", json=payload, timeout=35)
+        resp = await http_client.post(f"{AppConfig.GO_SPEEDTEST_URL}/api/fetch-url", json=payload, timeout=Constants.TIMEOUT_SPEEDTEST_PROXY)
         result = resp.json()
         
         if not result.get("success"):
@@ -2023,8 +2550,16 @@ def _process_subscription_content(response) -> str:
     """Process subscription content from response object"""
     try:
         content = response.content.decode('utf-8', errors='ignore').strip()
-    except:
-        content = response.text.strip()
+    except AttributeError:
+        # Response object doesn't have content attribute, try text
+        try:
+            content = response.text.strip()
+        except Exception as e:
+            logger.error(f"Failed to get response content: {e}")
+            content = ""
+    except Exception as e:
+        logger.error(f"Failed to decode response content: {e}")
+        content = ""
     
     return _process_subscription_content_str(content)
 
@@ -2034,11 +2569,14 @@ def _process_subscription_content_str(content: str) -> str:
     
     # Try to parse as YAML first
     try:
-        cfg = yaml.safe_load(content)
+        cfg = yaml.load(content, Loader=YAMLLoader)
         if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
+            logger.debug("Subscription content is valid YAML format")
             return content
-    except:
-        pass
+    except yaml.YAMLError as e:
+        logger.debug(f"Content is not YAML format: {e}")
+    except Exception as e:
+        logger.warning(f"Unexpected error parsing YAML: {e}")
     
     # If not YAML, try Base64 decode
     try:
@@ -2048,11 +2586,14 @@ def _process_subscription_content_str(content: str) -> str:
         
         # Check if decoded content is YAML
         try:
-            cfg = yaml.safe_load(decoded)
+            cfg = yaml.load(decoded, Loader=YAMLLoader)
             if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
+                logger.debug("Decoded Base64 content is valid YAML")
                 return decoded
-        except:
-            pass
+        except yaml.YAMLError as e:
+            logger.debug(f"Decoded content is not YAML: {e}")
+        except Exception as e:
+            logger.warning(f"Error parsing decoded YAML: {e}")
         
         # If not YAML, parse as URI list (ss://, vmess://, vless://, etc.)
         proxies = []
@@ -2069,11 +2610,15 @@ def _process_subscription_content_str(content: str) -> str:
         
         if proxies:
             # Convert to YAML format
-            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+            logger.debug(f"Parsed {len(proxies)} nodes from Base64 URI list")
             return yaml_content
+    except base64.binascii.Error as e:
+        logger.debug(f"Content is not valid Base64: {e}")
+    except UnicodeDecodeError as e:
+        logger.warning(f"Base64 decoded content is not valid UTF-8: {e}")
     except Exception as e:
-        # Base64 decode failed, might be plain URI list
-        pass
+        logger.warning(f"Failed to process Base64 content: {e}")
     
     # Try parsing as plain URI list (not Base64 encoded)
     proxies = []
@@ -2088,7 +2633,7 @@ def _process_subscription_content_str(content: str) -> str:
             proxies.append(proxy)
     
     if proxies:
-        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
         return yaml_content
     
     # If all parsing failed, return original content
@@ -2098,14 +2643,16 @@ def _process_subscription_content_str(content: str) -> str:
 def _count_nodes(content: str) -> int:
     """Count number of nodes in YAML content"""
     try:
-        cfg = yaml.safe_load(content)
+        cfg = yaml.load(content, Loader=YAMLLoader)
         if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-            return len(cfg.get('proxies', []))
-    except:
-        pass
+            count = len(cfg.get('proxies', []))
+            logger.debug(f"Counted {count} nodes in content")
+            return count
+    except yaml.YAMLError as e:
+        logger.debug(f"Cannot count nodes - invalid YAML: {e}")
+    except Exception as e:
+        logger.warning(f"Error counting nodes: {e}")
     return 0
-
-import base64
 
 def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     """
@@ -2123,20 +2670,28 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
         padded = original_content + '=' * (4 - len(original_content) % 4)
         decoded = base64.b64decode(padded).decode('utf-8')
         decoded_content = decoded.strip()
-    except:
-        pass  # Not Base64, use original
+        logger.debug("Successfully decoded Base64 content")
+    except base64.binascii.Error as e:
+        logger.debug(f"Content is not Base64 encoded: {e}")
+    except UnicodeDecodeError as e:
+        logger.warning(f"Base64 content is not valid UTF-8: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to decode Base64: {e}")
     
     proxies = []
     
     # Check if it's YAML with proxies section
     try:
-        cfg = yaml.safe_load(decoded_content)
+        cfg = yaml.load(decoded_content, Loader=YAMLLoader)
         if isinstance(cfg, dict) and 'proxies' in cfg:
             proxies = cfg.get('proxies', [])
             yaml_content = decoded_content
+            logger.info(f"Parsed {len(proxies)} nodes from YAML content")
             return yaml_content, proxies, len(proxies)
-    except:
-        pass
+    except yaml.YAMLError as e:
+        logger.debug(f"Content is not valid YAML: {e}")
+    except Exception as e:
+        logger.warning(f"Error parsing YAML content: {e}")
     
     # Try parsing as URI list (one link per line)
     lines = decoded_content.split('\n')
@@ -2152,7 +2707,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     
     if proxies:
         # Convert to YAML format
-        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False)
+        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
         return yaml_content, proxies, len(proxies)
     
     raise ValueError("无法识别订阅内容格式，请检查是否为有效的 YAML、Base64 或节点链接")
@@ -2172,7 +2727,7 @@ def update_custom_nodes_yaml():
     
     filepath = os.path.join(YAML_SOURCE_DIR, 'custom_nodes.yaml')
     with open(filepath, 'w', encoding='utf-8') as f:
-        yaml.dump({'proxies': proxies}, f, allow_unicode=True, sort_keys=False)
+        yaml.dump({'proxies': proxies}, f, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
 
 def get_ordered_sources() -> List[dict]:
     """Get all sources in order"""
@@ -2199,14 +2754,16 @@ def get_ordered_sources() -> List[dict]:
 # ==================== Subscription API ====================
 
 @app.get("/api/subscriptions")
+@handle_api_errors
 def list_subscriptions(_: bool = Depends(verify_session)):
     config = load_config()
     return {"subscriptions": config.get('subscriptions', [])}
 
 @app.post("/api/subscriptions")
+@handle_api_errors
 def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
     config = load_config()
-    sub_id = f"sub_{int(time.time() * 1000)}"
+    sub_id = generate_timestamp_id('sub_')
     
     try:
         proxy_node = get_configured_proxy_node()
@@ -2221,8 +2778,7 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
             'next_update': None  # Initialize next update time field
         }
         
-        with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
-            f.write(content)
+        save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
         
         config['subscriptions'].append(new_sub)
         save_config(config)
@@ -2232,10 +2788,11 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
         raise HTTPException(status_code=400, detail=f"Failed to fetch subscription: {str(e)}")
 
 @app.post("/api/subscriptions/local")
+@handle_api_errors
 def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_session)):
     """Add a local subscription by pasting content directly"""
     config = load_config()
-    sub_id = f"sub_{int(time.time() * 1000)}"
+    sub_id = generate_timestamp_id('sub_')
     
     try:
         yaml_content, proxies, node_count = parse_local_subscription(data.content)
@@ -2248,8 +2805,7 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
             'next_update': None
         }
         
-        with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
-            f.write(yaml_content)
+        save_subscription_content(sub_id, yaml_content, YAML_SOURCE_DIR)
         
         config['subscriptions'].append(new_sub)
         save_config(config)
@@ -2260,6 +2816,7 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
         raise HTTPException(status_code=400, detail=f"Failed to parse content: {str(e)}")
 
 @app.put("/api/subscriptions/{sub_id}/local")
+@handle_api_errors
 def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: bool = Depends(verify_session)):
     """Update a local subscription"""
     config = load_config()
@@ -2283,8 +2840,7 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
             yaml_content, proxies, node_count = parse_local_subscription(data.content)
             sub['node_count'] = node_count
             
-            with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
-                f.write(yaml_content)
+            save_subscription_content(sub_id, yaml_content, YAML_SOURCE_DIR)
             updated = True
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -2297,6 +2853,7 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
     return {"status": "success", "subscription": sub}
 
 @app.post("/api/subscriptions/parse-preview")
+@handle_api_errors
 def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(verify_session)):
     """Preview parsing result without saving"""
     try:
@@ -2312,6 +2869,7 @@ def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(ver
         return {"status": "error", "error": str(e), "node_count": 0}
 
 @app.delete("/api/subscriptions/{sub_id}")
+@handle_api_errors
 def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     config = load_config()
     
@@ -2328,6 +2886,7 @@ def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     return {"status": "success"}
 
 @app.put("/api/subscriptions/{sub_id}/toggle")
+@handle_api_errors
 def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
     config = load_config()
     for s in config['subscriptions']:
@@ -2353,6 +2912,7 @@ def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
     return {"status": "success"}
 
 @app.put("/api/subscriptions/reorder")
+@handle_api_errors
 def reorder_subscriptions(data: ReorderSubscriptions, _: bool = Depends(verify_session)):
     config = load_config()
     config['source_order'] = data.order
@@ -2369,6 +2929,7 @@ def reorder_subscriptions(data: ReorderSubscriptions, _: bool = Depends(verify_s
     return {"status": "success"}
 
 @app.put("/api/subscriptions/{sub_id}")
+@handle_api_errors
 def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends(verify_session)):
     config = load_config()
     for s in config['subscriptions']:
@@ -2385,8 +2946,7 @@ def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends
                         'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
                         'node_count': node_count, 'last_update': int(time.time())
                     })
-                    with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
-                        f.write(content)
+                    save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
                 except Exception as e:
                     raise HTTPException(status_code=400, detail=f"Failed to fetch subscription: {str(e)}")
             save_config(config)
@@ -2394,110 +2954,163 @@ def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends
     raise HTTPException(status_code=404, detail="Subscription not found")
 
 @app.post("/api/subscriptions/{sub_id}/refresh")
-def refresh_subscription(sub_id: str, _: bool = Depends(verify_session)):
-    config = load_config()
-    for s in config['subscriptions']:
-        if s['id'] == sub_id:
-            try:
-                # Load old YAML to preserve cached data
-                old_proxies = {}
-                old_filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-                if os.path.exists(old_filepath):
-                    try:
-                        with open(old_filepath, 'r', encoding='utf-8') as f:
-                            old_cfg = yaml.safe_load(f)
-                            if old_cfg and 'proxies' in old_cfg:
-                                # Build a map: server+port+name -> proxy data
-                                for proxy in old_cfg['proxies']:
-                                    key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
-                                    old_proxies[key] = proxy
-                    except:
-                        pass
-                
-                # Get proxy node if configured
-                proxy_node = get_configured_proxy_node()
-                force_proxy = s.get('force_proxy', False)
-                
-                # Fetch new subscription content (with proxy support)
-                content, sub_info, node_count = fetch_subscription(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
-                
-                # Parse new content and merge cached data
+@limiter.limit(AppConfig.RATE_LIMIT_REFRESH_SINGLE)
+@handle_api_errors
+async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(verify_session)):
+    """Refresh a single subscription with deduplication"""
+    start_time = time.time()
+    
+    # Get lock for this subscription to prevent duplicate refreshes
+    lock = await get_refresh_lock(sub_id)
+    
+    # Try to acquire lock without blocking
+    if lock.locked():
+        raise HTTPException(
+            status_code=409, 
+            detail="Subscription refresh already in progress. Please wait."
+        )
+    
+    async with lock:
+        config = load_config()
+        for s in config['subscriptions']:
+            if s['id'] == sub_id:
                 try:
-                    new_cfg = yaml.safe_load(content)
-                    if new_cfg and 'proxies' in new_cfg:
-                        for proxy in new_cfg['proxies']:
-                            key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
-                            if key in old_proxies:
-                                old_proxy = old_proxies[key]
-                                # Preserve cached data: geoip, last_latency, last_speed
-                                if 'geoip' in old_proxy:
-                                    proxy['geoip'] = old_proxy['geoip']
-                                if 'last_latency' in old_proxy:
-                                    proxy['last_latency'] = old_proxy['last_latency']
-                                if 'last_speed' in old_proxy:
-                                    proxy['last_speed'] = old_proxy['last_speed']
-                        # Write merged content
-                        content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False)
-                except:
-                    pass  # If parsing fails, use original content
-                
-                s.update({
-                    'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
-                    'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
-                    'node_count': node_count, 'last_update': int(time.time())
-                })
-                
-                # Update next_update time if cron is set
-                if s.get('cron_expr'):
-                    next_run = scheduler.get_next_run_time(s['cron_expr'])
-                    s['next_update'] = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None
-                
-                with open(os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml"), 'w', encoding='utf-8') as f:
-                    f.write(content)
-                # Invalidate all user caches when subscription is refreshed
-                for user in config.get('users', []):
-                    if 'sub_cache' in user:
-                        del user['sub_cache']
-                save_config(config)
-                invalidate_stats_cache()
-                return {"status": "success", "subscription": s}
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Refresh failed: {str(e)}")
-    raise HTTPException(status_code=404, detail="Subscription not found")
+                    # Load old YAML to preserve cached data
+                    old_proxies = {}
+                    old_filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+                    if os.path.exists(old_filepath):
+                        try:
+                            old_cfg = load_yaml_file_cached(old_filepath, cache_key=sub_id, use_cache=True)
+                            if old_cfg and 'proxies' in old_cfg:
+                                    # Build a map: server+port+name -> proxy data
+                                    for proxy in old_cfg['proxies']:
+                                        key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                                        old_proxies[key] = proxy
+                                    logger.debug(f"Loaded {len(old_proxies)} old proxies for caching")
+                        except yaml.YAMLError as e:
+                            logger.warning(f"Failed to parse old subscription YAML {sub_id}: {e}")
+                        except Exception as e:
+                            logger.error(f"Error loading old subscription data: {e}")
+                    
+                    # Get proxy node if configured
+                    proxy_node = get_configured_proxy_node()
+                    force_proxy = s.get('force_proxy', False)
+                    
+                    # Fetch new subscription content (with proxy support)
+                    content, sub_info, node_count = await fetch_subscription_async(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+                    
+                    # Parse new content and merge cached data
+                    try:
+                        new_cfg = yaml.load(content, Loader=YAMLLoader)
+                        if new_cfg and 'proxies' in new_cfg:
+                            merged_count = 0
+                            for proxy in new_cfg['proxies']:
+                                key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
+                                if key in old_proxies:
+                                    old_proxy = old_proxies[key]
+                                    # Preserve cached data: geoip, last_latency, last_speed
+                                    if 'geoip' in old_proxy:
+                                        proxy['geoip'] = old_proxy['geoip']
+                                    if 'last_latency' in old_proxy:
+                                        proxy['last_latency'] = old_proxy['last_latency']
+                                    if 'last_speed' in old_proxy:
+                                        proxy['last_speed'] = old_proxy['last_speed']
+                                    merged_count += 1
+                            logger.debug(f"Merged cached data for {merged_count} proxies")
+                            # Write merged content
+                            content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+                    except yaml.YAMLError as e:
+                        logger.warning(f"Failed to parse new subscription content, using original: {e}")
+                    except Exception as e:
+                        logger.error(f"Error merging cached data: {e}")
+                        pass  # If parsing fails, use original content
+                    
+                    s.update({
+                        'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
+                        'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
+                        'node_count': node_count, 'last_update': int(time.time())
+                    })
+                    
+                    # Update next_update time if cron is set
+                    if s.get('cron_expr'):
+                        next_run = scheduler.get_next_run_time(s['cron_expr'])
+                        s['next_update'] = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None
+                    
+                    save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
+                    # Invalidate all user caches when subscription is refreshed
+                    for user in config.get('users', []):
+                        if 'sub_cache' in user:
+                            del user['sub_cache']
+                    save_config(config)
+                    invalidate_stats_cache()
+                    
+                    # Record metrics
+                    duration = time.time() - start_time
+                    subscription_refresh_total.labels(status='success').inc()
+                    subscription_refresh_duration_seconds.observe(duration)
+                    
+                    return {"status": "success", "subscription": s}
+                except Exception as e:
+                    # Record failure metric
+                    duration = time.time() - start_time
+                    subscription_refresh_total.labels(status='failed').inc()
+                    subscription_refresh_duration_seconds.observe(duration)
+                    raise HTTPException(status_code=400, detail=f"Refresh failed: {str(e)}")
+        raise HTTPException(status_code=404, detail="Subscription not found")
 
 @app.post("/api/subscriptions/refresh-all")
-def refresh_all_subscriptions(_: bool = Depends(verify_session)):
+@limiter.limit(AppConfig.RATE_LIMIT_REFRESH_ALL)
+@handle_api_errors
+async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_session)):
+    """Refresh all enabled subscriptions with concurrency control"""
+    import asyncio
+    
     config = load_config()
+    enabled_subs = [s for s in config['subscriptions'] if s['enabled']]
+    
+    if not enabled_subs:
+        return {"status": "success", "updated": 0, "message": "No enabled subscriptions"}
+    
+    # Concurrency control: max 5 concurrent refreshes
+    MAX_CONCURRENT_REFRESHES = 5
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REFRESHES)
     updated = 0
-    for s in config['subscriptions']:
-        if s['enabled']:
+    failed = 0
+    
+    async def refresh_single_sub(s: dict):
+        """Refresh a single subscription with semaphore control"""
+        nonlocal updated, failed
+        async with semaphore:
             try:
                 # Load old YAML to preserve cached data
                 old_proxies = {}
                 old_filepath = os.path.join(YAML_SOURCE_DIR, f"{s['id']}.yaml")
                 if os.path.exists(old_filepath):
                     try:
-                        with open(old_filepath, 'r', encoding='utf-8') as f:
-                            old_cfg = yaml.safe_load(f)
-                            if old_cfg and 'proxies' in old_cfg:
+                        old_cfg = load_yaml_file_cached(old_filepath, cache_key=s['id'], use_cache=True)
+                        if old_cfg and 'proxies' in old_cfg:
                                 # Build a map: server+port+name -> proxy data
                                 for proxy in old_cfg['proxies']:
                                     key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
                                     old_proxies[key] = proxy
-                    except:
-                        pass
+                                logger.debug(f"Loaded {len(old_proxies)} old proxies for caching")
+                    except yaml.YAMLError as e:
+                        logger.warning(f"Failed to parse old subscription YAML {s['id']}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error loading old subscription data for {s['id']}: {e}")
                 
                 # Get proxy node if configured
                 proxy_node = get_configured_proxy_node()
                 force_proxy = s.get('force_proxy', False)
                 
                 # Fetch new subscription content (with proxy support)
-                content, sub_info, node_count = fetch_subscription(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+                content, sub_info, node_count = await fetch_subscription_async(s['url'], proxy_node=proxy_node, force_proxy=force_proxy)
                 
                 # Parse new content and merge cached data
                 try:
-                    new_cfg = yaml.safe_load(content)
+                    new_cfg = yaml.load(content, Loader=YAMLLoader)
                     if new_cfg and 'proxies' in new_cfg:
+                        merged_count = 0
                         for proxy in new_cfg['proxies']:
                             key = f"{proxy.get('server', '')}:{proxy.get('port', '')}:{proxy.get('name', '')}"
                             if key in old_proxies:
@@ -2507,43 +3120,68 @@ def refresh_all_subscriptions(_: bool = Depends(verify_session)):
                                     proxy['geoip'] = old_proxy['geoip']
                                 if 'last_latency' in old_proxy:
                                     proxy['last_latency'] = old_proxy['last_latency']
+                                if 'last_latency_time' in old_proxy:
+                                    proxy['last_latency_time'] = old_proxy['last_latency_time']
                                 if 'last_speed' in old_proxy:
                                     proxy['last_speed'] = old_proxy['last_speed']
+                                if 'last_speed_time' in old_proxy:
+                                    proxy['last_speed_time'] = old_proxy['last_speed_time']
+                                merged_count += 1
+                        logger.debug(f"Merged cached data for {merged_count} proxies")
+                        
                         # Write merged content
-                        content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False)
-                except:
-                    pass  # If parsing fails, use original content
+                        content = yaml.dump(new_cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+                except yaml.YAMLError as e:
+                    logger.warning(f"Failed to parse new subscription content for {s['id']}, using original: {e}")
+                except Exception as e:
+                    logger.error(f"Error merging cached data for {s['id']}: {e}")
                 
                 s.update({
                     'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
                     'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
                     'node_count': node_count, 'last_update': int(time.time())
                 })
-                with open(os.path.join(YAML_SOURCE_DIR, f"{s['id']}.yaml"), 'w', encoding='utf-8') as f:
-                    f.write(content)
+                save_subscription_content(s['id'], content, YAML_SOURCE_DIR)
                 updated += 1
-            except:
-                pass
+                logger.info(f"Successfully refreshed subscription: {s['name']}")
+            except Exception as e:
+                failed += 1
+                logger.error(f"Failed to refresh subscription {s['name']}: {e}", exc_info=True)
+    
+    # Execute all refreshes concurrently with semaphore control
+    tasks = [refresh_single_sub(s) for s in enabled_subs]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    
     # Invalidate all user caches when subscriptions are refreshed
     for user in config.get('users', []):
         if 'sub_cache' in user:
             del user['sub_cache']
     save_config(config)
     invalidate_stats_cache()
-    return {"status": "success", "updated": updated}
+    
+    return {
+        "status": "success", 
+        "updated": updated, 
+        "failed": failed,
+        "total": len(enabled_subs),
+        "message": f"Refreshed {updated}/{len(enabled_subs)} subscriptions"
+    }
 
 @app.get("/api/source-order")
+@handle_api_errors
 def get_source_order(_: bool = Depends(verify_session)):
     config = load_config()
     return {"order": config.get('source_order', [])}
 
 # ==================== Subscription Node API ====================
 
-@app.get("/api/subscriptions/{sub_id}/nodes")
+@app.get("/api/subscriptions/{sub_id}/nodes", tags=["nodes"])
+@handle_api_errors
 def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
-    filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Subscription file not found")
+    """Get all nodes from a subscription"""
+    # Load YAML with cache
+    cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+    proxies = cfg.get('proxies', [])
     
     # Get subscription name for NameTransformer
     config = load_config()
@@ -2551,170 +3189,129 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     source_name = sub['name'] if sub else 'Unknown'
     port_mappings = config.get('port_mappings', {})  # {final_name: port}
     
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.safe_load(f)
-        proxies = cfg.get('proxies', []) if cfg else []
+    # Enhance each node with final_name and region
+    enhanced_nodes = []
+    for proxy in proxies:
+        node_data = dict(proxy)  # Copy original data
+        server = proxy.get('server', '')
+        original_name = proxy.get('name', '')
         
-        # Enhance each node with final_name and region
-        enhanced_nodes = []
-        for proxy in proxies:
-            node_data = dict(proxy)  # Copy original data
-            server = proxy.get('server', '')
-            original_name = proxy.get('name', '')
-            
-            # Generate final name using NameTransformer
-            transformed = NameTransformer.transform_name(proxy, source_name)
-            final_name = transformed.get('name', original_name)
-            node_data['final_name'] = final_name
-            
-            # Generate display name (clean name without flag for UI display)
-            display_name = NameTransformer.remove_flags(original_name)
-            node_data['display_name'] = display_name
-            
-            # Get region info - STRICT priority:
-            # 1. Flag emoji in ORIGINAL name (provider's flag) - most reliable
-            # 2. Keywords in original name
-            # 3. Saved geoip cache (from region testing)  
-            # 4. GeoIP lookup (fallback)
-            
-            # First, check for flag in original name only (no server GeoIP)
-            flag_from_name = NameTransformer.identify_flag(original_name, None)  # Don't use server for GeoIP
-            
-            if flag_from_name and flag_from_name != '🔰':
-                # Found flag/keyword in original name - use it!
-                code = GeoIPService.flag_to_iso(flag_from_name)
-                if code:
-                    node_data['region'] = {
-                        'country': COUNTRY_NAMES.get(code, code),
-                        'country_code': code,
-                        'flag': flag_from_name
-                    }
-            else:
-                # No flag in name, check geoip cache (from region testing)
-                saved_geoip = proxy.get('geoip')
-                if saved_geoip and saved_geoip.get('country_code'):
-                    node_data['region'] = {
-                        'country': saved_geoip.get('country', saved_geoip['country_code']),
-                        'country_code': saved_geoip['country_code'],
-                        'flag': saved_geoip.get('flag', '')
-                    }
-                    node_data['detected_region'] = True  # Mark as detected (not from name)
-            
-            # Always include city and exit_ip from saved geoip (regardless of flag source)
+        # Generate final name using NameTransformer
+        transformed = NameTransformer.transform_name(proxy, source_name)
+        final_name = transformed.get('name', original_name)
+        node_data['final_name'] = final_name
+        
+        # Generate display name (clean name without flag for UI display)
+        display_name = NameTransformer.remove_flags(original_name)
+        node_data['display_name'] = display_name
+        
+        # Get region info - STRICT priority:
+        # 1. Flag emoji in ORIGINAL name (provider's flag) - most reliable
+        # 2. Keywords in original name
+        # 3. Saved geoip cache (from region testing)  
+        # 4. GeoIP lookup (fallback)
+        
+        # First, check for flag in original name only (no server GeoIP)
+        flag_from_name = NameTransformer.identify_flag(original_name, None)  # Don't use server for GeoIP
+        
+        if flag_from_name and flag_from_name != '🔰':
+            # Found flag/keyword in original name - use it!
+            code = GeoIPService.flag_to_iso(flag_from_name)
+            if code:
+                node_data['region'] = {
+                    'country': COUNTRY_NAMES.get(code, code),
+                    'country_code': code,
+                    'flag': flag_from_name
+                }
+        else:
+            # No flag in name, check geoip cache (from region testing)
             saved_geoip = proxy.get('geoip')
-            if saved_geoip:
-                if saved_geoip.get('city'):
-                    node_data['city'] = saved_geoip['city']
-                if saved_geoip.get('exit_ip'):
-                    node_data['exit_ip'] = saved_geoip['exit_ip']
-            
-            # Add port mapping info if exists
-            if final_name in port_mappings:
-                node_data['mapped_port'] = port_mappings[final_name]
-            
-            # Add saved latency and speed
-            if 'last_latency' in proxy:
-                node_data['last_latency'] = proxy['last_latency']
-            if 'last_speed' in proxy:
-                node_data['last_speed'] = proxy['last_speed']
-            if 'last_peak_speed' in proxy:
-                node_data['last_peak_speed'] = proxy['last_peak_speed']
-            
-            enhanced_nodes.append(node_data)
+            if saved_geoip and saved_geoip.get('country_code'):
+                node_data['region'] = {
+                    'country': saved_geoip.get('country', saved_geoip['country_code']),
+                    'country_code': saved_geoip['country_code'],
+                    'flag': saved_geoip.get('flag', '')
+                }
+                node_data['detected_region'] = True  # Mark as detected (not from name)
         
-        return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Always include city and exit_ip from saved geoip (regardless of flag source)
+        saved_geoip = proxy.get('geoip')
+        if saved_geoip:
+            if saved_geoip.get('city'):
+                node_data['city'] = saved_geoip['city']
+            if saved_geoip.get('exit_ip'):
+                node_data['exit_ip'] = saved_geoip['exit_ip']
+        
+        # Add port mapping info if exists
+        if final_name in port_mappings:
+            node_data['mapped_port'] = port_mappings[final_name]
+        
+        # Add saved latency and speed
+        if 'last_latency' in proxy:
+            node_data['last_latency'] = proxy['last_latency']
+        if 'last_speed' in proxy:
+            node_data['last_speed'] = proxy['last_speed']
+        if 'last_peak_speed' in proxy:
+            node_data['last_peak_speed'] = proxy['last_peak_speed']
+        
+        enhanced_nodes.append(node_data)
+    
+    return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 @app.put("/api/subscriptions/{sub_id}/nodes/{node_index}")
+@handle_api_errors
 def update_subscription_node(sub_id: str, node_index: int, data: UpdateSubNode, _: bool = Depends(verify_session)):
-    filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Subscription file not found")
+    cfg, node, idx = get_subscription_node(sub_id, node_index, YAML_SOURCE_DIR)
     
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.safe_load(f)
-        
-        proxies = cfg.get('proxies', [])
-        if node_index < 0 or node_index >= len(proxies):
-            raise HTTPException(status_code=404, detail="Node not found")
-        
-        proxies[node_index]['name'] = data.name
-        cfg['proxies'] = proxies
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-        
-        return {"status": "success", "node": proxies[node_index]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Update node name
+    node['name'] = data.name
+    cfg['proxies'][idx] = node
+    
+    save_subscription_yaml(sub_id, cfg, YAML_SOURCE_DIR)
+    
+    return {"status": "success", "node": node}
 
 @app.put("/api/subscriptions/{sub_id}/nodes/{node_index}/full")
+@handle_api_errors
 def update_subscription_node_full(sub_id: str, node_index: int, data: UpdateSubNodeFull, _: bool = Depends(verify_session)):
-    filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Subscription file not found")
+    cfg, _, idx = get_subscription_node(sub_id, node_index, YAML_SOURCE_DIR)
     
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.safe_load(f)
-        
-        proxies = cfg.get('proxies', [])
-        if node_index < 0 or node_index >= len(proxies):
-            raise HTTPException(status_code=404, detail="Node not found")
-        
-        node = data.node
-        if not all(node.get(k) for k in ['name', 'type', 'server', 'port']):
-            raise HTTPException(status_code=400, detail="Missing required fields: name, type, server, port")
-        
-        proxies[node_index] = node
-        cfg['proxies'] = proxies
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-        
-        return {"status": "success", "node": node}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Validate required fields
+    node = data.node
+    if not all(node.get(k) for k in ['name', 'type', 'server', 'port']):
+        raise ValueError("Missing required fields: name, type, server, port")
+    
+    # Validate port
+    Validators.validate_port(node.get('port', 0))
+    
+    # Update node
+    cfg['proxies'][idx] = node
+    
+    save_subscription_yaml(sub_id, cfg, YAML_SOURCE_DIR)
+    
+    return {"status": "success", "node": node}
 
 @app.delete("/api/subscriptions/{sub_id}/nodes/{node_index}")
+@handle_api_errors
 def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(verify_session)):
-    filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Subscription file not found")
+    cfg, deleted_node, idx = get_subscription_node(sub_id, node_index, YAML_SOURCE_DIR)
     
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.safe_load(f)
-        
-        proxies = cfg.get('proxies', [])
-        if node_index < 0 or node_index >= len(proxies):
-            raise HTTPException(status_code=404, detail="Node not found")
-        
-        deleted_node = proxies.pop(node_index)
-        cfg['proxies'] = proxies
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-        
-        config = load_config()
-        for s in config['subscriptions']:
-            if s['id'] == sub_id:
-                s['node_count'] = len(proxies)
-                break
-        save_config(config)
-        
-        return {"status": "success", "deleted": deleted_node['name'], "remaining": len(proxies)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Remove node
+    proxies = cfg.get('proxies', [])
+    proxies.pop(idx)
+    cfg['proxies'] = proxies
+    
+    save_subscription_yaml(sub_id, cfg, YAML_SOURCE_DIR)
+    
+    # Update node count in config
+    config = load_config()
+    for s in config['subscriptions']:
+        if s['id'] == sub_id:
+            s['node_count'] = len(proxies)
+            break
+    save_config(config)
+    
+    return {"status": "success", "deleted": deleted_node['name'], "remaining": len(proxies)}
 
 class ReorderSubNodes(BaseModel):
     order: List  # List of node indices in new order (accept any type, convert to int)
@@ -2724,6 +3321,7 @@ class ReorderSubNodes(BaseModel):
 # ==================== Custom Node API ====================
 
 @app.get("/api/custom-nodes")
+@handle_api_errors
 def get_custom_nodes(_: bool = Depends(verify_session)):
     config = load_config()
     nodes = config.get('custom_nodes', [])
@@ -2796,6 +3394,7 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
     return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 @app.post("/api/custom-nodes")
+@handle_api_errors
 def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     proxy = parse_node_link(data.link)
     if not proxy:
@@ -2806,7 +3405,7 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     
     # Store full proxy config, not just basic fields
     node = {
-        'id': f"node_{int(time.time() * 1000)}",
+        'id': generate_timestamp_id('node_'),
         'link': data.link,
         **proxy  # Include all parsed proxy fields (name, type, server, port, uuid, password, etc.)
     }
@@ -2819,6 +3418,7 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     return {"status": "success", "node": node}
 
 @app.delete("/api/custom-nodes/{node_id}")
+@handle_api_errors
 def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     config = load_config()
     config['custom_nodes'] = [n for n in config['custom_nodes'] if n['id'] != node_id]
@@ -2830,6 +3430,7 @@ class ReorderNodes(BaseModel):
     order: List[str]  # List of node IDs in new order
 
 @app.put("/api/custom-nodes/reorder")
+@handle_api_errors
 def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
     """Reorder custom nodes"""
     config = load_config()
@@ -2855,6 +3456,7 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
     return {"status": "success"}
 
 @app.post("/api/custom-nodes/reparse")
+@handle_api_errors
 def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
     """Re-parse all custom nodes from their original links to update full config"""
     config = load_config()
@@ -2878,6 +3480,7 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
     return {"status": "success", "updated": updated_count}
 
 @app.post("/api/custom-nodes/{node_id}/reparse")
+@handle_api_errors
 def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
     """Re-parse a single custom node from its original link"""
     config = load_config()
@@ -2900,6 +3503,7 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="Node not found")
 
 @app.put("/api/custom-nodes/{node_id}")
+@handle_api_errors
 def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(verify_session)):
     config = load_config()
     for node in config['custom_nodes']:
@@ -2911,11 +3515,16 @@ def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(ver
     raise HTTPException(status_code=404, detail="Node not found")
 
 @app.put("/api/custom-nodes/{node_id}/full")
+@handle_api_errors
 def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depends(verify_session)):
     config = load_config()
     for i, node in enumerate(config['custom_nodes']):
         if node['id'] == node_id:
             new_node = data.node
+            
+            # Validate port
+            if 'port' in new_node:
+                Validators.validate_port(new_node['port'])
             
             # Update all fields from the new node data
             # Keep id and link (link will be regenerated)
@@ -2958,8 +3567,7 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
                         # Fallback: use stored node data
                         proxies.append({k: v for k, v in n.items() if k not in ['id', 'link', 'geoip']})
             
-            with open(os.path.join(YAML_SOURCE_DIR, 'custom_nodes.yaml'), 'w', encoding='utf-8') as f:
-                yaml.dump({'proxies': proxies}, f, allow_unicode=True, sort_keys=False)
+            save_custom_nodes_yaml(proxies, YAML_SOURCE_DIR)
             
             return {"status": "success", "node": node}
     raise HTTPException(status_code=404, detail="Node not found")
@@ -2974,16 +3582,16 @@ def get_all_final_node_names() -> set:
     # Get subscription nodes
     for sub in config.get('subscriptions', []):
         if sub.get('enabled', True):
-            filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
-            if os.path.exists(filepath):
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        cfg = yaml.safe_load(f)
-                    for proxy in cfg.get('proxies', []) if cfg else []:
-                        transformed = NameTransformer.transform_name(proxy, sub['name'])
-                        names.add(transformed.get('name', ''))
-                except:
-                    pass
+            try:
+                cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
+                for proxy in cfg.get('proxies', []):
+                    transformed = NameTransformer.transform_name(proxy, sub['name'])
+                    names.add(transformed.get('name', ''))
+            except HTTPException:
+                # Subscription file not found, skip
+                pass
+            except Exception as e:
+                logger.error(f"Error getting node names from {sub['id']}: {e}")
     
     # Get custom nodes
     for node in config.get('custom_nodes', []):
@@ -2993,6 +3601,7 @@ def get_all_final_node_names() -> set:
     return names
 
 @app.get("/api/port-mappings")
+@handle_api_errors
 def get_port_mappings(_: bool = Depends(verify_session)):
     """Get all port mappings with status (active/orphan)"""
     config = load_config()
@@ -3014,6 +3623,7 @@ def get_port_mappings(_: bool = Depends(verify_session)):
     return {"mappings": result}
 
 @app.post("/api/port-mappings")
+@handle_api_errors
 def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_session)):
     """Create or update a port mapping. Implements 'takeover' logic for orphan ports."""
     config = load_config()
@@ -3024,8 +3634,7 @@ def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_sessio
     valid_names = get_all_final_node_names()
     
     # Validate port range
-    if data.port < 1024 or data.port > 65535:
-        raise HTTPException(status_code=400, detail="Port must be between 1024 and 65535")
+    Validators.validate_port(data.port)
     
     # Check if port is already used
     existing_name = None
@@ -3059,6 +3668,7 @@ def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_sessio
     return {"status": "success", "message": "Mapping created", "final_name": data.final_name, "port": data.port}
 
 @app.delete("/api/port-mappings/{port}")
+@handle_api_errors
 def delete_port_mapping_by_port(port: int, _: bool = Depends(verify_session)):
     """Delete a port mapping by port number"""
     config = load_config()
@@ -3074,6 +3684,7 @@ def delete_port_mapping_by_port(port: int, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail=f"No mapping found for port {port}")
 
 @app.delete("/api/port-mappings/by-name/{final_name:path}")
+@handle_api_errors
 def delete_port_mapping_by_name(final_name: str, _: bool = Depends(verify_session)):
     """Delete a port mapping by node name"""
     config = load_config()
@@ -3131,8 +3742,7 @@ def get_all_available_nodes() -> List[dict]:
         filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
         if os.path.exists(filepath):
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    cfg = yaml.safe_load(f)
+                cfg = load_yaml_file_cached(filepath, cache_key=sub['id'], use_cache=True)
                 proxies = cfg.get('proxies', []) if cfg else []
                 for idx, proxy in enumerate(proxies):
                     original_name = proxy.get('name', f'Node {idx}')
@@ -3149,8 +3759,10 @@ def get_all_available_nodes() -> List[dict]:
                         'node_type': proxy.get('type', 'unknown'),
                         'server': proxy.get('server', '')
                     })
-            except:
-                pass
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Error getting nodes from subscription {sub['id']}: {e}")
     
     return nodes
 
@@ -3166,16 +3778,20 @@ def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
         filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
         if os.path.exists(filepath):
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    cfg = yaml.safe_load(f)
+                cfg = load_yaml_file_cached(filepath, cache_key=sub_id, use_cache=True)
                 proxies = cfg.get('proxies', []) if cfg else []
                 if 0 <= node_index < len(proxies):
                     return proxies[node_index]
-            except:
-                pass
+                else:
+                    logger.warning(f"Node index {node_index} out of range for subscription {sub_id}")
+            except yaml.YAMLError as e:
+                logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error getting node from subscription {sub_id}: {e}")
     return None
 
 @app.get("/api/proxy-chains")
+@handle_api_errors
 def list_proxy_chains(_: bool = Depends(verify_session)):
     """List all proxy chains"""
     config = load_config()
@@ -3183,12 +3799,14 @@ def list_proxy_chains(_: bool = Depends(verify_session)):
     return {"chains": chains, "count": len(chains)}
 
 @app.get("/api/proxy-chains/available-nodes")
+@handle_api_errors
 def get_available_nodes_for_chain(_: bool = Depends(verify_session)):
     """Get all available nodes for chain selection"""
     nodes = get_all_available_nodes()
     return {"nodes": nodes, "count": len(nodes)}
 
 @app.post("/api/proxy-chains")
+@handle_api_errors
 def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)):
     """Create a new proxy chain"""
     config = load_config()
@@ -3203,7 +3821,7 @@ def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)
     
     # Create chain object
     chain = {
-        'id': f"chain_{int(time.time() * 1000)}",
+        'id': generate_timestamp_id('chain_'),
         'name': data.name.strip(),
         'rows': [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows],
         'enabled': True,
@@ -3218,6 +3836,7 @@ def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)
     return {"status": "success", "chain": chain}
 
 @app.get("/api/proxy-chains/{chain_id}")
+@handle_api_errors
 def get_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     """Get a specific proxy chain"""
     config = load_config()
@@ -3227,6 +3846,7 @@ def get_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="Proxy chain not found")
 
 @app.put("/api/proxy-chains/{chain_id}")
+@handle_api_errors
 def update_proxy_chain(chain_id: str, data: UpdateProxyChain, _: bool = Depends(verify_session)):
     """Update a proxy chain"""
     config = load_config()
@@ -3250,6 +3870,7 @@ def update_proxy_chain(chain_id: str, data: UpdateProxyChain, _: bool = Depends(
     raise HTTPException(status_code=404, detail="Proxy chain not found")
 
 @app.put("/api/proxy-chains/{chain_id}/toggle")
+@handle_api_errors
 def toggle_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     """Toggle proxy chain enabled status"""
     config = load_config()
@@ -3263,6 +3884,7 @@ def toggle_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="Proxy chain not found")
 
 @app.delete("/api/proxy-chains/{chain_id}")
+@handle_api_errors
 def delete_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     """Delete a proxy chain"""
     config = load_config()
@@ -3281,6 +3903,7 @@ class ReorderProxyChains(BaseModel):
     order: List[str]
 
 @app.put("/api/proxy-chains/reorder")
+@handle_api_errors
 def reorder_proxy_chains(data: ReorderProxyChains, _: bool = Depends(verify_session)):
     """Reorder proxy chains"""
     config = load_config()
@@ -3307,6 +3930,7 @@ def reorder_proxy_chains(data: ReorderProxyChains, _: bool = Depends(verify_sess
 # ==================== User Management API ====================
 
 @app.get("/api/users")
+@handle_api_errors
 def list_users(_: bool = Depends(verify_session)):
     """List all users"""
     config = load_config()
@@ -3315,6 +3939,7 @@ def list_users(_: bool = Depends(verify_session)):
     return {"users": [{**u, 'token': u['token'][:8] + '...'} for u in users]}
 
 @app.get("/api/users/{user_id}")
+@handle_api_errors
 def get_user(user_id: str, _: bool = Depends(verify_session)):
     """Get user details including full token"""
     config = load_config()
@@ -3324,11 +3949,12 @@ def get_user(user_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/api/users")
+@handle_api_errors
 def create_user(data: CreateUser, _: bool = Depends(verify_session)):
     """Create a new user"""
     config = load_config()
     
-    user_id = f"user_{int(time.time() * 1000)}"
+    user_id = generate_timestamp_id('user_')
     user = {
         'id': user_id,
         'name': data.name,
@@ -3349,6 +3975,7 @@ def create_user(data: CreateUser, _: bool = Depends(verify_session)):
     return {"status": "success", "user": user}
 
 @app.put("/api/users/{user_id}")
+@handle_api_errors
 def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session)):
     """Update user info"""
     config = load_config()
@@ -3379,6 +4006,7 @@ def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.delete("/api/users/{user_id}")
+@handle_api_errors
 def delete_user(user_id: str, _: bool = Depends(verify_session)):
     """Delete a user"""
     config = load_config()
@@ -3391,6 +4019,7 @@ class RegenerateTokenRequest(BaseModel):
     custom_token: Optional[str] = None
 
 @app.post("/api/users/{user_id}/regenerate-token")
+@handle_api_errors
 def regenerate_user_token(user_id: str, data: RegenerateTokenRequest = None, _: bool = Depends(verify_session)):
     """Regenerate user's subscription token, optionally with a custom token"""
     config = load_config()
@@ -3405,6 +4034,7 @@ def regenerate_user_token(user_id: str, data: RegenerateTokenRequest = None, _: 
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/api/users/{user_id}/reset-group-config")
+@handle_api_errors
 def reset_user_group_config(user_id: str, _: bool = Depends(verify_session)):
     """Reset user's group configuration (clear all saved settings)"""
     config = load_config()
@@ -3420,6 +4050,7 @@ def reset_user_group_config(user_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/api/users/{user_id}/group-config")
+@handle_api_errors
 def get_user_group_config(user_id: str, _: bool = Depends(verify_session)):
     """Get user's group configuration for visual editor
     
@@ -3480,25 +4111,27 @@ def get_user_group_config(user_id: str, _: bool = Depends(verify_session)):
         sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
         if os.path.exists(sub_file):
             try:
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
-                    proxies = sub_data.get('proxies', [])
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+                proxies = sub_data.get('proxies', [])
+                
+                for proxy in proxies:
+                    node_name = proxy.get('name', '')
+                    if not node_name:
+                        continue
                     
-                    for proxy in proxies:
-                        node_name = proxy.get('name', '')
-                        if not node_name:
-                            continue
-                        
-                        # Use NameTransformer to get the final transformed name (same as in subscription generation)
-                        from merge_config import NameTransformer
-                        transformed = NameTransformer.transform_name(proxy, sub['name'])
-                        final_name = transformed.get('name', node_name)
-                        
-                        # Check if user has access to this node (check against original name)
-                        if allocation == ["*"] or node_name in allocation or final_name in allocation:
-                            available_nodes.append(final_name)
-            except:
-                pass
+                    # Use NameTransformer to get the final transformed name (same as in subscription generation)
+                    from merge_config import NameTransformer
+                    transformed = NameTransformer.transform_name(proxy, sub['name'])
+                    final_name = transformed.get('name', node_name)
+                    
+                    # Check if user has access to this node (check against original name)
+                    if allocation == ["*"] or node_name in allocation or final_name in allocation:
+                        available_nodes.append(final_name)
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Error loading nodes from subscription {sub['id']}: {e}")
     
     # 2. Load custom nodes if allocated
     custom_allocation = user_allocations.get('custom_nodes', [])
@@ -3568,6 +4201,7 @@ def get_user_group_config(user_id: str, _: bool = Depends(verify_session)):
     }
 
 @app.put("/api/users/{user_id}/group-config")
+@handle_api_errors
 def update_user_group_config(user_id: str, data: UpdateUserGroupConfig, _: bool = Depends(verify_session)):
     """Update user's group configuration"""
     config = load_config()
@@ -3584,6 +4218,7 @@ def update_user_group_config(user_id: str, data: UpdateUserGroupConfig, _: bool 
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/api/users/{user_id}/preview-yaml")
+@handle_api_errors
 def preview_user_yaml(user_id: str, _: bool = Depends(verify_session)):
     """Preview YAML configuration for user based on their group config"""
     config = load_config()
@@ -3623,19 +4258,21 @@ def preview_user_yaml(user_id: str, _: bool = Depends(verify_session)):
         sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
         if os.path.exists(sub_file):
             try:
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
-                    proxies = sub_data.get('proxies', [])
-                    for proxy in proxies:
-                        node_name = proxy.get('name', '')
-                        if not node_name:
-                            continue
-                        prefix = sub.get('prefix', '')
-                        final_name = f"{prefix}{node_name}" if prefix else node_name
-                        if allocation == ["*"] or node_name in allocation or final_name in allocation:
-                            available_nodes.append(final_name)
-            except:
-                pass
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+                proxies = sub_data.get('proxies', [])
+                for proxy in proxies:
+                    node_name = proxy.get('name', '')
+                    if not node_name:
+                        continue
+                    prefix = sub.get('prefix', '')
+                    final_name = f"{prefix}{node_name}" if prefix else node_name
+                    if allocation == ["*"] or node_name in allocation or final_name in allocation:
+                        available_nodes.append(final_name)
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse subscription YAML {sub_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error loading nodes from subscription {sub_id}: {e}")
     
     # 2. Load custom nodes if allocated
     custom_allocation = user_allocations.get('custom_nodes', [])
@@ -3685,7 +4322,7 @@ def preview_user_yaml(user_id: str, _: bool = Depends(verify_session)):
         
         # Generate YAML preview (only proxy-groups section)
         preview_data = {'proxy-groups': proxy_groups}
-        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False, Dumper=YAMLDumper)
         
         return {"yaml": yaml_preview}
     except Exception as e:
@@ -3693,6 +4330,7 @@ def preview_user_yaml(user_id: str, _: bool = Depends(verify_session)):
 
 
 @app.put("/api/users/{user_id}/allocations")
+@handle_api_errors
 def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = Depends(verify_session)):
     """Update user's node allocations
     
@@ -3715,6 +4353,7 @@ def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = De
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/api/users/{user_id}/allocations")
+@handle_api_errors
 def get_user_allocations(user_id: str, _: bool = Depends(verify_session)):
     """Get user's current node allocations"""
     config = load_config()
@@ -3724,6 +4363,7 @@ def get_user_allocations(user_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/api/available-nodes")
+@handle_api_errors
 def get_available_nodes(_: bool = Depends(verify_session)):
     """Get all available nodes grouped by subscription for allocation UI"""
     config = load_config()
@@ -3735,14 +4375,17 @@ def get_available_nodes(_: bool = Depends(verify_session)):
             filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
             if os.path.exists(filepath):
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = yaml.safe_load(f)
+                    data = load_yaml_file_cached(filepath, cache_key=sub['id'], use_cache=True)
                     nodes = data.get('proxies', []) if data else []
                     result[sub['id']] = {
                         'name': sub['name'],
                         'nodes': [n.get('name', f"node_{i}") for i, n in enumerate(nodes)]
                     }
-                except:
+                except yaml.YAMLError as e:
+                    logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+                    result[sub['id']] = {'name': sub['name'], 'nodes': []}
+                except Exception as e:
+                    logger.error(f"Error loading nodes from subscription {sub['id']}: {e}")
                     result[sub['id']] = {'name': sub['name'], 'nodes': []}
     
     # Get custom nodes
@@ -3765,6 +4408,7 @@ class CreateAdminToken(BaseModel):
     sub_name: Optional[str] = None  # Custom config name for this token
 
 @app.get("/api/admin-tokens")
+@handle_api_errors
 def list_admin_tokens(_: bool = Depends(verify_session)):
     """List all admin subscription tokens"""
     config = load_config()
@@ -3773,6 +4417,7 @@ def list_admin_tokens(_: bool = Depends(verify_session)):
     return {"tokens": [{**t, 'token': t['token'][:8] + '...' if len(t['token']) > 8 else t['token']} for t in tokens]}
 
 @app.get("/api/admin-tokens/{token_id}")
+@handle_api_errors
 def get_admin_token(token_id: str, _: bool = Depends(verify_session)):
     """Get admin token details including full token"""
     config = load_config()
@@ -3782,6 +4427,7 @@ def get_admin_token(token_id: str, _: bool = Depends(verify_session)):
     raise HTTPException(status_code=404, detail="Token not found")
 
 @app.post("/api/admin-tokens")
+@handle_api_errors
 def create_admin_token(data: CreateAdminToken, _: bool = Depends(verify_session)):
     """Create a new admin subscription token"""
     config = load_config()
@@ -3798,7 +4444,7 @@ def create_admin_token(data: CreateAdminToken, _: bool = Depends(verify_session)
     else:
         token_value = generate_token()
     
-    token_id = f"atok_{int(time.time() * 1000)}"
+    token_id = generate_timestamp_id('atok_')
     admin_token = {
         'id': token_id,
         'name': data.name,
@@ -3825,6 +4471,7 @@ class UpdateAdminToken(BaseModel):
     sub_name: Optional[str] = None
 
 @app.put("/api/admin-tokens/{token_id}")
+@handle_api_errors
 def update_admin_token(token_id: str, data: UpdateAdminToken, _: bool = Depends(verify_session)):
     """Update admin token"""
     config = load_config()
@@ -3850,6 +4497,7 @@ def update_admin_token(token_id: str, data: UpdateAdminToken, _: bool = Depends(
     raise HTTPException(status_code=404, detail="Token not found")
 
 @app.delete("/api/admin-tokens/{token_id}")
+@handle_api_errors
 def delete_admin_token(token_id: str, _: bool = Depends(verify_session)):
     """Delete admin token"""
     config = load_config()
@@ -3910,21 +4558,22 @@ def get_admin_token_group_config(token_id: str, _: bool = Depends(verify_session
         sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
         if os.path.exists(sub_file):
             try:
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
-                    proxies = sub_data.get('proxies', [])
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
+                proxies = sub_data.get('proxies', [])  
+                for proxy in proxies:
+                    node_name = proxy.get('name', '')
+                    if not node_name:
+                        continue
                     
-                    for proxy in proxies:
-                        node_name = proxy.get('name', '')
-                        if not node_name:
-                            continue
-                        
-                        from merge_config import NameTransformer
-                        transformed = NameTransformer.transform_name(proxy, sub['name'])
-                        final_name = transformed.get('name', node_name)
-                        available_nodes.append(final_name)
-            except:
-                pass
+                    from merge_config import NameTransformer
+                    transformed = NameTransformer.transform_name(proxy, sub['name'])
+                    final_name = transformed.get('name', node_name)
+                    available_nodes.append(final_name)
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Error loading nodes from subscription {sub['id']}: {e}")
     
     # Load all custom nodes
     custom_nodes = config.get('custom_nodes', [])
@@ -4041,18 +4690,20 @@ def preview_admin_token_yaml(token_id: str, _: bool = Depends(verify_session)):
         sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
         if os.path.exists(sub_file):
             try:
-                with open(sub_file, 'r', encoding='utf-8') as f:
-                    sub_data = yaml.safe_load(f)
-                    proxies = sub_data.get('proxies', [])
-                    for proxy in proxies:
-                        node_name = proxy.get('name', '')
-                        if not node_name:
-                            continue
-                        prefix = sub.get('prefix', '')
-                        final_name = f"{prefix}{node_name}" if prefix else node_name
-                        available_nodes.append(final_name)
-            except:
-                pass
+                # Use cached load for better performance
+                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+                proxies = sub_data.get('proxies', [])
+                for proxy in proxies:
+                    node_name = proxy.get('name', '')
+                    if not node_name:
+                        continue
+                    prefix = sub.get('prefix', '')
+                    final_name = f"{prefix}{node_name}" if prefix else node_name
+                    available_nodes.append(final_name)
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse subscription YAML {sub_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error loading nodes from subscription {sub_id}: {e}")
     
     custom_nodes = config.get('custom_nodes', [])
     for custom_node in custom_nodes:
@@ -4092,7 +4743,7 @@ def preview_admin_token_yaml(token_id: str, _: bool = Depends(verify_session)):
         
         # Generate YAML preview
         preview_data = {'proxy-groups': proxy_groups}
-        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        yaml_preview = yaml.dump(preview_data, allow_unicode=True, sort_keys=False, default_flow_style=False, Dumper=YAMLDumper)
         
         return {"yaml": yaml_preview}
     except Exception as e:
@@ -4282,7 +4933,7 @@ def proxy_to_link(proxy: dict) -> str:
         return ''
 
 @app.get("/sub")
-def get_merged_subscription(
+async def get_merged_subscription(
     token: Optional[str] = None, 
     format: Optional[str] = None,
     user_agent: Optional[str] = Header(None, alias="User-Agent")
@@ -4342,7 +4993,7 @@ def get_merged_subscription(
         
         # Cache is valid for 5 minutes (300 seconds)
         if cache_content and (time.time() - cache_time) < 300:
-            print(f"Using cached subscription for user {user_info['name']}")
+            logger.debug(f"Using cached subscription for user {user_info['name']}")
             return PlainTextResponse(
                 cache_content,
                 media_type='text/yaml',
@@ -4380,7 +5031,7 @@ def get_merged_subscription(
     
     # If there are missing subscription files, fetch them now
     if missing_subs:
-        print(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
+        logger.info(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
         proxy_node = get_configured_proxy_node()
         for sub in missing_subs:
             try:
@@ -4395,11 +5046,10 @@ def get_merged_subscription(
                     'last_update': int(time.time()),
                     'update_status': 'success'
                 })
-                with open(os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml"), 'w', encoding='utf-8') as f:
-                    f.write(content)
-                print(f"  ✓ Refreshed: {sub['name']}")
+                save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
+                logger.info(f"  ✓ Refreshed: {sub['name']}")
             except Exception as e:
-                print(f"  ✗ Failed to refresh {sub['name']}: {e}")
+                logger.error(f"  ✗ Failed to refresh {sub['name']}: {e}")
                 sub['update_status'] = f'error: {str(e)}'
         # Save updated subscription info
         save_config(config)
@@ -4444,7 +5094,7 @@ def get_merged_subscription(
             if needs_migration:
                 # Auto-migrate old format templates
                 try:
-                    parsed = yaml.safe_load(template['content'])
+                    parsed = yaml.load(template['content'], Loader=YAMLLoader)
                     if isinstance(parsed, dict):
                         # Split the content
                         header, suffix = split_template(template['content'])
@@ -4456,9 +5106,9 @@ def get_merged_subscription(
                         del template['content']
                         # Save migrated template (only once)
                         save_config(config)
-                        print(f"Template {template_id} migrated successfully")
+                        logger.info(f"Template {template_id} migrated successfully")
                 except Exception as e:
-                    print(f"Template migration failed: {e}")
+                    logger.error(f"Template migration failed: {e}")
                     # If migration fails, use fallback
                     header = ConfigMerger.TEMPLATES['header']
                     suffix = ConfigMerger.TEMPLATES['suffix']
@@ -4595,7 +5245,7 @@ def get_merged_subscription(
             
             # Regenerate proxy groups based on filtered proxies
             from merge_config import CountryGrouper, ProxyGroupGenerator
-            country_groups = CountryGrouper.group_by_country(proxies)
+            country_groups = await CountryGrouper.group_by_country_async(proxies)
             proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
         
         # If using custom template with proxy-groups, process user config
@@ -4610,10 +5260,10 @@ def get_merged_subscription(
                 g_name = g.get('name', '')
                 g_type = g.get('type', '')
                 # Primary groups are usually select or url-test types that will contain actual nodes
-                # Common patterns: "节点选择", "自动选择", "手动选择", etc.
+                # Common patterns: "Node Selection", "Auto Select", "Manual Select", etc.
                 if g_type in ['select', 'url-test', 'fallback', 'load-balance']:
                     # Check if this looks like a primary selection group (not a policy group)
-                    # Policy groups typically have names like "广告拦截", "国内服务", etc.
+                    # Policy groups typically have names like "Ad Block", "Domestic Service", etc.
                     is_policy = any(keyword in g_name for keyword in ['广告', '拦截', '国内', '服务', '私有', '网络', '漏网', 'Ad', 'Block', 'Domestic', 'Private', 'Catch'])
                     if not is_policy:
                         primary_groups.append(g_name)
@@ -4662,13 +5312,13 @@ def get_merged_subscription(
                         user_selected_nodes = group_config[group_name]
                         valid_nodes = []
                         
-                        # Debug logging
-                        print(f"[DEBUG] Group '{group_name}': user selected {len(user_selected_nodes)} nodes")
-                        print(f"[DEBUG] Available proxy names: {len(all_proxy_names)} nodes")
+                        # Log node selection for debugging
+                        logger.debug(f"Group '{group_name}': user selected {len(user_selected_nodes)} nodes")
+                        logger.debug(f"Available proxy names: {len(all_proxy_names)} nodes")
                         if len(all_proxy_names) > 0:
-                            print(f"[DEBUG] Sample proxy names: {all_proxy_names[:3]}")
+                            logger.debug(f"Sample proxy names: {all_proxy_names[:3]}")
                         if len(user_selected_nodes) > 0:
-                            print(f"[DEBUG] Sample user selected: {user_selected_nodes[:5]}")
+                            logger.debug(f"Sample user selected: {user_selected_nodes[:5]}")
                         
                         for node in user_selected_nodes:
                             # Keep DIRECT and REJECT
@@ -4678,10 +5328,10 @@ def get_merged_subscription(
                             elif node in all_proxy_names:
                                 valid_nodes.append(node)
                             else:
-                                # Debug: node not found
-                                print(f"[DEBUG] Node '{node}' not found in all_proxy_names")
+                                # Node not found in available proxies
+                                logger.debug(f"Node '{node}' not found in all_proxy_names")
                         
-                        print(f"[DEBUG] Valid nodes after filtering: {len(valid_nodes)} nodes")
+                        logger.debug(f"Valid nodes after filtering: {len(valid_nodes)} nodes")
                         
                         # Combine: group refs + user selected nodes (including DIRECT/REJECT)
                         if valid_nodes:
@@ -5025,7 +5675,7 @@ def get_merged_subscription(
             }
             # Save config with updated cache
             save_config(config)
-            print(f"Cached subscription for user {user_info['name']}")
+            logger.debug(f"Cached subscription for user {user_info['name']}")
         
         return PlainTextResponse(
             yaml_content, 
@@ -5037,8 +5687,19 @@ def get_merged_subscription(
 
 # ==================== Multi-Template Management API ====================
 
+# Template cache to avoid repeated parsing
+_template_cache = {}
+_template_cache_mtime = {}
+
 def get_builtin_template():
     """Get the built-in default template (with user overrides if any)"""
+    cache_key = 'builtin_template'
+    
+    # Check cache
+    config_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else 0
+    if cache_key in _template_cache and _template_cache_mtime.get(cache_key) == config_mtime:
+        return _template_cache[cache_key].copy()
+    
     config = load_config()
     override = config.get('builtin_template_override')
     
@@ -5055,7 +5716,7 @@ def get_builtin_template():
         proxy_groups = []
         is_modified = False
     
-    return {
+    template = {
         'id': 'builtin',
         'name': '内置模版',
         'header': header,
@@ -5065,9 +5726,22 @@ def get_builtin_template():
         'is_modified': is_modified,  # Indicates if user has customized it
         'created_at': 0
     }
+    
+    # Cache the result
+    _template_cache[cache_key] = template
+    _template_cache_mtime[cache_key] = config_mtime
+    
+    return template.copy()
 
 def get_all_templates_list():
     """Get all templates including built-in"""
+    cache_key = 'all_templates'
+    
+    # Check cache
+    config_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else 0
+    if cache_key in _template_cache and _template_cache_mtime.get(cache_key) == config_mtime:
+        return [t.copy() for t in _template_cache[cache_key]]
+    
     config = load_config()
     templates = [get_builtin_template()]
     
@@ -5076,9 +5750,19 @@ def get_all_templates_list():
         t['is_builtin'] = False
         templates.append(t)
     
-    return templates
+    # Cache the result
+    _template_cache[cache_key] = templates
+    _template_cache_mtime[cache_key] = config_mtime
+    
+    return [t.copy() for t in templates]
+
+def invalidate_template_cache():
+    """Invalidate template cache when templates are modified"""
+    _template_cache.clear()
+    _template_cache_mtime.clear()
 
 @app.get("/api/templates")
+@handle_api_errors
 def list_templates(_: bool = Depends(verify_session)):
     """List all templates including built-in"""
     templates = get_all_templates_list()
@@ -5099,13 +5783,14 @@ class CreateTemplateRequest(BaseModel):
     content: str  # Full template YAML content
 
 @app.post("/api/templates")
+@handle_api_errors
 def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_session)):
     """Create a new template"""
     config = load_config()
     
     # Parse and validate content
     try:
-        parsed = yaml.safe_load(data.content)
+        parsed = yaml.load(data.content, Loader=YAMLLoader)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="Invalid template format")
     except yaml.YAMLError as e:
@@ -5124,7 +5809,7 @@ def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_sessio
     # This removes proxies and proxy-groups sections
     header, suffix = split_template(data.content)
     
-    template_id = f"tpl_{int(time.time() * 1000)}"
+    template_id = generate_timestamp_id('tpl_')
     template = {
         'id': template_id,
         'name': data.name,
@@ -5139,6 +5824,9 @@ def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_sessio
     config['templates'].append(template)
     save_config(config)
     
+    # Invalidate template cache
+    invalidate_template_cache()
+    
     return {"status": "success", "template": {
         'id': template_id,
         'name': data.name,
@@ -5147,6 +5835,7 @@ def create_template(data: CreateTemplateRequest, _: bool = Depends(verify_sessio
     }}
 
 @app.get("/api/templates/{template_id}")
+@handle_api_errors
 def get_template(template_id: str, _: bool = Depends(verify_session)):
     """Get a specific template with full content"""
     if template_id == 'builtin':
@@ -5163,7 +5852,7 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
             if 'content' in t:
                 # Parse content to extract proxy-groups
                 try:
-                    parsed = yaml.safe_load(t['content'])
+                    parsed = yaml.load(t['content'], Loader=YAMLLoader)
                     if isinstance(parsed, dict):
                         # Split the content
                         header, suffix = split_template(t['content'])
@@ -5175,8 +5864,11 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
                         del t['content']
                         # Save migrated template
                         save_config(config)
-                except:
-                    pass  # If migration fails, keep old format
+                        logger.info(f"Migrated template {template_id} to new format")
+                except yaml.YAMLError as e:
+                    logger.warning(f"Failed to migrate template {template_id} - invalid YAML: {e}")
+                except Exception as e:
+                    logger.error(f"Error migrating template {template_id}: {e}")
     
     # Check if template has old format (content field) or new format (header/suffix)
     if 'header' not in t or 'suffix' not in t:
@@ -5195,7 +5887,7 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
             proxy_groups_lines = ["proxy-groups:"]
             for group in proxy_groups:
                 # Convert each group to YAML and indent properly
-                group_yaml = yaml.dump([group], allow_unicode=True, sort_keys=False, default_flow_style=False)
+                group_yaml = yaml.dump([group], allow_unicode=True, sort_keys=False, default_flow_style=False, Dumper=YAMLDumper)
                 # Remove the leading "- " and indent each line
                 for line in group_yaml.strip().split('\n'):
                     if line.startswith('- '):
@@ -5222,6 +5914,7 @@ class UpdateTemplateRequest(BaseModel):
     content: Optional[str] = None
 
 @app.put("/api/templates/{template_id}")
+@handle_api_errors
 def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Depends(verify_session)):
     """Update a template"""
     config = load_config()
@@ -5232,7 +5925,7 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
             raise HTTPException(status_code=400, detail="Content is required")
         
         try:
-            parsed = yaml.safe_load(data.content)
+            parsed = yaml.load(data.content, Loader=YAMLLoader)
             if not isinstance(parsed, dict):
                 raise HTTPException(status_code=400, detail="Invalid template format")
         except yaml.YAMLError as e:
@@ -5248,6 +5941,10 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
             'proxy_groups': proxy_groups
         }
         save_config(config)
+        
+        # Invalidate template cache
+        invalidate_template_cache()
+        
         return {"status": "success", "message": "Built-in template customized"}
     
     # Regular template update
@@ -5260,7 +5957,7 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
     
     if data.content:
         try:
-            parsed = yaml.safe_load(data.content)
+            parsed = yaml.load(data.content, Loader=YAMLLoader)
             if not isinstance(parsed, dict):
                 raise HTTPException(status_code=400, detail="Invalid template format")
         except yaml.YAMLError as e:
@@ -5273,9 +5970,14 @@ def update_template(template_id: str, data: UpdateTemplateRequest, _: bool = Dep
         template['proxy_groups'] = parsed.get('proxy-groups', [])
     
     save_config(config)
+    
+    # Invalidate template cache
+    invalidate_template_cache()
+    
     return {"status": "success", "message": "Template updated"}
 
 @app.delete("/api/templates/{template_id}")
+@handle_api_errors
 def delete_template(template_id: str, _: bool = Depends(verify_session)):
     """Delete a template"""
     if template_id == 'builtin':
@@ -5300,9 +6002,14 @@ def delete_template(template_id: str, _: bool = Depends(verify_session)):
     
     templates.pop(idx)
     save_config(config)
+    
+    # Invalidate template cache
+    invalidate_template_cache()
+    
     return {"status": "success", "message": "Template deleted"}
 
 @app.post("/api/templates/builtin/reset")
+@handle_api_errors
 def reset_builtin_template(_: bool = Depends(verify_session)):
     """Reset built-in template to default (remove user customizations)"""
     config = load_config()
@@ -5310,6 +6017,10 @@ def reset_builtin_template(_: bool = Depends(verify_session)):
     if 'builtin_template_override' in config:
         del config['builtin_template_override']
         save_config(config)
+        
+        # Invalidate template cache
+        invalidate_template_cache()
+        
         return {"status": "success", "message": "Built-in template reset to default"}
     else:
         return {"status": "success", "message": "Built-in template is already at default"}
@@ -5371,10 +6082,22 @@ def get_default_template(_: bool = Depends(verify_session)):
 
 @app.post("/api/template/parse")
 async def parse_template_file(file: UploadFile = File(...), current_template: str = Form(default=""), _: bool = Depends(verify_session)):
+    """Parse uploaded template file with size validation"""
     try:
-        content = (await file.read()).decode('utf-8')
+        # Read file content with size limit
+        content_bytes = await file.read()
+        
+        # Validate file size
+        if len(content_bytes) > Constants.MAX_REQUEST_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"File too large. Maximum size: {Constants.MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB"
+            )
+        
+        content = content_bytes.decode('utf-8')
+        
         try:
-            uploaded_config = yaml.safe_load(content)
+            uploaded_config = yaml.load(content, Loader=YAMLLoader)
         except yaml.YAMLError as e:
             raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)[:100]}")
         
@@ -5383,15 +6106,23 @@ async def parse_template_file(file: UploadFile = File(...), current_template: st
         
         if current_template:
             try:
-                base_config = yaml.safe_load(current_template)
-            except:
+                base_config = yaml.load(current_template, Loader=YAMLLoader)
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse current template: {e}")
+                base_config = {}
+            except Exception as e:
+                logger.error(f"Error loading current template: {e}")
                 base_config = {}
         else:
             header = ConfigMerger.TEMPLATES['header']
             suffix = ConfigMerger.TEMPLATES['suffix']
             try:
-                base_config = yaml.safe_load(header + "\nproxies: []\nproxy-groups: []\n" + suffix)
-            except:
+                base_config = yaml.load(header + "\nproxies: []\nproxy-groups: []\n" + suffix, Loader=YAMLLoader)
+            except yaml.YAMLError as e:
+                logger.error(f"Failed to parse default template: {e}")
+                base_config = {}
+            except Exception as e:
+                logger.error(f"Error loading default template: {e}")
                 base_config = {}
         
         if not isinstance(base_config, dict):
@@ -5450,7 +6181,7 @@ async def parse_template_file(file: UploadFile = File(...), current_template: st
         else:
             merged['proxy-groups'] = []
         
-        new_content = yaml.dump(merged, allow_unicode=True, sort_keys=False, default_flow_style=False, width=float("inf"))
+        new_content = yaml.dump(merged, allow_unicode=True, sort_keys=False, default_flow_style=False, width=float("inf"), Dumper=YAMLDumper)
         section_keys = ['dns:', 'sniffer:', 'tun:', 'proxies:', 'proxy-groups:', 'rules:', 'rule-providers:', 'script:', 'url-rewrite:']
         lines = new_content.split('\n')
         result_lines = []
@@ -5477,7 +6208,7 @@ def save_template(data: TemplateSaveRequest, _: bool = Depends(verify_session)):
         content = data.content.strip()
         # Parse to validate YAML
         try:
-            parsed = yaml.safe_load(content)
+            parsed = yaml.load(content, Loader=YAMLLoader)
             if not isinstance(parsed, dict):
                 raise HTTPException(status_code=400, detail="Invalid template format")
         except yaml.YAMLError as e:
@@ -5586,7 +6317,7 @@ class CustomGeoIPAPIRequest(BaseModel):
     name: str
     url: str  # URL template with {ip} placeholder
     token: Optional[str] = ""  # Optional token/API key
-    limit: Optional[str] = ""  # Optional usage limit display (e.g. "1000次/天")
+    limit: Optional[str] = ""  # Optional usage limit display (e.g. "1000 times/day")
     method: Optional[str] = "GET"
     headers: Optional[Dict[str, str]] = None
     country_code_path: Optional[str] = ""  # JSON path like "countryCode" or "data.country.code"
@@ -5744,10 +6475,9 @@ class TestBuiltinGeoIPAPIRequest(BaseModel):
     test_ip: Optional[str] = "8.8.8.8"
 
 @app.post("/api/geoip/apis/{api_id}/test")
-def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool = Depends(verify_session)):
+async def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool = Depends(verify_session)):
     """Test a GeoIP API with a sample IP"""
     from geoip_service import lookup_ip_online, _lookup_ip_api_com, _lookup_ipwhois, _lookup_ipinfo, _lookup_custom_api, get_online_geoip_config as get_geoip_config
-    import requests
     
     test_ip = data.test_ip if data else "8.8.8.8"
     
@@ -5764,12 +6494,12 @@ def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool
         result = None
         # Get raw response for builtin APIs
         if api_id == "ip-api.com":
-            resp = requests.get(f"http://ip-api.com/json/{test_ip}?lang=zh-CN", timeout=10)
+            resp = await http_client.get(f"http://ip-api.com/json/{test_ip}?lang=zh-CN", timeout=Constants.TIMEOUT_GEOIP_LOOKUP)
             if resp.status_code == 200:
                 raw_response = resp.json()
             result = _lookup_ip_api_com(test_ip)
         elif api_id == "ipwhois":
-            resp = requests.get(f"https://ipwhois.app/json/{test_ip}?lang=zh-CN", timeout=10)
+            resp = await http_client.get(f"https://ipwhois.app/json/{test_ip}?lang=zh-CN", timeout=Constants.TIMEOUT_GEOIP_LOOKUP)
             if resp.status_code == 200:
                 raw_response = resp.json()
             result = _lookup_ipwhois(test_ip)
@@ -5779,7 +6509,7 @@ def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool
             url = f"https://ipinfo.io/{test_ip}/json"
             if token:
                 url += f"?token={token}"
-            resp = requests.get(url, timeout=10)
+            resp = await http_client.get(url, timeout=Constants.TIMEOUT_GEOIP_LOOKUP)
             if resp.status_code == 200:
                 raw_response = resp.json()
             result = _lookup_ipinfo(test_ip)
@@ -5796,7 +6526,7 @@ def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool
                     url = url.replace("{key}", token).replace("{token}", token)
                 else:
                     url = url.replace("{key}", "").replace("{token}", "")
-                resp = requests.get(url, timeout=10)
+                resp = await http_client.get(url, timeout=Constants.TIMEOUT_GEOIP_LOOKUP)
                 if resp.status_code == 200:
                     raw_response = resp.json()
                 result = _lookup_custom_api(test_ip, full_api)
@@ -5826,10 +6556,9 @@ def test_geoip_api(api_id: str, data: TestBuiltinGeoIPAPIRequest = None, _: bool
         }
 
 @app.post("/api/geoip/test-custom-api")
-def test_custom_geoip_api(data: TestCustomGeoIPAPIRequest, _: bool = Depends(verify_session)):
+async def test_custom_geoip_api(data: TestCustomGeoIPAPIRequest, _: bool = Depends(verify_session)):
     """Test a custom GeoIP API configuration before saving"""
     from geoip_service import _lookup_custom_api, _auto_detect_json_paths
-    import requests
     
     test_ip = data.test_ip or "8.8.8.8"
     token = data.token or ""
@@ -5849,7 +6578,7 @@ def test_custom_geoip_api(data: TestCustomGeoIPAPIRequest, _: bool = Depends(ver
     try:
         # Make a test request
         url = api_config["url"].replace("{ip}", test_ip).replace("{key}", token).replace("{token}", token)
-        resp = requests.get(url, timeout=10)
+        resp = await http_client.get(url, timeout=Constants.TIMEOUT_GEOIP_LOOKUP)
         resp.raise_for_status()
         raw_response = resp.json()
         
@@ -5910,7 +6639,7 @@ async def startup_event():
             ConfigMerger.TEMPLATES['header'] = template['header']
         if 'suffix' in template:
             ConfigMerger.TEMPLATES['suffix'] = template['suffix']
-        print("Custom template loaded from config")
+        logger.info("Custom template loaded from config")
     
     # Load online GeoIP API config
     online_geoip_cfg = config.get('online_geoip_config', {})
@@ -5921,18 +6650,55 @@ async def startup_event():
             custom_apis=online_geoip_cfg.get('custom_apis'),
             api_settings=online_geoip_cfg.get('api_settings')
         )
-        print(f"Online GeoIP API config loaded: {online_geoip_cfg.get('preferred_api', 'ip-api.com')}")
+        logger.info(f"Online GeoIP API config loaded: {online_geoip_cfg.get('preferred_api', 'ip-api.com')}")
     
     scheduler.start()
     load_scheduled_subscriptions()
     
-    print("Scheduler initialized and tasks loaded")
+    logger.info("Scheduler initialized and tasks loaded")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Stop scheduler and Go service on shutdown"""
-    scheduler.stop()
-    stop_go_speedtest_service()
+    """Graceful shutdown: stop scheduler, close connections, and cleanup"""
+    logger.info("Starting graceful shutdown...")
+    
+    # Stop scheduler first to prevent new tasks
+    try:
+        scheduler.stop()
+        logger.info("Scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}")
+    
+    # Stop Go speedtest service
+    try:
+        stop_go_speedtest_service()
+        logger.info("Go speedtest service stopped")
+    except Exception as e:
+        logger.error(f"Error stopping Go service: {e}")
+    
+    # Close HTTP client gracefully
+    try:
+        await http_client.aclose()
+        logger.info("HTTP client closed")
+    except Exception as e:
+        logger.error(f"Error closing HTTP client: {e}")
+    
+    # Clear ongoing refresh locks
+    try:
+        _ongoing_refresh_locks.clear()
+        logger.info("Refresh locks cleared")
+    except Exception as e:
+        logger.error(f"Error clearing locks: {e}")
+    
+    # Save GeoIP cache to disk
+    try:
+        from geoip_service import save_geoip_cache_to_disk
+        save_geoip_cache_to_disk()
+        logger.info("GeoIP cache saved to disk")
+    except Exception as e:
+        logger.error(f"Error saving GeoIP cache: {e}")
+    
+    logger.info("Graceful shutdown completed")
 
 def load_scheduled_subscriptions():
     """Load all subscriptions with cron expressions into scheduler"""
@@ -5958,24 +6724,24 @@ def load_scheduled_subscriptions():
     # Save updated next_update times
     if loaded_count > 0:
         save_config(config)
-        print(f"Loaded {loaded_count} scheduled subscriptions")
+        logger.info(f"Loaded {loaded_count} scheduled subscriptions")
     else:
-        print("No scheduled subscriptions found")
+        logger.info("No scheduled subscriptions found")
 
 async def scheduled_subscription_update(sub_id: str):
     """Called by scheduler to update a subscription"""
-    print(f"Scheduled update for subscription: {sub_id}")
+    logger.info(f"Scheduled update for subscription: {sub_id}")
     try:
         config = load_config()
         subs = config.get('subscriptions', [])
         sub = next((s for s in subs if s['id'] == sub_id), None)
         
         if not sub:
-            print(f"Subscription {sub_id} not found")
+            logger.warning(f"Subscription {sub_id} not found")
             return
         
         # Fetch and update subscription
-        response = requests.get(sub['url'], timeout=30)
+        response = await http_client.get(sub['url'], timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
         response.raise_for_status()
         
         # Parse subscription content
@@ -6004,10 +6770,10 @@ async def scheduled_subscription_update(sub_id: str):
             f.write(content)
         
         save_config(config)
-        print(f"Subscription {sub_id} updated successfully, {len(nodes)} nodes")
+        logger.info(f"Subscription {sub_id} updated successfully, {len(nodes)} nodes")
         
     except Exception as e:
-        print(f"Failed to update subscription {sub_id}: {e}")
+        logger.error(f"Failed to update subscription {sub_id}: {e}")
         # Update status to failed
         config = load_config()
         subs = config.get('subscriptions', [])
@@ -6050,7 +6816,11 @@ def parse_subscription_headers(headers) -> dict:
                     try:
                         expire_ts = int(value)
                         result['traffic_expire'] = datetime.fromtimestamp(expire_ts).strftime("%Y-%m-%d")
-                    except:
+                    except (ValueError, OSError) as e:
+                        logger.debug(f"Invalid expire timestamp: {value}, error: {e}")
+                        result['traffic_expire'] = value
+                    except Exception as e:
+                        logger.warning(f"Error parsing expire timestamp: {e}")
                         result['traffic_expire'] = value
     
     return result
@@ -6064,19 +6834,22 @@ def parse_subscription_content(content: str) -> list:
     
     # Try YAML format first
     try:
-        data = yaml.safe_load(content)
+        data = yaml.load(content, Loader=YAMLLoader)
         if isinstance(data, dict) and 'proxies' in data:
             return data['proxies']
-    except:
-        pass
+    except yaml.YAMLError as e:
+        logger.debug(f"Content is not YAML format: {e}")
+    except Exception as e:
+        logger.warning(f"Error parsing YAML content: {e}")
     
     # Try Base64 decode
     try:
         decoded = decode_base64(content)
         if decoded:
             content = decoded
-    except:
-        pass
+            logger.debug("Successfully decoded Base64 content")
+    except Exception as e:
+        logger.debug(f"Content is not Base64 encoded: {e}")
     
     # Parse line by line for proxy links
     for line in content.strip().split('\n'):
@@ -6204,7 +6977,7 @@ async def manual_subscription_update(sub_id: str, _: bool = Depends(verify_sessi
     
     try:
         # Fetch subscription
-        response = requests.get(sub['url'], timeout=30)
+        response = await http_client.get(sub['url'], timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
         response.raise_for_status()
         
         content = response.text
@@ -6235,7 +7008,7 @@ async def manual_subscription_update(sub_id: str, _: bool = Depends(verify_sessi
             "traffic": traffic_info
         }
         
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         sub['update_status'] = 'failed'
         sub['last_update'] = int(time.time())
         save_config(config)
@@ -6302,14 +7075,13 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
             filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
             if os.path.exists(filepath):
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        cfg = yaml.safe_load(f)
+                    cfg = load_yaml_file_cached(filepath, cache_key=sub_id, use_cache=True)
                     yaml_nodes = cfg.get('proxies', []) if cfg else []
                     if 0 <= node_idx < len(yaml_nodes):
                         node = yaml_nodes[node_idx]
                         node_location = ('subscription', sub_id, node_idx)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to locate node in subscription {sub_id}: {e}")
     
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
@@ -6330,9 +7102,6 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
     server = node.get('server', '')
     port = node.get('port', 443)
     need_save = False
-    
-    # Go speedtest service URL
-    GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
     
     # Prepare node config for Go service (remove non-serializable fields)
     node_config = {k: v for k, v in node.items() if k not in ['geoip', 'last_latency', 'last_latency_time', 'last_speed', 'last_speed_time']}
@@ -6360,7 +7129,7 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                     request_data["node"] = node_config
                 
                 resp = await client.post(
-                    f"{GO_SPEEDTEST_URL}/api/delay",
+                    f"{AppConfig.GO_SPEEDTEST_URL}/api/delay",
                     json=request_data
                 )
                 resp_data = resp.json()
@@ -6423,7 +7192,7 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                     request_data["node"] = node_config
                 
                 resp = await client.post(
-                    f"{GO_SPEEDTEST_URL}/api/ip",
+                    f"{AppConfig.GO_SPEEDTEST_URL}/api/ip",
                     json=request_data
                 )
                 resp_data = resp.json()
@@ -6435,7 +7204,7 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                     # Lookup GeoIP using online API
                     from geoip_service import lookup_ip_online
                     geoip_api_id = data.geoip_api if data else None
-                    geo_data = lookup_ip_online(exit_ip, api_id=geoip_api_id)
+                    geo_data = await lookup_ip_online(exit_ip, api_id=geoip_api_id)
                     
                     if geo_data:
                         region_info = {
@@ -6446,8 +7215,8 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                         city = geo_data.get('city')
                         if city:
                             result["city"] = city
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to extract city from GeoIP: {e}")
         
         # 2. Fallback to node name extraction if GeoIP failed
         if not region_info:
@@ -6496,7 +7265,7 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                     request_data["node"] = node_config
                 
                 resp = await client.post(
-                    f"{GO_SPEEDTEST_URL}/api/speed",
+                    f"{AppConfig.GO_SPEEDTEST_URL}/api/speed",
                     json=request_data
                 )
                 resp_data = resp.json()
@@ -6522,8 +7291,7 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
             sub_id_to_save = node_location[1]
             filepath = os.path.join(YAML_SOURCE_DIR, f"{sub_id_to_save}.yaml")
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    cfg = yaml.safe_load(f)
+                cfg = load_yaml_file_cached(filepath, cache_key=sub_id_to_save, use_cache=True)
                 if cfg and 'proxies' in cfg and 0 <= node_idx < len(cfg['proxies']):
                     # Update specific fields in the existing node instead of replacing entire node
                     existing_node = cfg['proxies'][node_idx]
@@ -6541,9 +7309,9 @@ async def test_subscription_node(sub_id: str, node_idx: int, data: SpeedTestRequ
                         existing_node['last_speed_time'] = node['last_speed_time']
                     
                     with open(filepath, 'w', encoding='utf-8') as f:
-                        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            except Exception:
-                pass  # Silently fail saving to YAML
+                        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False, Dumper=YAMLDumper)
+            except Exception as e:
+                logger.warning(f"Failed to save latency to YAML for {sub_id}: {e}")
         elif node_location and node_location[0] == 'chain':
             # Save latency to chain object in config
             chain_idx = node_location[1]
@@ -6725,7 +7493,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
         '使用说明', '教程', '更新', '通知', '邀请', '返利', '📊',
         '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
-        '官网:', '官网：', '免注册'  # 官网+冒号，免注册等广告词
+        '官网:', '官网：', '免注册'  # Website + colon, free registration ads
     ]
     
     # Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
@@ -6774,7 +7542,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         # Check basic keywords
         if any(kw in name for kw in info_keywords):
             return True
-        # Check if starts with "官网" but has no region name
+        # Check if starts with "Website" but has no region name
         if name.startswith('官网'):
             # If it contains a region name, it's a valid node
             if any(region in name for region in region_keywords):
@@ -6817,11 +7585,12 @@ def get_stats_overview(_: bool = Depends(verify_session)):
             proxies = []
             if os.path.exists(filepath):
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = yaml.safe_load(f)
+                    data = load_yaml_file_cached(filepath, cache_key=sub['id'], use_cache=True)
                     proxies = data.get('proxies', []) if data else []
-                except:
-                    pass
+                except yaml.YAMLError as e:
+                    logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+                except Exception as e:
+                    logger.error(f"Error loading subscription {sub['id']}: {e}")
             
             # If no YAML, check config (fallback)
             if not proxies:
@@ -6862,7 +7631,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     return result
 
 @app.get("/api/stats/nodes-by-country")
-def get_nodes_by_country(_: bool = Depends(verify_session)):
+async def get_nodes_by_country(_: bool = Depends(verify_session)):
     """Get node distribution by country with caching"""
     import time
     
@@ -6903,16 +7672,17 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
                 filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
                 if os.path.exists(filepath):
                     try:
-                        with open(filepath, 'r', encoding='utf-8') as f:
-                            cfg = yaml.safe_load(f)
+                        cfg = load_yaml_file_cached(filepath, cache_key=sub['id'], use_cache=True)
                         nodes = cfg.get('proxies', []) if cfg else []
                         for node in nodes:
                             name = node.get('name', '')
                             if not any(kw in name for kw in info_keywords):
                                 node['_source'] = sub['name']
                                 all_nodes.append(node)
-                    except:
-                        pass
+                    except yaml.YAMLError as e:
+                        logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error loading subscription {sub['id']}: {e}")
     
     # Add custom nodes
     for node in custom_nodes:
@@ -6921,7 +7691,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         all_nodes.append(node_copy)
     
     # Use CountryGrouper logic
-    grouped_nodes = CountryGrouper.group_by_country(all_nodes)
+    grouped_nodes = await CountryGrouper.group_by_country_async(all_nodes)
     
     processed_stats = []
     
@@ -6929,7 +7699,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         if not nodes:
             continue
             
-        # Parse flag and name from group_name (e.g., "🇭🇰 香港")
+        # Parse flag and name from group_name (e.g., "🇭🇰 Hong Kong")
         parts = group_name.split(' ', 1)
         if len(parts) == 2:
             flag, name = parts
@@ -6939,7 +7709,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
         count = len(nodes)
         
         # Try to find code in COUNTRY_NAMES for chart usage
-        # Priority: 1. Exact match  2. Longest partial match (to avoid "俄罗斯" matching "白俄罗斯")
+        # Priority: 1. Exact match  2. Longest partial match (to avoid "Russia" matching "Belarus")
         code = 'XX'
         best_match_len = 0
         
@@ -6949,7 +7719,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
                 code = c
                 break
             # Partial match - prefer longer matches to avoid substring issues
-            # e.g., "白俄罗斯" should match "白俄罗斯" not "俄罗斯"
+            # e.g., "Belarus" should match "Belarus" not "Russia"
             if name in n or n in name:
                 # Use the longer of the two as match length
                 match_len = len(n)
@@ -6977,7 +7747,7 @@ def get_nodes_by_country(_: bool = Depends(verify_session)):
     return result
 
 @app.get("/api/stats/nodes-by-country/{country_code}")
-def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_session)):
+async def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_session)):
     """Get nodes for a specific country"""
     config = load_config()
     subs = config.get('subscriptions', [])
@@ -7008,16 +7778,17 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
                 filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
                 if os.path.exists(filepath):
                     try:
-                        with open(filepath, 'r', encoding='utf-8') as f:
-                            cfg = yaml.safe_load(f)
+                        cfg = load_yaml_file_cached(filepath, cache_key=sub['id'], use_cache=True)
                         nodes_list = cfg.get('proxies', []) if cfg else []
                         for node in nodes_list:
                             name = node.get('name', '')
                             if not any(kw in name for kw in info_keywords):
                                 node['_source'] = sub['name']
                                 all_nodes.append(node)
-                    except:
-                        pass
+                    except yaml.YAMLError as e:
+                        logger.warning(f"Failed to parse subscription YAML {sub['id']}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error loading subscription {sub['id']}: {e}")
     
     # Add custom nodes
     for node in custom_nodes:
@@ -7026,13 +7797,13 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
         all_nodes.append(node_copy)
     
     # Use CountryGrouper to group nodes
-    grouped_nodes = CountryGrouper.group_by_country(all_nodes)
+    grouped_nodes = await CountryGrouper.group_by_country_async(all_nodes)
     
     # Find the matching country group
     result_nodes = []
     for group_name, nodes_in_group in grouped_nodes.items():
         # Check if this group matches the country code
-        # group_name format: "🇺🇸 美国" or "🇹🇼 台湾"
+        # group_name format: "🇺🇸 USA" or "🇹🇼 Taiwan"
         # We need to match against country_code like "US" or "TW"
         
         # Extract the country name from group_name (remove emoji)
@@ -7040,7 +7811,7 @@ def get_nodes_by_country_code(country_code: str, _: bool = Depends(verify_sessio
         group_country_name = parts[1] if len(parts) == 2 else group_name
         
         # Try to find matching code
-        # Priority: 1. Exact match  2. Longest partial match (to avoid "俄罗斯" matching "白俄罗斯")
+        # Priority: 1. Exact match  2. Longest partial match (to avoid "Russia" matching "Belarus")
         group_code = None
         best_match_len = 0
         
@@ -7157,7 +7928,8 @@ def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session))
     return {"status": "success"}
 
 @app.post("/api/speedtest/profiles/{profile_id}/run")
-async def run_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
+@limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
+async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Depends(verify_session)):
     """Run a speed test profile (placeholder - requires proxy integration)"""
     config = load_config()
     profiles = config.get('speedtest_profiles', [])
@@ -7209,3 +7981,44 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get('PORT', 8666))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+# ==================== Log Level Management API ====================
+
+from logger_config import set_log_level, get_current_log_level, list_all_loggers
+
+class LogLevelRequest(BaseModel):
+    level: str  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+@app.get("/api/system/log-level", tags=["system"])
+@handle_api_errors
+def get_log_level(_: bool = Depends(verify_session)):
+    """Get current log level"""
+    return {
+        "current_level": get_current_log_level(),
+        "available_levels": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        "loggers": list_all_loggers()
+    }
+
+@app.post("/api/system/log-level", tags=["system"])
+@handle_api_errors
+def update_log_level(data: LogLevelRequest, _: bool = Depends(verify_session)):
+    """Dynamically adjust log level at runtime"""
+    try:
+        set_log_level(data.level)
+        return {
+            "status": "success",
+            "message": f"Log level changed to {data.level}",
+            "current_level": get_current_log_level()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/system/loggers", tags=["system"])
+@handle_api_errors
+def list_loggers(_: bool = Depends(verify_session)):
+    """List all registered loggers and their levels"""
+    return {
+        "loggers": list_all_loggers(),
+        "count": len(list_all_loggers())
+    }

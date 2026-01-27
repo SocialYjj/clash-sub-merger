@@ -4,10 +4,6 @@ import {
   Server, Users, Activity, Router,
   Globe, Zap, Database
 } from 'lucide-react';
-import {
-  PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid
-} from 'recharts';
 
 
 const API_BASE = '/api';
@@ -172,30 +168,33 @@ export default function Dashboard() {
             <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">Top 10</span>
           </div>
 
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={countryChartData} layout="vertical" margin={{ left: 10, right: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                <XAxis type="number" hide />
-                <YAxis
-                  dataKey="name"
-                  type="category"
-                  width={80}
-                  tick={{ fill: '#9ca3af', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <RechartsTooltip
-                  contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', color: '#fff' }}
-                  cursor={{ fill: '#374151', opacity: 0.2 }}
-                />
-                <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={16}>
-                  {countryChartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="space-y-2">
+            {countryChartData.map((entry, index) => {
+              const maxValue = Math.max(...countryChartData.map(c => c.value));
+              const percentage = (entry.value / maxValue) * 100;
+              return (
+                <div key={index} className="group">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{entry.flag}</span>
+                      <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                    </div>
+                    <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                      {entry.value}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500 ease-out"
+                      style={{
+                        width: `${percentage}%`,
+                        backgroundColor: COLORS[index % COLORS.length]
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -210,44 +209,36 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="flex items-center">
-            <div className="h-64 w-1/2">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={protocolData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="value"
-                  >
-                    {protocolData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="rgba(0,0,0,0)" />
-                    ))}
-                  </Pie>
-                  <RechartsTooltip
-                    contentStyle={{ backgroundColor: '#1f2937', borderColor: '#4b5563', color: '#fff', borderRadius: '8px' }}
-                    labelStyle={{ color: '#fff' }}
-                    itemStyle={{ color: '#fff' }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="w-1/2 pl-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-              {protocolData.map((entry, index) => (
-                <div key={index} className="flex items-center justify-between p-2 rounded hover:bg-gray-700/30 transition-colors">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                    <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+          <div className="space-y-3">
+            {protocolData.map((entry, index) => {
+              const totalNodes = protocolData.reduce((sum, p) => sum + p.value, 0);
+              const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
+              return (
+                <div key={index} className="group">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                      <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">{percentage}%</span>
+                      <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                        {entry.value}
+                      </span>
+                    </div>
                   </div>
-                  <span className="text-xs font-mono text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">
-                    {entry.value}
-                  </span>
+                  <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500 ease-out"
+                      style={{
+                        width: `${percentage}%`,
+                        backgroundColor: COLORS[index % COLORS.length]
+                      }}
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
         </div>
       </div>

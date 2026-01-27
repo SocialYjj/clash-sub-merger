@@ -8,6 +8,10 @@ import os
 
 # Avoid shadowing the standard PyYAML library with the local 'yaml' directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Import logger
+from logger_config import get_logger
+logger = get_logger(__name__)
 if current_dir in sys.path:
     sys.path.remove(current_dir)
 
@@ -17,14 +21,7 @@ import json
 import socket
 from urllib.parse import urlparse, unquote
 from typing import Optional
-
-# GeoIP database support
-try:
-    import geoip2.database
-    GEOIP_AVAILABLE = True
-except ImportError:
-    GEOIP_AVAILABLE = False
-    print("Warning: geoip2 not installed. Run: pip install geoip2")
+from functools import lru_cache
 
 class SubscriptionParser:
     """Parse various subscription formats to Clash config"""
@@ -38,7 +35,11 @@ class SubscriptionParser:
             content += '=' * (4 - missing_padding)
         try:
             return base64.b64decode(content).decode('utf-8')
-        except:
+        except UnicodeDecodeError as e:
+            logger.warning(f"Base64 decode failed - invalid UTF-8: {e}")
+            return ""
+        except Exception as e:
+            logger.warning(f"Base64 decode failed: {e}")
             return ""
 
     @staticmethod
@@ -365,8 +366,10 @@ class SubscriptionParser:
             data = yaml.safe_load(content)
             if isinstance(data, dict) and 'proxies' in data:
                 return data
-        except:
-            pass
+        except yaml.YAMLError as e:
+            logger.debug(f"Content is not YAML format: {e}")
+        except Exception as e:
+            logger.warning(f"Error parsing YAML: {e}")
             
         # 2. Try Base64 decode
         try:
@@ -374,8 +377,12 @@ class SubscriptionParser:
             if 'proxies:' in decoded:
                  # Decoded content is YAML
                  return yaml.safe_load(decoded) or {}
-        except:
-            decoded = content # Assume it might be plain text link list
+        except yaml.YAMLError as e:
+            logger.debug(f"Decoded content is not YAML: {e}")
+            decoded = content  # Use original content
+        except Exception as e:
+            logger.warning(f"Error decoding Base64: {e}")
+            decoded = content  # Use original content
             
         # 3. Parse link list
         proxies = []
@@ -404,8 +411,10 @@ class SubscriptionParser:
                     p = json.loads(line)
                     if isinstance(p, dict) and 'name' in p and 'type' in p:
                         proxies.append(p)
-                except:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Line is not valid JSON: {e}")
+                except Exception as e:
+                    logger.warning(f"Error parsing JSON node: {e}")
                 continue
                 
             if p: proxies.append(p)
@@ -438,7 +447,7 @@ class ProxyFilter:
         '官网:', '官网：', '免注册'
     ]
     
-    # Region keywords for valid nodes starting with "官网"
+    # Region keywords for valid nodes starting with "Website"
     REGION_KEYWORDS = [
         '安道尔', '阿联酋', '阿富汗', '安提瓜和巴布达', '安圭拉', '阿尔巴尼亚', '亚美尼亚', '安哥拉',
         '南极洲', '阿根廷', '美属萨摩亚', '奥地利', '澳大利亚', '阿鲁巴', '奥兰群岛', '阿塞拜疆',
@@ -491,7 +500,7 @@ class ProxyFilter:
             if keyword in name:
                 return False
         
-        # Check if starts with "官网" but has no region name
+        # Check if starts with "Website" but has no region name
         if name.startswith('官网'):
             # If it contains a region name, it's a valid node
             if any(region in name for region in ProxyFilter.REGION_KEYWORDS):
@@ -601,8 +610,9 @@ class NameTransformer:
         return NameTransformer._FLAG_PATTERN
     
     @staticmethod
+    @lru_cache(maxsize=1024)
     def remove_flags(name: str) -> str:
-        """Remove all flag emojis from node name (optimized with regex)"""
+        """Remove all flag emojis from node name (optimized with regex and LRU cache)"""
         pattern = NameTransformer._get_flag_pattern()
         result = pattern.sub('', name)
         # Clean up extra spaces
@@ -620,8 +630,9 @@ class NameTransformer:
         return NameTransformer._FLAG_SET
     
     @staticmethod
+    @lru_cache(maxsize=2048)
     def identify_flag(name: str, server: str = None) -> str:
-        """Identify country flag based on node name
+        """Identify country flag based on node name (with LRU cache)
         Priority: 1. Flag emoji at the START of name  2. Any flag emoji in name  3. Keyword matching  4. GeoIP lookup  5. Default flag
         """
         flag_set = NameTransformer._get_flag_set()
@@ -663,14 +674,7 @@ class NameTransformer:
                     if pattern.upper() in name_upper:
                         return flag
         
-        # Priority 4: GeoIP lookup (if server address provided)
-        if server and GEOIP_AVAILABLE:
-            geoip = GeoIPLookup.get_instance()
-            flag = geoip.get_flag(server)
-            if flag:
-                return flag
-        
-        # Priority 5: Return default flag (unknown)
+        # Priority 4: Return default flag (unknown)
         return '🔰'
     
     @staticmethod
@@ -715,203 +719,6 @@ class NameTransformer:
     def transform_proxies(proxies: List[dict], source_name: str) -> List[dict]:
         """Batch transform proxy node names"""
         return [NameTransformer.transform_name(p, source_name) for p in proxies]
-
-
-# ==================== GeoIPLookup ====================
-
-class GeoIPLookup:
-    """GeoIP lookup using MaxMind GeoLite2 database"""
-    
-    # ISO country code to flag emoji mapping
-    COUNTRY_CODE_TO_FLAG = {
-        'HK': '🇭🇰', 'TW': '🇹🇼', 'JP': '🇯🇵', 'US': '🇺🇸', 'SG': '🇸🇬',
-        'KR': '🇰🇷', 'GB': '🇬🇧', 'DE': '🇩🇪', 'CA': '🇨🇦', 'AU': '🇦🇺',
-        'FR': '🇫🇷', 'RU': '🇷🇺', 'IN': '🇮🇳', 'NL': '🇳🇱', 'TR': '🇹🇷',
-        'AQ': '🇦🇶', 'MY': '🇲🇾', 'ES': '🇪🇸', 'VN': '🇻🇳', 'UA': '🇺🇦',
-        'MD': '🇲🇩', 'NG': '🇳🇬', 'BR': '🇧🇷', 'IT': '🇮🇹', 'PL': '🇵🇱',
-        'CH': '🇨🇭', 'AT': '🇦🇹', 'BE': '🇧🇪', 'SE': '🇸🇪', 'NO': '🇳🇴',
-        'DK': '🇩🇰', 'FI': '🇫🇮', 'IE': '🇮🇪', 'PT': '🇵🇹', 'GR': '🇬🇷',
-        'CZ': '🇨🇿', 'HU': '🇭🇺', 'RO': '🇷🇴', 'BG': '🇧🇬', 'HR': '🇭🇷',
-        'SK': '🇸🇰', 'SI': '🇸🇮', 'LT': '🇱🇹', 'LV': '🇱🇻', 'EE': '🇪🇪',
-        'IL': '🇮🇱', 'AE': '🇦🇪', 'SA': '🇸🇦', 'QA': '🇶🇦', 'KW': '🇰🇼',
-        'OM': '🇴🇲', 'BH': '🇧🇭', 'JO': '🇯🇴', 'LB': '🇱🇧', 'EG': '🇪🇬',
-        'ZA': '🇿🇦', 'KE': '🇰🇪', 'NZ': '🇳🇿', 'PH': '🇵🇭', 'TH': '🇹🇭',
-        'ID': '🇮🇩', 'PK': '🇵🇰', 'BD': '🇧🇩', 'LK': '🇱🇰', 'NP': '🇳🇵',
-        'MM': '🇲🇲', 'KH': '🇰🇭', 'LA': '🇱🇦', 'MN': '🇲🇳', 'KZ': '🇰🇿',
-        'UZ': '🇺🇿', 'AZ': '🇦🇿', 'GE': '🇬🇪', 'AM': '🇦🇲', 'CY': '🇨🇾',
-        'MT': '🇲🇹', 'IS': '🇮🇸', 'LU': '🇱🇺', 'MC': '🇲🇨', 'AD': '🇦🇩',
-        'LI': '🇱🇮', 'SM': '🇸🇲', 'VA': '🇻🇦', 'MX': '🇲🇽', 'AR': '🇦🇷',
-        'CL': '🇨🇱', 'CO': '🇨🇴', 'PE': '🇵🇪', 'VE': '🇻🇪', 'EC': '🇪🇨',
-        'BO': '🇧🇴', 'PY': '🇵🇾', 'UY': '🇺🇾', 'CR': '🇨🇷', 'PA': '🇵🇦',
-        'CU': '🇨🇺', 'DO': '🇩🇴', 'PR': '🇵🇷', 'JM': '🇯🇲', 'HT': '🇭🇹',
-        'CN': '🇨🇳',
-    }
-    
-    # ISO country code to Chinese name mapping
-    COUNTRY_CODE_TO_NAME = {
-        'HK': '香港', 'TW': '台湾', 'JP': '日本', 'US': '美国', 'SG': '新加坡',
-        'KR': '韩国', 'GB': '英国', 'DE': '德国', 'CA': '加拿大', 'AU': '澳大利亚',
-        'FR': '法国', 'RU': '俄罗斯', 'IN': '印度', 'NL': '荷兰', 'TR': '土耳其',
-        'AQ': '南极洲', 'MY': '马来西亚', 'ES': '西班牙', 'VN': '越南', 'UA': '乌克兰',
-        'MD': '摩尔多瓦', 'NG': '尼日利亚', 'BR': '巴西', 'IT': '意大利', 'PL': '波兰',
-        'CH': '瑞士', 'AT': '奥地利', 'BE': '比利时', 'SE': '瑞典', 'NO': '挪威',
-        'DK': '丹麦', 'FI': '芬兰', 'IE': '爱尔兰', 'PT': '葡萄牙', 'GR': '希腊',
-        'CZ': '捷克', 'HU': '匈牙利', 'RO': '罗马尼亚', 'BG': '保加利亚', 'HR': '克罗地亚',
-        'SK': '斯洛伐克', 'SI': '斯洛文尼亚', 'LT': '立陶宛', 'LV': '拉脱维亚', 'EE': '爱沙尼亚',
-        'IL': '以色列', 'AE': '阿联酋', 'SA': '沙特', 'QA': '卡塔尔', 'KW': '科威特',
-        'OM': '阿曼', 'BH': '巴林', 'JO': '约旦', 'LB': '黎巴嫩', 'EG': '埃及',
-        'ZA': '南非', 'KE': '肯尼亚', 'NZ': '新西兰', 'PH': '菲律宾', 'TH': '泰国',
-        'ID': '印尼', 'PK': '巴基斯坦', 'BD': '孟加拉', 'LK': '斯里兰卡', 'NP': '尼泊尔',
-        'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'MN': '蒙古', 'KZ': '哈萨克斯坦',
-        'UZ': '乌兹别克', 'AZ': '阿塞拜疆', 'GE': '格鲁吉亚', 'AM': '亚美尼亚', 'CY': '塞浦路斯',
-        'MT': '马耳他', 'IS': '冰岛', 'LU': '卢森堡', 'MC': '摩纳哥', 'AD': '安道尔',
-        'LI': '列支敦士登', 'SM': '圣马力诺', 'VA': '梵蒂冈', 'MX': '墨西哥', 'AR': '阿根廷',
-        'CL': '智利', 'CO': '哥伦比亚', 'PE': '秘鲁', 'VE': '委内瑞拉', 'EC': '厄瓜多尔',
-        'BO': '玻利维亚', 'PY': '巴拉圭', 'UY': '乌拉圭', 'CR': '哥斯达黎加', 'PA': '巴拿马',
-        'CU': '古巴', 'DO': '多米尼加', 'PR': '波多黎各', 'JM': '牙买加', 'HT': '海地',
-        'CN': '中国',
-    }
-    
-    _instance = None
-    _reader = None
-    _dns_cache = {}  # Cache DNS lookups
-    _geoip_cache = {}  # Cache GeoIP lookups
-    
-    @classmethod
-    def get_instance(cls):
-        """Singleton pattern for GeoIP reader"""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-    
-    def __init__(self):
-        self._load_database()
-    
-    def _load_database(self):
-        """Load GeoLite2 database"""
-        if not GEOIP_AVAILABLE:
-            return
-        
-        # Try multiple possible database locations
-        import os
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        possible_paths = [
-            os.path.join(base_dir, 'GeoLite2-Country.mmdb'),
-            os.path.join(base_dir, 'data', 'GeoLite2-Country.mmdb'),
-            '/usr/share/GeoIP/GeoLite2-Country.mmdb',
-            '/var/lib/GeoIP/GeoLite2-Country.mmdb',
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                try:
-                    self._reader = geoip2.database.Reader(path)
-                    print(f"GeoIP database loaded: {path}")
-                    return
-                except Exception as e:
-                    print(f"Warning: Failed to load GeoIP database {path}: {e}")
-        
-        # GeoIP database not found - silently disable (no warning needed)
-        # Users can still use the service without GeoIP lookup
-    
-    def resolve_domain(self, domain: str) -> Optional[str]:
-        """Resolve domain to IP address with caching"""
-        if domain in self._dns_cache:
-            return self._dns_cache[domain]
-        
-        try:
-            ip = socket.gethostbyname(domain)
-            self._dns_cache[domain] = ip
-            return ip
-        except socket.gaierror:
-            self._dns_cache[domain] = None
-            return None
-    
-    def _lookup_via_api(self, ip: str) -> Optional[str]:
-        """Fallback: lookup country code via free APIs
-        Priority: ip-api.com -> ipwho.is
-        """
-        import requests
-        
-        # Try ip-api.com first (45 req/min, no key needed)
-        try:
-            resp = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('countryCode'):
-                    return data['countryCode']
-        except Exception:
-            pass
-        
-        # Try ipwho.is (unlimited, no key needed)
-        try:
-            resp = requests.get(f"https://ipwho.is/{ip}?fields=country_code", timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('country_code'):
-                    return data['country_code']
-        except Exception:
-            pass
-        
-        return None
-    
-    def lookup(self, server: str) -> Optional[str]:
-        """Lookup country code for server (IP or domain)
-        Returns ISO country code (e.g., 'US', 'JP') or None
-        Priority: 1. Local GeoLite2 DB  2. ip-api.com  3. ipwho.is
-        """
-        # Check cache first
-        if server in self._geoip_cache:
-            return self._geoip_cache[server]
-        
-        # Determine if server is IP or domain
-        ip = server
-        try:
-            socket.inet_aton(server)  # Check if valid IPv4
-        except socket.error:
-            try:
-                socket.inet_pton(socket.AF_INET6, server)  # Check if valid IPv6
-            except socket.error:
-                # It's a domain, resolve it
-                ip = self.resolve_domain(server)
-                if not ip:
-                    self._geoip_cache[server] = None
-                    return None
-        
-        country_code = None
-        
-        # Priority 1: Try local GeoIP database
-        if self._reader:
-            try:
-                response = self._reader.country(ip)
-                country_code = response.country.iso_code
-            except Exception:
-                pass
-        
-        # Priority 2 & 3: Fallback to APIs if local DB failed
-        if not country_code:
-            country_code = self._lookup_via_api(ip)
-        
-        self._geoip_cache[server] = country_code
-        return country_code
-    
-    def get_country_group(self, server: str) -> Optional[str]:
-        """Get country group name (e.g., '🇺🇸 美国') for server"""
-        country_code = self.lookup(server)
-        if not country_code:
-            return None
-        
-        flag = self.COUNTRY_CODE_TO_FLAG.get(country_code, '🔰')
-        name = self.COUNTRY_CODE_TO_NAME.get(country_code, country_code)
-        return f"{flag} {name}"
-    
-    def get_flag(self, server: str) -> Optional[str]:
-        """Get flag emoji for server"""
-        country_code = self.lookup(server)
-        if not country_code:
-            return None
-        return self.COUNTRY_CODE_TO_FLAG.get(country_code)
-
 
 # ==================== CountryGrouper ====================
 
@@ -1089,7 +896,8 @@ class CountryGrouper:
     @staticmethod
     def identify_country(proxy_name: str, proxy_server: str = None) -> str:
         """Identify country/region of proxy node (optimized with pre-compiled patterns)
-        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching (longest match)  4. GeoIP lookup  5. Unknown
+        Priority: 1. Flag emoji at START of name  2. Any flag emoji in name  3. Keyword matching (longest match)  4. Unknown
+        Note: This is synchronous version, use identify_country_async for GeoIP lookup
         """
         CountryGrouper._init_patterns()
         
@@ -1143,20 +951,76 @@ class CountryGrouper:
         if best_match_country:
             return best_match_country
         
-        # Priority 4: GeoIP lookup (if server address provided)
-        if proxy_server and GEOIP_AVAILABLE:
-            geoip = GeoIPLookup.get_instance()
-            country_group = geoip.get_country_group(proxy_server)
-            if country_group:
-                # Add to COUNTRY_PATTERNS if not exists (for future lookups)
-                if country_group not in CountryGrouper.COUNTRY_PATTERNS:
-                    # Extract flag from country_group
-                    parts = country_group.split(' ', 1)
-                    if len(parts) == 2:
-                        flag, name = parts
-                        CountryGrouper.COUNTRY_PATTERNS[country_group] = [flag, name]
-                        CountryGrouper._flag_to_country[flag] = country_group
-                return country_group
+        return '🔰 未知'
+    
+    @staticmethod
+    async def identify_country_async(proxy_name: str, proxy_server: str = None) -> str:
+        """Async version: Identify country with GeoIP lookup support
+        Priority: 1. Flag emoji  2. Keyword matching  3. GeoIP lookup (async)  4. Unknown
+        """
+        # First try synchronous methods (fast)
+        CountryGrouper._init_patterns()
+        
+        # Priority 1: Check if name STARTS with a flag emoji
+        if len(proxy_name) >= 2:
+            first_char = proxy_name[0]
+            if first_char in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[first_char]
+            first_two = proxy_name[:2]
+            if first_two in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[first_two]
+        
+        # Priority 2: Check for any flag emoji in name
+        for char in proxy_name:
+            if char in CountryGrouper._flag_to_country:
+                return CountryGrouper._flag_to_country[char]
+        
+        # Priority 3: Try keyword matching
+        best_match_country = None
+        best_match_len = 0
+        name_upper = proxy_name.upper()
+        
+        for country, compiled_list in CountryGrouper._compiled_patterns.items():
+            for item in compiled_list:
+                matched = False
+                pattern_len = 0
+                
+                if item[0] == 'chinese':
+                    pattern = item[1]
+                    if pattern in proxy_name:
+                        matched = True
+                        pattern_len = len(pattern)
+                elif item[0] == 'regex':
+                    regex, pattern_len = item[1], item[2]
+                    if regex.search(proxy_name):
+                        matched = True
+                else:
+                    pattern, pattern_len = item[1], item[2]
+                    if pattern in name_upper:
+                        matched = True
+                
+                if matched and pattern_len > best_match_len:
+                    best_match_len = pattern_len
+                    best_match_country = country
+        
+        if best_match_country:
+            return best_match_country
+        
+        # Priority 4: Try GeoIP lookup (async, non-blocking)
+        if proxy_server:
+            try:
+                from geoip_service import GeoIPService
+                geoip = GeoIPService.get_instance()
+                country_info = await geoip.lookup_country_async(proxy_server)
+                if country_info and country_info.get('country_code'):
+                    code = country_info['country_code']
+                    # Find matching country group
+                    for country_group in CountryGrouper.COUNTRY_PATTERNS.keys():
+                        if code in country_group or country_info.get('country_name', '') in country_group:
+                            return country_group
+            except Exception as e:
+                # GeoIP lookup failed, continue to unknown
+                pass
         
         return '🔰 未知'
     
@@ -1169,6 +1033,22 @@ class CountryGrouper:
             name = proxy.get('name', '')
             server = proxy.get('server', '')  # Get server address for GeoIP lookup
             country = CountryGrouper.identify_country(name, server)
+            
+            if country not in groups:
+                groups[country] = []
+            groups[country].append(name)
+        
+        return groups
+    
+    @staticmethod
+    async def group_by_country_async(proxies: List[dict]) -> Dict[str, List[str]]:
+        """Async version: Group proxy nodes with GeoIP lookup support"""
+        groups: Dict[str, List[str]] = {}
+        
+        for proxy in proxies:
+            name = proxy.get('name', '')
+            server = proxy.get('server', '')
+            country = await CountryGrouper.identify_country_async(name, server)
             
             if country not in groups:
                 groups[country] = []
@@ -1559,13 +1439,13 @@ url-rewrite:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f)
         except FileNotFoundError:
-            print(f"Warning: File not found - {file_path}")
+            logger.warning(f"File not found - {file_path}")
             return None
         except yaml.YAMLError as e:
-            print(f"Warning: YAML parse error - {file_path}: {e}")
+            logger.warning(f"YAML parse error - {file_path}: {e}")
             return None
         except Exception as e:
-            print(f"Warning: Failed to read file - {file_path}: {e}")
+            logger.warning(f"Failed to read file - {file_path}: {e}")
             return None
     
     def load_source_proxies(self) -> List[dict]:
@@ -1573,7 +1453,7 @@ url-rewrite:
         all_proxies = []
         
         if not os.path.exists(self.yaml_dir):
-            print(f"Error: Directory {self.yaml_dir} does not exist")
+            logger.error(f"Directory {self.yaml_dir} does not exist")
             return []
             
         files = [f for f in os.listdir(self.yaml_dir) if f.endswith('.yaml') or f.endswith('.yml')]
@@ -1602,7 +1482,7 @@ url-rewrite:
             # Use alias if provided, otherwise default
             source_name = self.file_aliases.get(file_name, default_name)
             
-            print(f"Processing: {file_name}...")
+            logger.info(f"Processing: {file_name}...")
             
             # Use enhanced parser to load config (supports YAML, Base64, Vmess links)
             try:
@@ -1610,16 +1490,16 @@ url-rewrite:
                     content = f.read()
                 config = SubscriptionParser.parse_content(content)
             except Exception as e:
-                print(f"Warning: Cannot parse file {file_name}: {e}")
+                logger.warning(f"Cannot parse file {file_name}: {e}")
                 continue
             
             if not config or not isinstance(config, dict):
-                print(f"Warning: {file_name} has no valid content after parsing, skipped.")
+                logger.warning(f"{file_name} has no valid content after parsing, skipped.")
                 continue
             
             proxies = config.get('proxies', [])
             if not proxies:
-                print(f"Info: {file_name} has no proxy nodes")
+                logger.info(f"{file_name} has no proxy nodes")
                 continue
             
             # Filter invalid nodes (basic filter)
@@ -1632,10 +1512,10 @@ url-rewrite:
                 "群组", "Telegram", "TG", "客服", "续费", "购买", "套餐",
                 "使用说明", "教程", "更新", "通知", "邀请", "返利",
                 "问题", "工单", "咨询", "合作", "会员", "商城", "账号",
-                "官网:", "官网：", "免注册"  # 官网+冒号，免注册等广告词
+                "官网:", "官网：", "免注册"  # Website + colon, free registration ads
             ]
             
-            # Region keywords for valid nodes starting with "官网"
+            # Region keywords for valid nodes starting with "Website"
             region_keywords = [
                 '安道尔', '阿联酋', '阿富汗', '安提瓜和巴布达', '安圭拉', '阿尔巴尼亚', '亚美尼亚', '安哥拉',
                 '南极洲', '阿根廷', '美属萨摩亚', '奥地利', '澳大利亚', '阿鲁巴', '奥兰群岛', '阿塞拜疆',
@@ -1681,13 +1561,13 @@ url-rewrite:
                 # Check basic keywords
                 if any(kw in name for kw in info_keywords):
                     return True
-                # Check if starts with "官网" but has no region name
+                # Check if starts with "Website" but has no region name
                 if name.startswith('官网'):
                     # If it contains a region name, it's a valid node
                     if any(region in name for region in region_keywords):
                         return False
                     # Otherwise it's an info node
-                    print(f"  [DEBUG] Filtering node without region: {name}")
+                    logger.debug(f"Filtering info node without region: {name}")
                     return True
                 return False
             
@@ -1699,7 +1579,7 @@ url-rewrite:
                     continue
                 clean_proxies.append(p)
                 
-            print(f"Info: {file_name} - Original: {len(proxies)}, Basic filter: {len(valid_proxies)}, Final valid: {len(clean_proxies)}")
+            logger.info(f"{file_name} - Original: {len(proxies)}, Basic filter: {len(valid_proxies)}, Final valid: {len(clean_proxies)}")
             
             # Add source prefix
             transformed_proxies = NameTransformer.transform_proxies(clean_proxies, source_name)
@@ -1711,17 +1591,17 @@ url-rewrite:
         """Merge nodes and generate final config"""
         # Load all source proxies
         self.all_proxies = self.load_source_proxies()
-        print(f"\nTotal valid proxy nodes: {len(self.all_proxies)}")
+        logger.info(f"Total valid proxy nodes: {len(self.all_proxies)}")
         
         if not self.all_proxies:
-            print("Warning: No valid proxy nodes found")
+            logger.warning("No valid proxy nodes found")
             return {'proxies': [], 'proxy-groups': []}
         
         # Group by country
         country_groups = CountryGrouper.group_by_country(self.all_proxies)
-        print(f"Country/Region groups: {len(country_groups)}")
+        logger.info(f"Country/Region groups: {len(country_groups)}")
         for country, nodes in country_groups.items():
-            print(f"  {country}: {len(nodes)} nodes")
+            logger.info(f"  {country}: {len(nodes)} nodes")
         
         # Generate proxy groups
         proxy_groups = ProxyGroupGenerator.generate_groups(self.all_proxies, country_groups)
@@ -1758,7 +1638,7 @@ url-rewrite:
             # 4. Write Suffix (Rules, Providers, Url-Rewrite)
             f.write('\n' + self.suffix)
         
-        print(f"\nConfig saved to: {self.output_file}")
+        logger.info(f"Config saved to: {self.output_file}")
 
 
 # ==================== Main Entry ====================

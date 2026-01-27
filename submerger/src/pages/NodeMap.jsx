@@ -3,11 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import * as echarts from 'echarts';
 import { RefreshCw, Server, Globe, ExternalLink, X } from 'lucide-react';
-import worldJson from '../assets/world.json';
 import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
 
-// Register map
-echarts.registerMap('world', worldJson);
+// Lazy load world.json to reduce initial bundle size (saves ~1.5MB)
+let worldJsonData = null;
+const loadWorldJson = async () => {
+  if (!worldJsonData) {
+    const module = await import('../assets/world.json');
+    worldJsonData = module.default;
+    echarts.registerMap('world', worldJsonData);
+  }
+  return worldJsonData;
+};
 
 const API_BASE = '/api';
 
@@ -50,6 +57,7 @@ export default function NodeMap() {
   const chartInstance = useRef(null);
 
   const [loading, setLoading] = useState(true);
+  const [mapLoading, setMapLoading] = useState(true);
   const [countryData, setCountryData] = useState([]); // Array of { code, name, count, flag }
   const [rawData, setRawData] = useState({}); // Object { code: count }
   const [totalNodes, setTotalNodes] = useState(0);
@@ -61,7 +69,15 @@ export default function NodeMap() {
   const [loadingNodes, setLoadingNodes] = useState(false);
 
   useEffect(() => {
-    fetchCountryData();
+    // Load map data first, then fetch country data
+    loadWorldJson().then(() => {
+      setMapLoading(false);
+      fetchCountryData();
+    }).catch(err => {
+      console.error('Failed to load map data', err);
+      setMapLoading(false);
+      setLoading(false);
+    });
   }, []);
 
   const fetchCountryData = async () => {
@@ -168,20 +184,17 @@ export default function NodeMap() {
 
   // ECharts Initialization and Option Setting
   useEffect(() => {
-    if (!chartRef.current || loading) return;
+    if (!chartRef.current || loading || mapLoading) return;
 
     if (!chartInstance.current) {
       chartInstance.current = echarts.init(chartRef.current);
 
       // Handle click events on map items (scatter points and target point)
       chartInstance.current.on('click', (params) => {
-        console.log('Click event:', params); // Debug log
-        
         if (params.componentType === 'series' && params.seriesType === 'effectScatter') {
           // Check if it's a country point with data (not CN target point)
           const code = params.value && params.value[3]; // [lon, lat, count, code]
           if (code && code !== 'CN') {
-            console.log('Clicking country point:', code); // Debug log
             fetchCountryNodes(code);
           }
           // CN target point should not be clickable
@@ -193,7 +206,6 @@ export default function NodeMap() {
         if (params.componentType === 'geo') {
           const countryName = params.name;
           const code = findCountryCode(countryName);
-          console.log('Clicking geo region:', countryName, 'code:', code, 'has data:', !!rawData[code]); // Debug log
           if (code && rawData[code]) {
             fetchCountryNodes(code);
           }
@@ -412,7 +424,7 @@ export default function NodeMap() {
       // chartInstance.current?.dispose(); 
       // chartInstance.current = null;
     };
-  }, [points, lines, targetPoint, loading, countryData, rawData]); // Re-run when data changes
+  }, [points, lines, targetPoint, loading, mapLoading, countryData, rawData]); // Re-run when data changes
 
   // Dispose chart on unmount
   useEffect(() => {
@@ -464,10 +476,12 @@ export default function NodeMap() {
         <div ref={chartRef} className="w-full h-full" />
 
         {/* Loading Overlay */}
-        {loading && (
+        {(loading || mapLoading) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-20">
             <RefreshCw className="animate-spin text-cyan-500 mb-2" size={40} />
-            <span className="text-cyan-500 font-mono tracking-widest">INITIALIZING MAP...</span>
+            <span className="text-cyan-500 font-mono tracking-widest">
+              {mapLoading ? 'LOADING MAP DATA...' : 'INITIALIZING MAP...'}
+            </span>
           </div>
         )}
 

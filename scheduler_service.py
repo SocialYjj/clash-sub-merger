@@ -11,6 +11,10 @@ from threading import RLock
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.job import Job
+from logger_config import get_logger
+
+# Setup logger
+logger = get_logger(__name__)
 
 
 class SchedulerManager:
@@ -31,14 +35,14 @@ class SchedulerManager:
         if not self._started:
             self.scheduler.start()
             self._started = True
-            print("Scheduler started")
+            logger.info("Scheduler started")
     
     def stop(self):
         """Stop the scheduler"""
         if self._started:
             self.scheduler.shutdown(wait=False)
             self._started = False
-            print("Scheduler stopped")
+            logger.info("Scheduler stopped")
     
     def is_running(self) -> bool:
         """Check if scheduler is running"""
@@ -103,7 +107,7 @@ class SchedulerManager:
             trigger = CronTrigger.from_crontab(cleaned)
             return trigger.get_next_fire_time(None, datetime.now())
         except Exception as e:
-            print(f"Failed to parse cron expression '{cron_expr}': {e}")
+            logger.error(f"Failed to parse cron expression '{cron_expr}': {e}")
             return None
     
     def add_job(
@@ -129,7 +133,7 @@ class SchedulerManager:
         with self._lock:
             cleaned = self.clean_cron_expression(cron_expr)
             if not cleaned:
-                print(f"Invalid cron expression for task {task_id}")
+                logger.warning(f"Invalid cron expression for task {task_id}")
                 return None
             
             # Remove existing job if any (inline to avoid deadlock)
@@ -137,10 +141,10 @@ class SchedulerManager:
                 old_job_id = self.jobs[task_id]
                 try:
                     self.scheduler.remove_job(old_job_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to remove old job {old_job_id}: {e}")
                 del self.jobs[task_id]
-                print(f"Removed existing job {task_id}")
+                logger.info(f"Removed existing job {task_id}")
             
             try:
                 job = self.scheduler.add_job(
@@ -154,11 +158,11 @@ class SchedulerManager:
                 
                 self.jobs[task_id] = job.id
                 next_run = job.next_run_time
-                print(f"Added job {task_id} with cron '{cleaned}', next run: {next_run}")
+                logger.info(f"Added job {task_id} with cron '{cleaned}', next run: {next_run}")
                 return job.id
                 
             except Exception as e:
-                print(f"Failed to add job {task_id}: {e}")
+                logger.error(f"Failed to add job {task_id}: {e}")
                 return None
     
     def remove_job(self, task_id: str) -> bool:
@@ -175,11 +179,11 @@ class SchedulerManager:
             job_id = self.jobs[task_id]
             try:
                 self.scheduler.remove_job(job_id)
-            except Exception:
-                pass  # Job might already be removed
+            except Exception as e:
+                logger.debug(f"Failed to remove job {job_id}: {e}")
             
             del self.jobs[task_id]
-            print(f"Removed job {task_id}")
+            logger.info(f"Removed job {task_id}")
             return True
     
     def update_job(
@@ -240,8 +244,8 @@ class SchedulerManager:
                         "next_run": job.next_run_time,
                         "pending": job.pending
                     }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to get job info for {task_id}: {e}")
             
             return None
     
@@ -264,8 +268,8 @@ class SchedulerManager:
                             "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
                             "pending": job.pending
                         })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to get job info: {e}")
         return jobs
     
     def pause_job(self, task_id: str) -> bool:

@@ -84,13 +84,11 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
         setSaving(true);
         try {
             const valueToSave = cronValue.trim() || null;
-            console.log('Saving schedule for', sub.id, 'value:', valueToSave);
 
             const response = await axios.put(`${API_BASE}/subscriptions/${sub.id}/schedule`, {
                 cron_expr: valueToSave
             });
 
-            console.log('Save response:', response.data);
             showToast?.(valueToSave ? '定时更新已设置' : '定时更新已清除');
             onClose();
             onRefresh?.(sub.id);

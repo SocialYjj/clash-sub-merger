@@ -285,10 +285,6 @@ const AdminTokenSection = ({ showToast }) => {
   const getTemplateName = (templateId) => {
     if (!templateId || templateId === 'builtin') return '内置模版';
     const template = templates.find(t => t.id === templateId);
-    // Debug log
-    if (!template && templateId) {
-      console.log('Template not found:', templateId, 'Available templates:', templates);
-    }
     return template ? template.name : templateId;
   };
 

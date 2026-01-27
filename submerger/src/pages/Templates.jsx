@@ -4,7 +4,7 @@ import axios from 'axios';
 
 const API_BASE = '/api';
 
-// 预设模板示例
+// Preset template example
 const TEMPLATE_EXAMPLE = `# Clash 配置模板示例
 # 上传文件会覆盖此内容
 

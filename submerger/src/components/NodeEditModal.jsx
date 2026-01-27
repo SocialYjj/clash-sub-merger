@@ -226,7 +226,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-4">
-                    {/* 配置项 */}
+                    {/* Configuration */}
                     <Divider title="配置项" />
                     
                     <Field label="别名 (remarks)">
@@ -309,7 +309,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </label>
                     </Field>
 
-                    {/* 底层传输方式 */}
+                    {/* Transport layer */}
                     <Divider title="底层传输方式 (transport)" />
                     
                     <Field label="传输协议 (network)">
@@ -349,7 +349,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </Field>
                     )}
 
-                    {/* grpc mode - not called 伪装类型 */}
+                    {/* grpc mode */}
                     {formData.network === 'grpc' && (
                         <Field label="gRPC Mode">
                             <select value={formData.grpcMode} onChange={(e) => handleChange('grpcMode', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
@@ -359,7 +359,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </Field>
                     )}
 
-                    {/* xhttp mode - not called 伪装类型 */}
+                    {/* xhttp mode */}
                     {formData.network === 'xhttp' && (
                         <Field label="xhttp Mode">
                             <select value={formData.xhttpMode} onChange={(e) => handleChange('xhttpMode', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
@@ -386,7 +386,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </Field>
                     )}
 
-                    {/* 传输层安全 */}
+                    {/* Transport layer security */}
                     <Divider title="传输层安全 (TLS)" />
                     
                     <Field label="传输层安全 (TLS)">

@@ -14,7 +14,7 @@ const INFO_NODE_KEYWORDS = [
   '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
   '使用说明', '教程', '更新', '通知', '邀请', '返利',
   '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
-  '官网:', '官网：', '免注册'  // 官网+冒号，免注册等广告词
+  '官网:', '官网：', '免注册'  // Website + colon, free registration ads
 ];
 
 // Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
@@ -27,7 +27,7 @@ const REGION_KEYWORDS = [
   'SE', 'NO', 'FI', 'DK', 'IE', 'NZ', 'BR', 'AR', 'CL', 'MX', 'TR',
   'SA', 'AE', 'IL', 'EG', 'ZA', 'NG', 'KE', 'UA', 'BY', 'KZ', 'UZ',
   '海外',  // Generic "overseas"
-  // Short forms for Chinese regions (COUNTRY_CHINESE_NAMES has "中国香港" but nodes use "香港")
+  // Short forms for Chinese regions (COUNTRY_CHINESE_NAMES has "China Hong Kong" but nodes use "Hong Kong")
   '香港', '台湾', '澳门'
 ];
 
@@ -41,7 +41,7 @@ const isInfoNode = (node) => {
     return true;
   }
   
-  // Check if starts with "官网" but has no region name
+  // Check if starts with "Website" but has no region name
   if (name.startsWith('官网')) {
     // If it contains a region name, it's a valid node
     if (REGION_KEYWORDS.some(region => name.includes(region))) {
@@ -1600,7 +1600,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <textarea
                   value={newNodeLink}
                   onChange={(e) => setNewNodeLink(e.target.value)}
-                  placeholder="vless://... 或 vmess://... 或 trojan://..."
+                  placeholder="vless://... or vmess://... or trojan://..."
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 h-24 resize-none"
                 />
               </div>

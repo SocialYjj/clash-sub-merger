@@ -6,9 +6,19 @@ Provides IP geolocation functionality using online APIs.
 import os
 import re
 import time
-import requests
+import json
+import aiohttp
+import asyncio
 from typing import Optional, Dict
 from functools import lru_cache
+from logger_config import get_logger
+
+# Setup logger
+logger = get_logger(__name__)
+
+# Persistent cache configuration
+GEOIP_CACHE_FILE = os.path.join(os.environ.get('DATA_DIR', 'data'), 'geoip_cache.json')
+GEOIP_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
 
 # Traditional to Simplified Chinese converter
 try:
@@ -247,6 +257,11 @@ CITY_TRANSLATIONS = {
     'La Puente': '拉蓬特',
     'Secaucus': '锡考克斯',
     'Ashburn': '阿什本',
+    'Boydton': '博伊德顿',
+    'Richmond': '里士满',
+    'Norfolk': '诺福克',
+    'Virginia Beach': '弗吉尼亚海滩',
+    'Arlington': '阿灵顿',
     'Fremont': '弗里蒙特',
     'Palo Alto': '帕洛阿尔托',
     'San Mateo': '圣马特奥',
@@ -605,7 +620,7 @@ CITY_TRANSLATIONS = {
     '塔克維拉': '塔克维拉',
 }
 
-# Country/Region display names (for avoiding "香港 香港" style duplicates and normalizing names)
+# Country/Region display names (for avoiding "Hong Kong Hong Kong" style duplicates and normalizing names)
 REGION_DISPLAY_NAMES = {
     'HK': '中国香港',
     'MO': '中国澳门',
@@ -626,6 +641,49 @@ COUNTRY_NAME_NORMALIZE = {
 
 # Online GeoIP lookup cache (to avoid repeated requests)
 _online_geoip_cache: Dict[str, Dict] = {}
+
+def load_geoip_cache_from_disk():
+    """Load GeoIP cache from disk on startup"""
+    global _online_geoip_cache
+    try:
+        if os.path.exists(GEOIP_CACHE_FILE):
+            with open(GEOIP_CACHE_FILE, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            
+            # Filter out expired entries
+            current_time = time.time()
+            valid_cache = {}
+            expired_count = 0
+            
+            for key, entry in cache_data.items():
+                if 'timestamp' in entry:
+                    age = current_time - entry['timestamp']
+                    if age < GEOIP_CACHE_TTL:
+                        valid_cache[key] = entry
+                    else:
+                        expired_count += 1
+                else:
+                    # Old format without timestamp, keep it
+                    valid_cache[key] = entry
+            
+            _online_geoip_cache = valid_cache
+            logger.info(f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)")
+    except Exception as e:
+        logger.warning(f"Failed to load GeoIP cache from disk: {e}")
+        _online_geoip_cache = {}
+
+def save_geoip_cache_to_disk():
+    """Save GeoIP cache to disk"""
+    try:
+        os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
+        with open(GEOIP_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_online_geoip_cache, f, ensure_ascii=False, indent=2)
+        logger.debug(f"Saved {len(_online_geoip_cache)} GeoIP cache entries to disk")
+    except Exception as e:
+        logger.error(f"Failed to save GeoIP cache to disk: {e}")
+
+# Load cache on module import
+load_geoip_cache_from_disk()
 
 # Built-in API definitions
 BUILTIN_GEOIP_APIS = [
@@ -795,7 +853,7 @@ def _get_json_path(data: dict, path: str):
             return None
     return value
 
-def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Optional[Dict]:
+async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Optional[Dict]:
     """Lookup using a custom API configuration"""
     try:
         url = api_config["url"].replace("{ip}", ip)
@@ -810,56 +868,58 @@ def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Optional[
         method = api_config.get("method", "GET").upper()
         headers = api_config.get("headers", {})
         
-        if method == "GET":
-            resp = requests.get(url, headers=headers, timeout=timeout)
-        else:
-            resp = requests.post(url, headers=headers, timeout=timeout)
-        
-        if resp.status_code != 200:
-            return None
-        
-        data = resp.json()
-        
-        # Check success condition if specified
-        success_check = api_config.get("success_check", "")
-        if success_check:
-            # Simple check: "field==value" or just "field" (truthy check)
-            if "==" in success_check:
-                field, expected = success_check.split("==", 1)
-                actual = _get_json_path(data, field.strip())
-                if str(actual) != expected.strip():
-                    return None
+        async with aiohttp.ClientSession() as session:
+            if method == "GET":
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
             else:
-                if not _get_json_path(data, success_check):
-                    return None
-        
-        # Get field paths, auto-detect if not specified
-        country_code_path = api_config.get("country_code_path", "")
-        country_name_path = api_config.get("country_name_path", "")
-        city_path = api_config.get("city_path", "")
-        
-        # Auto-detect paths if not specified
-        if not country_code_path:
-            detected = _auto_detect_json_paths(data)
-            if detected:
-                country_code_path = detected.get("country_code_path", "")
-                country_name_path = detected.get("country_name_path", "") or country_name_path
-                city_path = detected.get("city_path", "") or city_path
-        
-        country_code = _get_json_path(data, country_code_path) or "" if country_code_path else ""
-        country_name = _get_json_path(data, country_name_path) or "" if country_name_path else ""
-        city = _get_json_path(data, city_path) or "" if city_path else ""
-        
-        if not country_code:
-            return None
-        
-        return {
-            "countryCode": country_code,
-            "country": country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
-            "city": city
-        }
+                async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+            
+            # Check success condition if specified
+            success_check = api_config.get("success_check", "")
+            if success_check:
+                # Simple check: "field==value" or just "field" (truthy check)
+                if "==" in success_check:
+                    field, expected = success_check.split("==", 1)
+                    actual = _get_json_path(data, field.strip())
+                    if str(actual) != expected.strip():
+                        return None
+                else:
+                    if not _get_json_path(data, success_check):
+                        return None
+            
+            # Get field paths, auto-detect if not specified
+            country_code_path = api_config.get("country_code_path", "")
+            country_name_path = api_config.get("country_name_path", "")
+            city_path = api_config.get("city_path", "")
+            
+            # Auto-detect paths if not specified
+            if not country_code_path:
+                detected = _auto_detect_json_paths(data)
+                if detected:
+                    country_code_path = detected.get("country_code_path", "")
+                    country_name_path = detected.get("country_name_path", "") or country_name_path
+                    city_path = detected.get("city_path", "") or city_path
+            
+            country_code = _get_json_path(data, country_code_path) or "" if country_code_path else ""
+            country_name = _get_json_path(data, country_name_path) or "" if country_name_path else ""
+            city = _get_json_path(data, city_path) or "" if city_path else ""
+            
+            if not country_code:
+                return None
+            
+            return {
+                "countryCode": country_code,
+                "country": country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
+                "city": city
+            }
     except Exception as e:
-        print(f"Custom API lookup error for {ip}: {e}")
+        logger.debug("Custom API lookup error for %s: %s", ip, e)
         return None
 
 
@@ -926,48 +986,50 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
     return result if result else None
 
 
-def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
+async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup using ip-api.com (free, 45 req/min, supports Chinese)"""
     try:
-        resp = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,countryCode,city",
-            timeout=timeout
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "success":
-                return {
-                    "countryCode": data.get("countryCode", ""),
-                    "country": data.get("country", ""),
-                    "city": data.get("city", "")
-                }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,countryCode,city",
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("status") == "success":
+                        return {
+                            "countryCode": data.get("countryCode", ""),
+                            "country": data.get("country", ""),
+                            "city": data.get("city", "")
+                        }
     except Exception as e:
-        print(f"ip-api.com lookup error for {ip}: {e}")
+        logger.debug("ip-api.com lookup error for %s: %s", ip, e)
     return None
 
-def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
+async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup using ipwhois.app (free, 10k/month, supports Chinese)"""
     try:
-        resp = requests.get(
-            f"https://ipwhois.app/json/{ip}?lang=zh-CN",
-            timeout=timeout
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                country_name = data.get("country", "")
-                # Normalize "大韩民国" -> "韩国"
-                country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
-                return {
-                    "countryCode": data.get("country_code", ""),
-                    "country": country_name,
-                    "city": data.get("city", "")
-                }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://ipwhois.app/json/{ip}?lang=zh-CN",
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("success"):
+                        country_name = data.get("country", "")
+                        # Normalize "Republic of Korea" -> "South Korea"
+                        country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
+                        return {
+                            "countryCode": data.get("country_code", ""),
+                            "country": country_name,
+                            "city": data.get("city", "")
+                        }
     except Exception as e:
-        print(f"ipwhois.app lookup error for {ip}: {e}")
+        logger.debug("ipwhois.app lookup error for %s: %s", ip, e)
     return None
 
-def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
+async def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup using ipinfo.io (free 50k/month with token)"""
     try:
         token = _online_geoip_config.get("ipinfo_token", "")
@@ -975,22 +1037,23 @@ def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
         if token:
             url += f"?token={token}"
         
-        resp = requests.get(url, timeout=timeout)
-        if resp.status_code == 200:
-            data = resp.json()
-            country_code = data.get("country", "")
-            city = data.get("city", "")
-            
-            # ipinfo doesn't return country name in Chinese, need to map it
-            country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
-            
-            return {
-                "countryCode": country_code,
-                "country": country_name,
-                "city": city
-            }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    country_code = data.get("country", "")
+                    city = data.get("city", "")
+                    
+                    # ipinfo doesn't return country name in Chinese, need to map it
+                    country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
+                    
+                    return {
+                        "countryCode": country_code,
+                        "country": country_name,
+                        "city": city
+                    }
     except Exception as e:
-        print(f"ipinfo.io lookup error for {ip}: {e}")
+        logger.debug("ipinfo.io lookup error for %s: %s", ip, e)
     return None
 
 # Country code to Chinese name mapping for ipinfo.io
@@ -1007,9 +1070,9 @@ COUNTRY_NAMES_FROM_CODE = {
     'BY': '白俄罗斯', 'MD': '摩尔多瓦', 'NG': '尼日利亚', 'AQ': '南极洲',
 }
 
-def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:
+async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:
     """
-    Lookup IP location using online API
+    Lookup IP location using online API (ASYNC)
     Default: ip-api.com (45/min), alternatives: ipwhois (10k/month), ipinfo (needs token), or custom APIs
     
     Args:
@@ -1040,13 +1103,13 @@ def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[
     
     # Check if it's a builtin API
     if target_api in builtin_api_map:
-        raw_data = builtin_api_map[target_api](ip, timeout)
+        raw_data = await builtin_api_map[target_api](ip, timeout)
     else:
         # Check if it's a custom API
         custom_apis = _online_geoip_config.get("custom_apis", [])
         custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
         if custom_api and custom_api.get("enabled", True):
-            raw_data = _lookup_custom_api(ip, custom_api, timeout)
+            raw_data = await _lookup_custom_api(ip, custom_api, timeout)
     
     # If target API failed, try fallback to other enabled APIs
     if not raw_data and not api_id:  # Only fallback if no specific API was requested
@@ -1054,7 +1117,7 @@ def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[
             if api_name != target_api:
                 api_settings = _online_geoip_config.get("api_settings", {})
                 if api_settings.get(api_name, {}).get("enabled", True):
-                    raw_data = api_func(ip, timeout)
+                    raw_data = await api_func(ip, timeout)
                     if raw_data:
                         break
     
@@ -1083,26 +1146,44 @@ def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[
         "country_name": display_country,
         "city": city if city and city not in display_country else None,
         "flag": GeoIPService.iso_to_flag(iso_code),
-        "source": "online"
+        "source": "online",
+        "timestamp": time.time()  # Add timestamp for TTL
     }
     
-    # Cache the result
+    # Cache the result in memory
     _online_geoip_cache[cache_key] = result
+    
+    # Periodically save to disk (every 10 new entries)
+    if len(_online_geoip_cache) % 10 == 0:
+        save_geoip_cache_to_disk()
+    
     return result
 
 def clear_online_geoip_cache():
-    """Clear the online GeoIP lookup cache"""
+    """Clear the online GeoIP lookup cache (both memory and disk)"""
     global _online_geoip_cache
     _online_geoip_cache = {}
+    try:
+        if os.path.exists(GEOIP_CACHE_FILE):
+            os.remove(GEOIP_CACHE_FILE)
+        logger.info("GeoIP cache cleared")
+    except Exception as e:
+        logger.error(f"Failed to clear GeoIP cache file: {e}")
 
 def translate_city_name(city_name: str) -> str:
     """Translate city name to Simplified Chinese if available"""
     if not city_name:
         return city_name
     
-    # Direct translation lookup
+    # Direct translation lookup (exact match)
     if city_name in CITY_TRANSLATIONS:
         return CITY_TRANSLATIONS[city_name]
+    
+    # Try case-insensitive lookup (for robustness)
+    # GeoIP APIs usually return Title Case, but this handles edge cases
+    for key, value in CITY_TRANSLATIONS.items():
+        if key.lower() == city_name.lower():
+            return value
     
     # Try character-by-character Traditional -> Simplified conversion for remaining chars
     result = city_name
@@ -1130,8 +1211,8 @@ def format_location_display(country_code: str, country_name: str, city_name: str
     translated_city = translate_city_name(city_name)
     
     # Avoid duplicates: if city name is same as country/region name, just show country
-    # e.g., "香港" city in "香港" -> just "中国香港"
-    # e.g., "新加坡" city in "新加坡" -> just "新加坡"
+    # e.g., "Hong Kong" city in "Hong Kong" -> just "China Hong Kong"
+    # e.g., "Singapore" city in "Singapore" -> just "Singapore"
     if translated_city == country_name or translated_city in display_country:
         return display_country
     
@@ -1165,7 +1246,11 @@ class GeoIPService:
                 else:
                     return "🌐"
             return flag
-        except:
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid ISO code for flag conversion: {iso_code}, error: {e}")
+            return "🌐"
+        except Exception as e:
+            logger.error(f"Error converting ISO to flag: {e}")
             return "🌐"
     
     @staticmethod
@@ -1189,5 +1274,9 @@ class GeoIPService:
             if len(iso) == 2:
                 return iso
             return None
-        except:
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid flag emoji for ISO conversion: {flag}, error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error converting flag to ISO: {e}")
             return None

@@ -1,10 +1,10 @@
 [project]
 name = "submerger"
-version = "2.5.1"
+version = "2.6.0"
 description = "Modern subscription aggregation management panel for Clash/Mihomo"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi[standard]>=0.115.0",
     "uvicorn>=0.34.0",
     "pyyaml>=6.0",
     "requests>=2.32.0",
@@ -13,9 +13,16 @@ dependencies = [
     "apscheduler>=3.10.0",
     "httpx>=0.28.1",
     "opencc-python-reimplemented>=0.1.7",
+    "slowapi>=0.1.9",
+    "pydantic>=2.0.0",
+    "filelock>=3.13.0",
+    "prometheus-client>=0.19.0",
+    "aiofiles>=25.1.0",
 ]
 
 [tool.uv]
 dev-dependencies = [
     "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.28.0",
 ]
