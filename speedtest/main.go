@@ -72,7 +72,7 @@ type FetchURLResponse struct {
 }
 
 func main() {
-	port := os.Getenv("PORT")
+	port := os.Getenv("GO_SPEEDTEST_PORT")
 	if port == "" {
 		port = "9876"
 	}
@@ -83,8 +83,8 @@ func main() {
 	http.HandleFunc("/api/fetch-url", handleFetchURL)
 	http.HandleFunc("/health", handleHealth)
 
-	log.Printf("Speedtest service starting on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Printf("Speedtest service starting on localhost:%s", port)
+	log.Fatal(http.ListenAndServe("127.0.0.1:"+port, nil))
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

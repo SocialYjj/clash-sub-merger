@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import request from '../utils/request';
 import * as echarts from 'echarts';
 import { RefreshCw, Server, Globe, ExternalLink, X } from 'lucide-react';
 import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
@@ -83,7 +83,7 @@ export default function NodeMap() {
   const fetchCountryData = async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_BASE}/stats/nodes-by-country`);
+      const res = await request.get(`${API_BASE}/stats/nodes-by-country`);
       // res.data.countries is array: [{code, name, flag, count}, ...]
       // Convert to object for map logic: { 'US': 10, 'CN': 5 }
       const dataObj = {};
@@ -104,7 +104,7 @@ export default function NodeMap() {
   const fetchCountryNodes = async (countryCode) => {
     setLoadingNodes(true);
     try {
-      const res = await axios.get(`${API_BASE}/stats/nodes-by-country/${countryCode}`);
+      const res = await request.get(`${API_BASE}/stats/nodes-by-country/${countryCode}`);
       setCountryNodes(res.data.nodes || []);
       // Find full country object for display
       const countryObj = countryData.find(c => c.code === countryCode) || {

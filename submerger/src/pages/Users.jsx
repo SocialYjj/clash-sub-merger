@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import request from '../utils/request';
 import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
 import UserConfigEditor from '../components/UserConfigEditor';
 
@@ -20,7 +20,7 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
 
   const fetchTemplates = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`);
       setTemplates(res.data.templates || []);
     } catch (err) {
       console.error('Failed to fetch templates', err);
@@ -32,7 +32,7 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await axios.put(`${API_BASE}/users/${user.id}`, {
+      await request.put(`${API_BASE}/users/${user.id}`, {
         template_id: selectedTemplate,
         sub_name: subName.trim() || '',
         sub_filename: subFilename.trim() || ''
@@ -160,7 +160,7 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
     setSaving(true);
     try {
       const payload = mode === 'custom' ? { custom_token: customToken.trim() } : {};
-      await axios.post(`${API_BASE}/users/${user.id}/regenerate-token`, payload);
+      await request.post(`${API_BASE}/users/${user.id}/regenerate-token`, payload);
       showToast('Token 已更新', 'success');
       onSuccess();
       onClose();
@@ -282,8 +282,8 @@ const AllocationModal = ({ user, onClose, showToast }) => {
   const fetchData = async () => {
     try {
       const [nodesRes, allocRes] = await Promise.all([
-        axios.get(`${API_BASE}/available-nodes`),
-        axios.get(`${API_BASE}/users/${user.id}/allocations`)
+        request.get(`${API_BASE}/available-nodes`),
+        request.get(`${API_BASE}/users/${user.id}/allocations`)
       ]);
       setSources(nodesRes.data.sources);
       setAllocations(allocRes.data.allocations || {});
@@ -297,7 +297,7 @@ const AllocationModal = ({ user, onClose, showToast }) => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await axios.put(`${API_BASE}/users/${user.id}/allocations`, {
+      await request.put(`${API_BASE}/users/${user.id}/allocations`, {
         subscriptions: allocations
       });
       showToast('分配已保存', 'success');
@@ -508,7 +508,7 @@ export default function Users({
 
   const fetchTemplates = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`);
       setTemplates(res.data.templates || []);
     } catch (err) {
       console.error('Failed to fetch templates', err);

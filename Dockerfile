@@ -32,9 +32,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Create non-root user for security
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
-
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -44,6 +41,9 @@ RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy backend code
 COPY *.py ./
+COPY api/ ./api/
+COPY services/ ./services/
+COPY core/ ./core/
 
 # Copy Go speedtest binary
 COPY --from=go-builder /app/speedtest/speedtest /app/speedtest
@@ -51,11 +51,17 @@ COPY --from=go-builder /app/speedtest/speedtest /app/speedtest
 # Copy frontend build
 COPY --from=frontend-builder /app/submerger/dist ./submerger/dist
 
-# Create data directory and startup script with proper permissions
-RUN mkdir -p /app/data/uploads /app/data/logs \
-    && echo '#!/bin/sh\n/app/speedtest &\nexec python server.py' > /app/start.sh \
-    && chmod +x /app/start.sh \
-    && chown -R appuser:appgroup /app
+# Create data directory with proper permissions BEFORE switching user
+RUN mkdir -p /app/data/uploads /app/data/logs /app/data/backups
+
+# Create startup script
+RUN echo '#!/bin/sh\n\
+# Ensure data subdirectories exist\n\
+mkdir -p /app/data/uploads /app/data/logs /app/data/backups\n\
+# Start services\n\
+/app/speedtest &\n\
+exec python server.py' > /app/start.sh \
+    && chmod +x /app/start.sh
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -66,9 +72,6 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
     TZ=Asia/Shanghai \
     GO_SPEEDTEST_URL=http://localhost:9876
-
-# Switch to non-root user
-USER appuser
 
 # Expose port
 EXPOSE 8666

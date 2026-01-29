@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Link, FileText, Check } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -22,7 +22,7 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
 
         const timer = setTimeout(async () => {
             try {
-                const res = await axios.post(`${API_BASE}/subscriptions/parse-preview`, {
+                const res = await request.post(`${API_BASE}/subscriptions/parse-preview`, {
                     name: name || 'preview',
                     content: content
                 });
@@ -45,7 +45,7 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                 await onAdd(name.trim(), url.trim());
             } else {
                 if (!content.trim()) return;
-                await axios.post(`${API_BASE}/subscriptions/local`, {
+                await request.post(`${API_BASE}/subscriptions/local`, {
                     name: name.trim(),
                     content: content.trim()
                 });

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
 
@@ -21,8 +21,8 @@ const ProxyNodeSection = ({ showToast }) => {
     setLoading(true);
     try {
       const [settingRes, nodesRes] = await Promise.all([
-        axios.get(`${API_BASE}/settings/proxy-node`),
-        axios.get(`${API_BASE}/settings/available-proxy-nodes`)
+        request.get(`${API_BASE}/settings/proxy-node`),
+        request.get(`${API_BASE}/settings/available-proxy-nodes`)
       ]);
       setProxyNodeSetting(settingRes.data);
       setAvailableNodes(nodesRes.data.nodes || []);
@@ -36,7 +36,7 @@ const ProxyNodeSection = ({ showToast }) => {
   const saveProxyNode = async (nodeId, nodeName) => {
     setSaving(true);
     try {
-      await axios.put(`${API_BASE}/settings/proxy-node`, {
+      await request.put(`${API_BASE}/settings/proxy-node`, {
         proxy_node_id: nodeId,
         proxy_node_name: nodeName
       });
@@ -165,8 +165,8 @@ const AdminTokenSection = ({ showToast }) => {
     setLoading(true);
     try {
       const [tokensRes, templatesRes] = await Promise.all([
-        axios.get(`${API_BASE}/admin-tokens`),
-        axios.get(`${API_BASE}/templates`)
+        request.get(`${API_BASE}/admin-tokens`),
+        request.get(`${API_BASE}/templates`)
       ]);
       setTokens(tokensRes.data.tokens || []);
       setTemplates(templatesRes.data.templates || []);
@@ -189,7 +189,7 @@ const AdminTokenSection = ({ showToast }) => {
 
     setSaving(true);
     try {
-      await axios.post(`${API_BASE}/admin-tokens`, {
+      await request.post(`${API_BASE}/admin-tokens`, {
         name: newTokenName.trim(),
         template_id: newTokenTemplate,
         custom_token: useCustomToken ? newTokenValue.trim() : null,
@@ -209,7 +209,7 @@ const AdminTokenSection = ({ showToast }) => {
 
   const deleteToken = async (tokenId) => {
     try {
-      await axios.delete(`${API_BASE}/admin-tokens/${tokenId}`);
+      await request.delete(`${API_BASE}/admin-tokens/${tokenId}`);
       showToast?.('Token 已删除');
       fetchData();
     } catch (err) {
@@ -220,7 +220,7 @@ const AdminTokenSection = ({ showToast }) => {
 
   const toggleTokenStatus = async (token) => {
     try {
-      await axios.put(`${API_BASE}/admin-tokens/${token.id}`, {
+      await request.put(`${API_BASE}/admin-tokens/${token.id}`, {
         enabled: !(token.enabled !== false)
       });
       fetchData();
@@ -232,7 +232,7 @@ const AdminTokenSection = ({ showToast }) => {
 
   const regenerateToken = async (tokenId) => {
     try {
-      const res = await axios.post(`${API_BASE}/admin-tokens/${tokenId}/regenerate`);
+      const res = await request.post(`${API_BASE}/admin-tokens/${tokenId}/regenerate`);
       showToast?.('Token 已重新生成');
       fetchData();
       // Copy new token to clipboard
@@ -246,7 +246,7 @@ const AdminTokenSection = ({ showToast }) => {
   const copySubUrl = async (tokenId) => {
     try {
       // Fetch full token from API
-      const res = await axios.get(`${API_BASE}/admin-tokens/${tokenId}`);
+      const res = await request.get(`${API_BASE}/admin-tokens/${tokenId}`);
       const fullToken = res.data.token.token;
       const url = `${window.location.origin}/sub?token=${fullToken}`;
       navigator.clipboard.writeText(url);
@@ -291,7 +291,7 @@ const AdminTokenSection = ({ showToast }) => {
   const openEditModal = async (token) => {
     // Fetch full token details
     try {
-      const res = await axios.get(`${API_BASE}/admin-tokens/${token.id}`);
+      const res = await request.get(`${API_BASE}/admin-tokens/${token.id}`);
       const fullToken = res.data.token;
       setEditingToken(fullToken);
       setNewTokenName(fullToken.name || '');
@@ -309,7 +309,7 @@ const AdminTokenSection = ({ showToast }) => {
 
     setSaving(true);
     try {
-      await axios.put(`${API_BASE}/admin-tokens/${editingToken.id}`, {
+      await request.put(`${API_BASE}/admin-tokens/${editingToken.id}`, {
         name: newTokenName.trim(),
         template_id: newTokenTemplate,
         sub_filename: newSubFilename.trim() || '',
@@ -723,7 +723,7 @@ export default function Settings({
 
   const fetchSpeedtestConfig = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/speedtest/config`);
+      const res = await request.get(`${API_BASE}/speedtest/config`);
       setSpeedtestConfig(res.data);
     } catch (err) {
       console.error('Failed to fetch speedtest config', err);
@@ -732,7 +732,7 @@ export default function Settings({
 
   const fetchOnlineGeoipConfig = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/geoip/online-config`);
+      const res = await request.get(`${API_BASE}/geoip/online-config`);
       setOnlineGeoipConfig(res.data);
       setIpinfoToken(res.data.ipinfo_token || '');
     } catch (err) {
@@ -747,7 +747,7 @@ export default function Settings({
       if (preferredApi !== null) payload.preferred_api = preferredApi;
       if (token !== null) payload.ipinfo_token = token;
       
-      await axios.post(`${API_BASE}/geoip/online-config`, payload);
+      await request.post(`${API_BASE}/geoip/online-config`, payload);
       showToast('设置已保存');
       fetchOnlineGeoipConfig();
     } catch (err) {
@@ -759,7 +759,7 @@ export default function Settings({
 
   const testGeoipApi = async (apiId) => {
     try {
-      const res = await axios.post(`${API_BASE}/geoip/apis/${apiId}/test`);
+      const res = await request.post(`${API_BASE}/geoip/apis/${apiId}/test`);
       if (res.data.success) {
         const r = res.data.result;
         showToast(`测试成功: ${r.country} (${r.countryCode}) ${r.city || ''}`);
@@ -773,7 +773,7 @@ export default function Settings({
 
   const toggleApiEnabled = async (apiId, currentEnabled) => {
     try {
-      await axios.post(`${API_BASE}/geoip/apis/${apiId}/toggle`, { enabled: !currentEnabled });
+      await request.post(`${API_BASE}/geoip/apis/${apiId}/toggle`, { enabled: !currentEnabled });
       fetchOnlineGeoipConfig();
       showToast(currentEnabled ? 'API 已禁用' : 'API 已启用');
     } catch (err) {
@@ -846,19 +846,19 @@ export default function Settings({
           await saveOnlineGeoipConfig(null, customApiForm.token);
         }
         
-        const res = await axios.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
+        const res = await request.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
           test_ip: customApiForm.test_ip || '8.8.8.8'
         });
         setCustomApiTestResult(res.data);
       } else if (editingApi && !customApiForm.token && editingApi.has_token) {
         // Editing existing custom API without new token - use saved API's token via API ID
-        const res = await axios.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
+        const res = await request.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
           test_ip: customApiForm.test_ip || '8.8.8.8'
         });
         setCustomApiTestResult(res.data);
       } else {
         // New custom API or editing with new token
-        const res = await axios.post(`${API_BASE}/geoip/test-custom-api`, {
+        const res = await request.post(`${API_BASE}/geoip/test-custom-api`, {
           url: customApiForm.url,
           token: customApiForm.token || '',
           country_code_path: customApiForm.country_code_path || '',
@@ -890,10 +890,10 @@ export default function Settings({
       }
       
       if (editingApi) {
-        await axios.put(`${API_BASE}/geoip/apis/${editingApi.id}`, payload);
+        await request.put(`${API_BASE}/geoip/apis/${editingApi.id}`, payload);
         showToast('API 已更新');
       } else {
-        await axios.post(`${API_BASE}/geoip/apis`, payload);
+        await request.post(`${API_BASE}/geoip/apis`, payload);
         showToast('API 已添加');
       }
       closeApiModal();
@@ -907,7 +907,7 @@ export default function Settings({
 
   const deleteCustomApi = async (apiId) => {
     try {
-      await axios.delete(`${API_BASE}/geoip/apis/${apiId}`);
+      await request.delete(`${API_BASE}/geoip/apis/${apiId}`);
       showToast('API 已删除');
       fetchOnlineGeoipConfig();
     } catch (err) {
@@ -1221,6 +1221,7 @@ export default function Settings({
                 修改
               </button>
             </div>
+            <p className="text-xs text-gray-500 mt-1">密码要求：至少8个字符，包含字母和数字</p>
           </div>
         </div>
       </div>

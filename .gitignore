@@ -10,7 +10,7 @@ venv/
 node_modules/
 submerger/node_modules/
 
-# Build Components (Frontend)
+# Build (Frontend)
 submerger/dist/
 submerger/.vite/
 
@@ -25,8 +25,7 @@ config.json
 myconfig.yaml
 *.yaml
 !docker-compose.yml
-!kernel_config.yaml
-!submerger/src/**/*.yaml
+.env
 
 # Logs
 *.log
@@ -39,9 +38,6 @@ myconfig.yaml
 # System
 .DS_Store
 Thumbs.db
-
-# Reference projects (not part of this repo)
-sublinkPro/
 
 # Misc
 uv.lock

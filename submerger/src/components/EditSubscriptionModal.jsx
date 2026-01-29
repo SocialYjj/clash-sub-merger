@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Copy, Check, FileText } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -32,7 +32,7 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
 
         const timer = setTimeout(async () => {
             try {
-                const res = await axios.post(`${API_BASE}/subscriptions/parse-preview`, {
+                const res = await request.post(`${API_BASE}/subscriptions/parse-preview`, {
                     name: editName || 'preview',
                     content: editContent
                 });
@@ -52,13 +52,13 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
         try {
             if (isLocal) {
                 // Update local subscription
-                await axios.put(`${API_BASE}/subscriptions/${sub.id}/local`, {
+                await request.put(`${API_BASE}/subscriptions/${sub.id}/local`, {
                     name: editName.trim(),
                     content: editContent.trim() || undefined
                 });
             } else {
                 // Update URL subscription
-                await axios.put(`${API_BASE}/subscriptions/${sub.id}`, {
+                await request.put(`${API_BASE}/subscriptions/${sub.id}`, {
                     name: editName.trim(),
                     url: editUrl.trim() !== sub.url ? editUrl.trim() : undefined
                 });

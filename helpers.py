@@ -7,8 +7,15 @@ import time
 import aiofiles
 from typing import Dict, Tuple, Optional
 from fastapi import HTTPException
+from dotenv import load_dotenv
 from logger_config import get_logger
-from prometheus_client import Counter, Histogram
+from core import (
+    cache_hits_total, cache_misses_total,
+    file_operations_total, file_operation_duration_seconds
+)
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = get_logger(__name__)
 
@@ -19,34 +26,6 @@ try:
 except ImportError:
     from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
     logger.warning("C-accelerated YAML loader not available, using pure Python")
-
-# ==================== Prometheus Metrics ====================
-
-# Cache metrics
-cache_hits_total = Counter(
-    'cache_hits_total',
-    'Total cache hits',
-    ['cache_type']
-)
-
-cache_misses_total = Counter(
-    'cache_misses_total',
-    'Total cache misses',
-    ['cache_type']
-)
-
-# File operation metrics
-file_operations_total = Counter(
-    'file_operations_total',
-    'Total file operations',
-    ['operation', 'status']  # read/write, success/failed
-)
-
-file_operation_duration_seconds = Histogram(
-    'file_operation_duration_seconds',
-    'File operation duration in seconds',
-    ['operation']  # read/write
-)
 
 # ==================== Constants ====================
 
@@ -75,14 +54,14 @@ class Constants:
     MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10MB
     
     # Defaults
-    DEFAULT_CACHE_DURATION = 60
+    DEFAULT_CACHE_DURATION = int(os.getenv('CONFIG_CACHE_DURATION', '60'))
     DEFAULT_PAGE_SIZE = 50
     SLOW_REQUEST_THRESHOLD = 1.0  # seconds
     
-    # Timeouts (seconds)
-    TIMEOUT_SUBSCRIPTION_FETCH = 30
-    TIMEOUT_GEOIP_LOOKUP = 10
-    TIMEOUT_SPEEDTEST_PROXY = 35
+    # Timeouts (seconds) - configurable via .env
+    TIMEOUT_SUBSCRIPTION_FETCH = int(os.getenv('DEFAULT_TIMEOUT', '30'))
+    TIMEOUT_GEOIP_LOOKUP = int(os.getenv('HEALTH_CHECK_TIMEOUT', '10'))
+    TIMEOUT_SPEEDTEST_PROXY = int(os.getenv('SPEEDTEST_TIMEOUT', '35'))
     TIMEOUT_PROCESS_TERMINATE = 5
     
     # Default ports
@@ -175,9 +154,23 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
     
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.load(f, Loader=YAMLLoader)
+            content = f.read().strip()
         
-        result = cfg if cfg else {}
+        # Check if content is Base64 encoded or node links (legacy format)
+        if content and not content.startswith(('proxies:', 'proxy-groups:', '#')):
+            # Use SubscriptionParser to handle Base64 and node links
+            from services.subscription import SubscriptionParser
+            logger.info(f"Parsing subscription content for {sub_id}")
+            cfg = SubscriptionParser.parse_content(content)
+        else:
+            cfg = yaml.load(content, Loader=YAMLLoader)
+        
+        # Ensure result is a dict, not a string or other type
+        if not isinstance(cfg, dict):
+            logger.warning(f"YAML file {sub_id} parsed as {type(cfg)}, not dict. Returning empty dict.")
+            result = {}
+        else:
+            result = cfg if cfg else {}
         
         # Update cache
         if use_cache:

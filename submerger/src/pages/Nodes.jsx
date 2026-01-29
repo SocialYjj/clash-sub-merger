@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
 import { COUNTRY_CHINESE_NAMES } from './countryData';
@@ -144,7 +144,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const fetchGeoipApis = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/geoip/online-config`);
+      const res = await request.get(`${API_BASE}/geoip/online-config`);
       setGeoipApis(res.data.apis || []);
       setSelectedGeoipApi(res.data.preferred_api || 'ip-api.com');
     } catch (err) {
@@ -154,7 +154,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const fetchProxyChains = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/proxy-chains`);
+      const res = await request.get(`${API_BASE}/proxy-chains`);
       setProxyChains(res.data.chains || []);
     } catch (err) {
       console.error('Failed to fetch proxy chains', err);
@@ -163,7 +163,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const fetchAvailableChainNodes = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/proxy-chains/available-nodes`);
+      const res = await request.get(`${API_BASE}/proxy-chains/available-nodes`);
       setAvailableChainNodes(res.data.nodes || []);
     } catch (err) {
       console.error('Failed to fetch available chain nodes', err);
@@ -182,7 +182,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     for (const sub of subscriptions) {
       try {
-        const res = await axios.get(`${API_BASE}/subscriptions/${sub.id}/nodes`);
+        const res = await request.get(`${API_BASE}/subscriptions/${sub.id}/nodes`);
         nodesMap[sub.id] = {
           name: sub.name,
           nodes: res.data.nodes || []
@@ -225,7 +225,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const results = await Promise.all(
         batch.map(async (server) => {
           try {
-            const res = await axios.get(`${API_BASE}/geoip/lookup/${encodeURIComponent(server)}`);
+            const res = await request.get(`${API_BASE}/geoip/lookup/${encodeURIComponent(server)}`);
             return { server, data: res.data.found ? res.data : null };
           } catch {
             return { server, data: null };
@@ -295,6 +295,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           speed: testResult?.speed ?? node.last_speed,
           testError: testResult?.error,
           detectedRegion: testResult?.region,
+          final_name: node.display_name || node.name  // Use display_name from backend (transformed name)
         });
       });
     });
@@ -349,6 +350,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         speed: testResult?.speed ?? node.last_speed,
         testError: testResult?.error,
         detectedRegion: testResult?.region,
+        final_name: node.display_name || node.name  // Use display_name from backend (transformed name)
       });
     });
 
@@ -539,7 +541,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (isRegionTest) {
         payload.geoip_api = selectedGeoipApi;
       }
-      const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, payload);
+      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, payload);
       setNodeTestResults(prev => {
         const newResult = { ...prev[node.nodeKey] };
         if (isRegionTest) {
@@ -567,7 +569,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setTestingNode(node.nodeKey);
     setTestingType('speed');
     try {
-      const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
         test_latency: false,
         test_speed: true,
         test_region: false,
@@ -618,7 +620,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + testConcurrency);
         await Promise.all(batch.map(async (node) => {
           try {
-            const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: true,
               test_speed: false,
               test_region: false,
@@ -648,7 +650,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + testConcurrency);
         await Promise.all(batch.map(async (node) => {
           try {
-            const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: false,
               test_speed: false,
               test_region: true,
@@ -678,7 +680,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + speedConcurrency);
         await Promise.all(batch.map(async (node) => {
           try {
-            const res = await axios.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: false,
               test_speed: true,
               test_region: false,
@@ -730,7 +732,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (newNodeName.trim()) {
         payload.name = newNodeName.trim();
       }
-      await axios.post(`${API_BASE}/custom-nodes`, payload);
+      await request.post(`${API_BASE}/custom-nodes`, payload);
       setNewNodeLink('');
       setNewNodeName('');
       setShowAddModal(false);
@@ -746,7 +748,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // Delete custom node
   const deleteCustomNode = async (nodeId) => {
     try {
-      await axios.delete(`${API_BASE}/custom-nodes/${nodeId}`);
+      await request.delete(`${API_BASE}/custom-nodes/${nodeId}`);
       onRefreshCustomNodes?.();
       showToast?.('节点已删除');
     } catch (err) {
@@ -794,7 +796,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     [newOrder[currentIndex], newOrder[newIndex]] = [newOrder[newIndex], newOrder[currentIndex]];
 
     try {
-      await axios.put(`${API_BASE}/custom-nodes/reorder`, { order: newOrder });
+      await request.put(`${API_BASE}/custom-nodes/reorder`, { order: newOrder });
       onRefreshCustomNodes?.();
       showToast?.('顺序已调整');
     } catch (err) {
@@ -913,10 +915,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     try {
       if (editingChain) {
-        await axios.put(`${API_BASE}/proxy-chains/${editingChain.id}`, payload);
+        await request.put(`${API_BASE}/proxy-chains/${editingChain.id}`, payload);
         showToast?.('链式代理已更新');
       } else {
-        await axios.post(`${API_BASE}/proxy-chains`, payload);
+        await request.post(`${API_BASE}/proxy-chains`, payload);
         showToast?.('链式代理已创建');
       }
       closeChainModal();
@@ -928,7 +930,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const toggleChain = async (chainId) => {
     try {
-      const res = await axios.put(`${API_BASE}/proxy-chains/${chainId}/toggle`);
+      const res = await request.put(`${API_BASE}/proxy-chains/${chainId}/toggle`);
       setProxyChains(prev => prev.map(c =>
         c.id === chainId ? { ...c, enabled: res.data.enabled } : c
       ));
@@ -940,7 +942,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const deleteChain = async (chainId) => {
     try {
-      await axios.delete(`${API_BASE}/proxy-chains/${chainId}`);
+      await request.delete(`${API_BASE}/proxy-chains/${chainId}`);
       setProxyChains(prev => prev.filter(c => c.id !== chainId));
       showToast?.('链式代理已删除');
     } catch (err) {
@@ -961,7 +963,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     [newOrder[currentIndex], newOrder[newIndex]] = [newOrder[newIndex], newOrder[currentIndex]];
 
     try {
-      await axios.put(`${API_BASE}/proxy-chains/reorder`, { order: newOrder });
+      await request.put(`${API_BASE}/proxy-chains/reorder`, { order: newOrder });
       fetchProxyChains();
       showToast?.('顺序已调整');
     } catch (err) {
@@ -972,18 +974,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Port mapping functions
   const openPortMapping = (node) => {
+    // Get the final name with fallback
+    const finalName = node.final_name || node.display_name || node.name;
+    
     // After initial load, use localPortMappings as single source of truth
     // This ensures deletions from management panel are immediately reflected
     const currentPort = portMappingsLoaded
-      ? localPortMappings[node.final_name]
-      : (localPortMappings[node.final_name] ?? node.mapped_port);
+      ? localPortMappings[finalName]
+      : (localPortMappings[finalName] ?? node.mapped_port);
     setPortMappingNode({ ...node, mapped_port: currentPort });
     setPortMappingValue(currentPort ? String(currentPort) : '');
   };
 
   const fetchAllPortMappings = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/port-mappings`);
+      const res = await request.get(`${API_BASE}/port-mappings`);
       setAllPortMappings(res.data.mappings || []);
       // Build local cache
       const cache = {};
@@ -1012,9 +1017,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return;
     }
 
+    // Get the final name with fallback
+    const finalName = portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name;
+    if (!finalName) {
+      showToast?.('节点名称无效', 'error');
+      return;
+    }
+
     try {
-      await axios.post(`${API_BASE}/port-mappings`, {
-        final_name: portMappingNode.final_name,
+      await request.post(`${API_BASE}/port-mappings`, {
+        final_name: finalName,
         port: port
       });
       showToast?.(`已将端口 ${port} 绑定到节点`);
@@ -1022,7 +1034,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       // Update local cache (no page refresh needed)
       setLocalPortMappings(prev => ({
         ...prev,
-        [portMappingNode.final_name]: port
+        [finalName]: port
       }));
 
       setPortMappingNode(null);
@@ -1036,16 +1048,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const removePortMapping = async () => {
     if (!portMappingNode?.mapped_port) return;
 
+    // Get the final name with fallback
+    const finalName = portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name;
+
     try {
-      await axios.delete(`${API_BASE}/port-mappings/${portMappingNode.mapped_port}`);
+      await request.delete(`${API_BASE}/port-mappings/${portMappingNode.mapped_port}`);
       showToast?.('已解除端口绑定');
 
       // Update local cache (no page refresh needed)
-      setLocalPortMappings(prev => {
-        const newCache = { ...prev };
-        delete newCache[portMappingNode.final_name];
-        return newCache;
-      });
+      if (finalName) {
+        setLocalPortMappings(prev => {
+          const newCache = { ...prev };
+          delete newCache[finalName];
+          return newCache;
+        });
+      }
 
       setPortMappingNode(null);
       setPortMappingValue('');
@@ -1056,7 +1073,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const deletePortMappingFromList = async (port, finalName) => {
     try {
-      await axios.delete(`${API_BASE}/port-mappings/${port}`);
+      await request.delete(`${API_BASE}/port-mappings/${port}`);
       showToast?.('已删除端口映射');
 
       // Update both states
@@ -1092,9 +1109,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
 
   return (
-    <div className="space-y-6">
+    <div className="h-[calc(100vh-80px)] flex flex-col space-y-4 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
+      <div className="flex items-center justify-between flex-wrap gap-4 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-white">节点管理</h1>
           <p className="text-gray-400 text-sm mt-1">查看和管理所有节点</p>
@@ -1210,7 +1227,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           </button>
         </div>
       </div>
-      <div className="flex flex-wrap gap-3 items-center">
+      <div className="flex flex-wrap gap-3 items-center flex-shrink-0">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
@@ -1289,7 +1306,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       </div>
 
       {/* Stats */}
-      <div className="flex flex-wrap gap-4 text-sm">
+      <div className="flex flex-wrap gap-4 text-sm flex-shrink-0">
         <span className="text-gray-400">
           共 <span className="text-white font-medium">{filteredNodes.length}</span> 个节点
           {(search || filterSource !== 'all' || filterType !== 'all' || filterLatencyStatus !== 'all') &&
@@ -1316,16 +1333,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
 
       {/* Nodes Table */}
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
         {loadingNodes ? (
           <div className="p-12 text-center text-gray-500">
             <RefreshCw size={24} className="animate-spin mx-auto mb-2" />
             加载节点中...
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto overflow-y-auto flex-1">
             <table className="w-full">
-              <thead>
+              <thead className="sticky top-0 bg-gray-800 z-10">
                 <tr className="border-b border-gray-700 text-left">
                   <th className="px-4 py-3 text-sm font-medium text-gray-400 whitespace-nowrap">
                     <button
@@ -1388,7 +1405,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            <span className={`text-white truncate max-w-[280px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={node.sourceType === 'chain' ? node.server : node.final_name}>
+                            <span className={`text-white truncate max-w-[200px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={node.display_name || node.name || '未命名'}>
                               {node.display_name || node.name || '未命名'}
                             </span>
                             {node.sourceType === 'chain' && (
@@ -1736,8 +1753,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             <div className="p-4 space-y-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-2">节点名称</label>
-                <p className="text-white text-sm bg-gray-700/50 px-3 py-2 rounded-lg truncate" title={portMappingNode.final_name}>
-                  {portMappingNode.final_name}
+                <p className="text-white text-sm bg-gray-700/50 px-3 py-2 rounded-lg truncate" title={portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name || '未命名'}>
+                  {portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name || '未命名'}
                 </p>
               </div>
               <div>

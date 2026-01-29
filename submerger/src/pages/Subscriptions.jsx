@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, RefreshCw, Server } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 import SubscriptionCard from '../components/SubscriptionCard';
 import AddSubscriptionModal from '../components/AddSubscriptionModal';
 import EditSubscriptionModal from '../components/EditSubscriptionModal';
@@ -69,7 +69,7 @@ export default function Subscriptions({
 
       // Call reorder API
       try {
-        await axios.put(`${API_BASE}/subscriptions/reorder`, {
+        await request.put(`${API_BASE}/subscriptions/reorder`, {
           order: newOrder.map(s => s.id)
         });
         showToast?.('排序已保存');

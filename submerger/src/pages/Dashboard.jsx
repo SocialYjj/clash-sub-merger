@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import request from '../utils/request';
 import {
   Server, Users, Activity, Router,
   Globe, Zap, Database
@@ -53,8 +53,8 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       const [overviewRes, countryRes] = await Promise.all([
-        axios.get(`${API_BASE}/stats/overview`),
-        axios.get(`${API_BASE}/stats/nodes-by-country`)
+        request.get(`${API_BASE}/stats/overview`),
+        request.get(`${API_BASE}/stats/nodes-by-country`)
       ]);
       setOverview(overviewRes.data);
       setCountryStats(countryRes.data.countries || []);
@@ -87,7 +87,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="h-[calc(100vh-80px)] overflow-y-auto space-y-6 animate-in fade-in duration-500">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -168,33 +168,38 @@ export default function Dashboard() {
             <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">Top 10</span>
           </div>
 
-          <div className="space-y-2">
-            {countryChartData.map((entry, index) => {
-              const maxValue = Math.max(...countryChartData.map(c => c.value));
-              const percentage = (entry.value / maxValue) * 100;
-              return (
-                <div key={index} className="group">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{entry.flag}</span>
-                      <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+          <div className="space-y-4">
+            {(() => {
+              const totalNodes = countryChartData.reduce((sum, c) => sum + c.value, 0);
+              return countryChartData.map((entry, index) => {
+                const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
+                return (
+                  <div key={index} className="group">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">{entry.flag}</span>
+                        <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{percentage}%</span>
+                        <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                          {entry.value}
+                        </span>
+                      </div>
                     </div>
-                    <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
-                      {entry.value}
-                    </span>
+                    <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        style={{
+                          width: `${percentage}%`,
+                          backgroundColor: COLORS[index % COLORS.length]
+                        }}
+                      />
+                    </div>
                   </div>
-                  <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-500 ease-out"
-                      style={{
-                        width: `${percentage}%`,
-                        backgroundColor: COLORS[index % COLORS.length]
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+                );
+              });
+            })()}
           </div>
         </div>
 

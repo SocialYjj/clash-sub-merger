@@ -19,7 +19,11 @@ DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.dirname(__file__), 'd
 
 # Ensure logs directory exists
 LOGS_DIR = os.path.join(DATA_DIR, 'logs')
-Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+try:
+    Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+except (PermissionError, OSError):
+    # Directory will be created by Docker volume mount or already exists
+    pass
 
 # Log file path
 LOG_FILE = os.path.join(LOGS_DIR, 'app.log')
@@ -151,20 +155,22 @@ def setup_logger(name: str = None) -> logging.Logger:
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
-    
-    # File handler (rotating)
-    file_handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    
-    # Add handlers
     logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    
+    # File handler (rotating) - only add if we have write permission
+    try:
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except (PermissionError, OSError) as e:
+        # Log to console only if file logging fails
+        logger.warning(f"Could not create file handler: {e}. Logging to console only.")
     
     return logger
 
@@ -184,7 +190,8 @@ def get_logger(name: str) -> logging.Logger:
         Logger instance
     """
     if name not in _all_loggers:
-        _all_loggers[name] = logging.getLogger(name)
+        # Setup logger with handlers if not already configured
+        return setup_logger(name)
     return _all_loggers[name]
 
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileCode, Upload, Save, RotateCcw, Plus, Trash2, Edit3, Copy, Check, X, Lock, ChevronDown, ChevronUp, Info } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -72,7 +72,7 @@ export default function Templates({ showToast }) {
   const fetchTemplates = async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`);
       setTemplates(res.data.templates || []);
     } catch (err) {
       console.error('Failed to fetch templates', err);
@@ -84,10 +84,43 @@ export default function Templates({ showToast }) {
 
   const openTemplate = async (template) => {
     try {
-      const res = await axios.get(`${API_BASE}/templates/${template.id}`);
-      setSelectedTemplate(res.data);
-      setTemplateContent(res.data.content || '');
-      setTemplateName(res.data.name || '');
+      const res = await request.get(`${API_BASE}/templates/${template.id}`);
+      const templateData = res.data.template || res.data;
+      setSelectedTemplate(templateData);
+      
+      // Build content from header, proxy_groups, and suffix
+      let content = '';
+      if (templateData.header) {
+        content += templateData.header + '\n\n';
+      }
+      
+      if (templateData.proxy_groups && templateData.proxy_groups.length > 0) {
+        content += 'proxy-groups:\n';
+        templateData.proxy_groups.forEach(group => {
+          content += `  - name: ${group.name}\n`;
+          content += `    type: ${group.type}\n`;
+          if (group.proxies) {
+            content += `    proxies:\n`;
+            group.proxies.forEach(proxy => {
+              content += `      - ${proxy}\n`;
+            });
+          }
+          if (group.url) {
+            content += `    url: ${group.url}\n`;
+          }
+          if (group.interval) {
+            content += `    interval: ${group.interval}\n`;
+          }
+          content += '\n';
+        });
+      }
+      
+      if (templateData.suffix) {
+        content += '\n' + templateData.suffix;
+      }
+      
+      setTemplateContent(content);
+      setTemplateName(templateData.name || '');
       setShowEditModal(true);
     } catch (err) {
       showToast?.('加载模版失败', 'error');
@@ -99,7 +132,7 @@ export default function Templates({ showToast }) {
 
     setSaving(true);
     try {
-      await axios.put(`${API_BASE}/templates/${selectedTemplate.id}`, {
+      await request.put(`${API_BASE}/templates/${selectedTemplate.id}`, {
         name: templateName,
         content: templateContent
       });
@@ -115,7 +148,7 @@ export default function Templates({ showToast }) {
 
   const resetBuiltinTemplate = async () => {
     try {
-      await axios.post(`${API_BASE}/templates/builtin/reset`);
+      await request.post(`${API_BASE}/templates/builtin/reset`);
       showToast?.('内置模版已重置为默认');
       setShowResetConfirm(false);
       setShowEditModal(false);
@@ -134,7 +167,7 @@ export default function Templates({ showToast }) {
     if (!confirm(`确定要删除模版 "${template.name}" 吗？`)) return;
 
     try {
-      await axios.delete(`${API_BASE}/templates/${template.id}`);
+      await request.delete(`${API_BASE}/templates/${template.id}`);
       showToast?.('模版已删除');
       fetchTemplates();
     } catch (err) {
@@ -157,7 +190,7 @@ export default function Templates({ showToast }) {
       formData.append('file', file);
       formData.append('current_template', '');
 
-      const res = await axios.post(`${API_BASE}/template/parse`, formData);
+      const res = await request.post(`${API_BASE}/template/parse`, formData);
       if (res.data?.content) {
         setTemplateContent(res.data.content);
         showToast?.('文件已导入并处理');
@@ -190,7 +223,7 @@ export default function Templates({ showToast }) {
     let content = templateContent;
     if (!content.trim()) {
       try {
-        const res = await axios.get(`${API_BASE}/templates/builtin`);
+        const res = await request.get(`${API_BASE}/templates/builtin`);
         content = res.data.content || '';
       } catch (e) {
         content = 'port: 7890\nallow-lan: false\nmode: rule\n\nproxies: []\n\nproxy-groups: []\n\nrules:\n  - MATCH,DIRECT';
@@ -199,7 +232,7 @@ export default function Templates({ showToast }) {
 
     setCreating(true);
     try {
-      await axios.post(`${API_BASE}/templates`, {
+      await request.post(`${API_BASE}/templates`, {
         name: newTemplateName.trim(),
         content: content
       });

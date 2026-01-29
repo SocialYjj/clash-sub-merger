@@ -128,7 +128,7 @@ export default function App() {
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
-    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 2000);
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
   };
 
   const showConfirm = (title, message, onConfirm, type = 'warning') => {
@@ -387,9 +387,15 @@ export default function App() {
 
   const changePassword = async (newPassword) => {
     try {
-      const res = await request.post(`${API_BASE}/auth/change-password`, { password: newPassword });
-      localStorage.setItem('session', res.data.session);
-      showToast('密码修改成功');
+      await request.post(`${API_BASE}/auth/change-password`, { password: newPassword });
+      showToast('密码修改成功，即将跳转到登录页');
+      // Wait 1 second before logging out to let user see the success message
+      setTimeout(() => {
+        localStorage.removeItem('session');
+        setIsLoggedIn(false);
+        // Force page reload to ensure clean state
+        window.location.reload();
+      }, 1000);
     } catch (err) {
       showToast('修改失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
