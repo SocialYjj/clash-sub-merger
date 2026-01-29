@@ -85,7 +85,7 @@ class AppConfig:
     KEY_ROTATION_CHECK_ENABLED = os.environ.get('KEY_ROTATION_CHECK_ENABLED', 'true').lower() == 'true'
     
     # Version
-    VERSION = "3.0.0"
+    VERSION = "3.1.0"
 
 
 def get_config_file() -> str:

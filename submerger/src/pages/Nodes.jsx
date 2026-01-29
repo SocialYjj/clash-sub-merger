@@ -78,7 +78,16 @@ const getLatencyBadge = (latency, error) => {
 };
 
 export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes, showToast }) {
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');  // 防抖后的搜索值
+  // 防抖搜索
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   const [filterSource, setFilterSource] = useState('all');
   const [filterType, setFilterType] = useState('all');
   const [filterLatencyStatus, setFilterLatencyStatus] = useState('all');
@@ -117,7 +126,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [showPortMappingList, setShowPortMappingList] = useState(false);  // Show all mappings modal
   const [allPortMappings, setAllPortMappings] = useState([]);  // All port mappings from backend
   const [localPortMappings, setLocalPortMappings] = useState({});  // Local cache: {final_name: port}
-  const [portMappingsLoaded, setPortMappingsLoaded] = useState(false);  // Has initial fetch completed?
+  const [portMappingsLoaded, setPortMappingsLoaded] = useState(false);
+
+  // 分页状态
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);  // 每页显示 50 个节点  // Has initial fetch completed?
 
   // Proxy chain state
   const [proxyChains, setProxyChains] = useState([]);
@@ -512,6 +525,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return result;
   }, [allNodes, search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
 
+  // 分页节点
+  const paginatedNodes = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    return filteredNodes.slice(startIndex, endIndex);
+  }, [filteredNodes, currentPage, pageSize]);
+
+  // 总页数
+  const totalPages = Math.ceil(filteredNodes.length / pageSize);
+
+  // 当过滤条件改变时，重置到第一页
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
+
 
   const getTypeColor = (type) => {
     const colors = {
@@ -614,31 +642,47 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const firstPhase = testLatency ? '延迟' : (testRegion ? '地区' : '速度');
     setBatchTestProgress({ current: 0, total: totalSteps, phase: firstPhase });
 
+    // Batch update results to reduce re-renders
+    const batchResults = {};
+    const saveData = {};  // 用于批量保存的数据结构
+
     // Phase 1: Test latency with concurrency
     if (testLatency) {
       for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
         const batch = nodesToTest.slice(i, i + testConcurrency);
-        await Promise.all(batch.map(async (node) => {
+        const results = await Promise.allSettled(batch.map(async (node) => {
           try {
             const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: true,
               test_speed: false,
               test_region: false,
-              timeout: testTimeout
+              timeout: testTimeout,
+              batch_mode: true  // 批量模式，不立即保存
             });
-            setNodeTestResults(prev => ({
-              ...prev,
-              [node.nodeKey]: { ...prev[node.nodeKey], latency: res.data.latency, error: false }
-            }));
+            
+            // 收集保存数据
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
+            saveData[node.sourceId][node.idx].latency = res.data.latency;
+            
+            return { nodeKey: node.nodeKey, data: { latency: res.data.latency, error: false } };
           } catch {
-            setNodeTestResults(prev => ({
-              ...prev,
-              [node.nodeKey]: { ...prev[node.nodeKey], latency: null, error: true }
-            }));
+            return { nodeKey: node.nodeKey, data: { latency: null, error: true } };
           }
         }));
+        
+        // Batch update
+        results.forEach(result => {
+          if (result.status === 'fulfilled') {
+            batchResults[result.value.nodeKey] = { ...batchResults[result.value.nodeKey], ...result.value.data };
+          }
+        });
+        
         currentStep = Math.min(i + testConcurrency, nodesToTest.length);
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '延迟' });
+        
+        // Update state every batch instead of every node
+        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
       }
     }
 
@@ -648,25 +692,42 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       setBatchTestProgress(prev => ({ ...prev, phase: '地区' }));
       for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
         const batch = nodesToTest.slice(i, i + testConcurrency);
-        await Promise.all(batch.map(async (node) => {
+        const results = await Promise.allSettled(batch.map(async (node) => {
           try {
             const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: false,
               test_speed: false,
               test_region: true,
               timeout: testTimeout,
-              geoip_api: selectedGeoipApi
+              geoip_api: selectedGeoipApi,
+              batch_mode: true  // 批量模式
             });
-            setNodeTestResults(prev => ({
-              ...prev,
-              [node.nodeKey]: { ...prev[node.nodeKey], region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip }
-            }));
+            
+            // 收集保存数据
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
+            saveData[node.sourceId][node.idx].exit_ip = res.data.exit_ip;
+            saveData[node.sourceId][node.idx].region = res.data.region;
+            saveData[node.sourceId][node.idx].city = res.data.city;
+            
+            return { nodeKey: node.nodeKey, data: { region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip } };
           } catch {
-            // Region test failed, keep existing data
+            return null;
           }
         }));
+        
+        // Batch update
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value) {
+            batchResults[result.value.nodeKey] = { ...batchResults[result.value.nodeKey], ...result.value.data };
+          }
+        });
+        
         currentStep = baseStep + Math.min(i + testConcurrency, nodesToTest.length);
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '地区' });
+        
+        // Update state every batch
+        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
       }
     }
 
@@ -678,29 +739,51 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const speedConcurrency = Math.min(testConcurrency, 2);
       for (let i = 0; i < nodesToTest.length; i += speedConcurrency) {
         const batch = nodesToTest.slice(i, i + speedConcurrency);
-        await Promise.all(batch.map(async (node) => {
+        const results = await Promise.allSettled(batch.map(async (node) => {
           try {
             const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
               test_latency: false,
               test_speed: true,
               test_region: false,
-              timeout: testTimeout
+              timeout: testTimeout,
+              batch_mode: true  // 批量模式
             });
-            setNodeTestResults(prev => ({
-              ...prev,
-              [node.nodeKey]: { ...prev[node.nodeKey], speed: res.data.speed, peak_speed: res.data.peak_speed }
-            }));
+            
+            // 收集保存数据
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
+            saveData[node.sourceId][node.idx].speed = res.data.speed;
+            
+            return { nodeKey: node.nodeKey, data: { speed: res.data.speed, peak_speed: res.data.peak_speed } };
           } catch {
-            // Speed test failed, keep existing data
+            return null;
           }
         }));
+        
+        // Batch update
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value) {
+            batchResults[result.value.nodeKey] = { ...batchResults[result.value.nodeKey], ...result.value.data };
+          }
+        });
+        
         currentStep = baseStep + Math.min(i + speedConcurrency, nodesToTest.length);
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '速度' });
+        
+        // Update state every batch
+        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
       }
     }
 
+    // 批量保存所有测试结果
+    try {
+      await request.post(`${API_BASE}/nodes/batch-save`, { results: saveData });
+      showToast?.(`测试完成，共测试 ${nodesToTest.length} 个节点，结果已保存`);
+    } catch (error) {
+      showToast?.(`测试完成，但保存失败: ${error.message}`, 'error');
+    }
+
     setBatchTesting(false);
-    showToast?.(`测试完成，共测试 ${nodesToTest.length} 个节点`);
   };
 
 
@@ -1232,8 +1315,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
             type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             placeholder="搜索节点名称/服务器/地区..."
             className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
@@ -1340,8 +1423,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             加载节点中...
           </div>
         ) : (
-          <div className="overflow-x-auto overflow-y-auto flex-1">
-            <table className="w-full">
+          <>
+            <div className="overflow-x-auto overflow-y-auto flex-1">
+              <table className="w-full">
               <thead className="sticky top-0 bg-gray-800 z-10">
                 <tr className="border-b border-gray-700 text-left">
                   <th className="px-4 py-3 text-sm font-medium text-gray-400 whitespace-nowrap">
@@ -1368,8 +1452,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {filteredNodes.length > 0 ? (
-                  filteredNodes.map((node, idx) => {
+                {paginatedNodes.length > 0 ? (
+                  paginatedNodes.map((node, idx) => {
                     const isTesting = testingNode === node.nodeKey;
                     const isSelected = selectedNodes.has(node.nodeKey);
                     const testResult = nodeTestResults[node.nodeKey];
@@ -1597,6 +1681,65 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               </tbody>
             </table>
           </div>
+
+          {/* 分页控件 */}
+          {filteredNodes.length > pageSize && (
+            <div className="mt-4 flex items-center justify-between px-4 py-3 bg-gray-800/50 rounded-lg border border-gray-700">
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-gray-400">
+                  显示 {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredNodes.length)} / {filteredNodes.length}
+                </span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value={25}>25 / 页</option>
+                  <option value={50}>50 / 页</option>
+                  <option value={100}>100 / 页</option>
+                  <option value={200}>200 / 页</option>
+                </select>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                >
+                  首页
+                </button>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                >
+                  上一页
+                </button>
+                <span className="px-3 py-1 text-sm text-gray-400">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                >
+                  下一页
+                </button>
+                <button
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                >
+                  末页
+                </button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
 

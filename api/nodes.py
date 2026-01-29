@@ -348,6 +348,68 @@ class NodeTestRequest(BaseModel):
     test_speed: bool = False
     test_region: bool = False
     geoip_api: Optional[str] = None
+    batch_mode: bool = False  # 批量模式下不立即保存
+
+
+class BatchSaveRequest(BaseModel):
+    results: dict  # {source_id: {node_index: {latency, speed, region, etc}}}
+
+
+@router.post("/nodes/batch-save")
+@handle_api_errors
+async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(verify_session)):
+    """批量保存所有测试结果"""
+    from datetime import datetime
+    
+    saved_count = 0
+    
+    for source_id, nodes_data in data.results.items():
+        if source_id == "custom":
+            # 保存自定义节点
+            config = load_config()
+            for node_index_str, result in nodes_data.items():
+                node_index = int(node_index_str)
+                if 0 <= node_index < len(config.get('custom_nodes', [])):
+                    node = config['custom_nodes'][node_index]
+                    if 'latency' in result:
+                        node['last_latency'] = result['latency']
+                        node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if 'speed' in result:
+                        node['last_speed'] = result['speed']
+                        node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if 'exit_ip' in result:
+                        node['exit_ip'] = result['exit_ip']
+                    if 'region' in result:
+                        node['region'] = result['region']
+                    if 'city' in result:
+                        node['city'] = result['city']
+                    saved_count += 1
+            save_config(config)
+        else:
+            # 保存订阅节点
+            sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=False)
+            if sub_data:
+                for node_index_str, result in nodes_data.items():
+                    node_index = int(node_index_str)
+                    nodes = sub_data.get('proxies', [])
+                    if 0 <= node_index < len(nodes):
+                        node = nodes[node_index]
+                        if 'latency' in result:
+                            node['last_latency'] = result['latency']
+                            node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'speed' in result:
+                            node['last_speed'] = result['speed']
+                            node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'exit_ip' in result:
+                            node['exit_ip'] = result['exit_ip']
+                        if 'region' in result:
+                            node['region'] = result['region']
+                        if 'city' in result:
+                            node['city'] = result['city']
+                        saved_count += 1
+                save_subscription_yaml(source_id, sub_data, YAML_SOURCE_DIR)
+    
+    return {"status": "success", "saved_count": saved_count}
 
 
 @router.post("/nodes/{source_id}/{node_index}/test")
@@ -478,7 +540,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
                         result['error'] = speed_result.get('error', 'Speed test failed')
         
         # Async save in background (don't block response)
-        if need_save:
+        if need_save and not data.batch_mode:
             async def save_in_background():
                 try:
                     if is_custom:
