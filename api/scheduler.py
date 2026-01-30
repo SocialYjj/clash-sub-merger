@@ -42,6 +42,36 @@ def get_cron_presets(_: bool = Depends(verify_session)):
     return {"presets": CRON_PRESETS}
 
 
+@router.post("/validate-cron")
+@handle_api_errors
+def validate_cron_expression(data: dict, _: bool = Depends(verify_session)):
+    """Validate cron expression and return next run time"""
+    cron_expr = data.get('cron_expr', '').strip()
+    
+    if not cron_expr:
+        return {"valid": False, "error": "Cron expression is empty"}
+    
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        from datetime import datetime
+        
+        trigger = CronTrigger.from_crontab(cron_expr)
+        next_run = trigger.get_next_fire_time(None, datetime.now())
+        
+        if next_run:
+            # Format as readable string
+            next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S")
+            return {
+                "valid": True,
+                "next_run": next_run_str,
+                "timestamp": int(next_run.timestamp())
+            }
+        else:
+            return {"valid": False, "error": "Cannot calculate next run time"}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
 @router.get("/subscriptions/{sub_id}")
 @handle_api_errors
 def get_subscription_schedule(sub_id: str, _: bool = Depends(verify_session)):

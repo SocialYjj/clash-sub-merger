@@ -111,7 +111,10 @@ export default function SubscriptionCard({
                                 下次运行
                             </div>
                             <div className="text-gray-300 font-medium">
-                                {sub.next_update || '-'}
+                                {sub.next_update ? formatDate(sub.next_update).split(' ')[0] : '-'}
+                            </div>
+                            <div className="text-gray-400 scale-90 origin-top-left">
+                                {sub.next_update ? formatDate(sub.next_update).split(' ')[1] : ''}
                             </div>
                         </div>
                     )}

@@ -215,6 +215,50 @@ async def startup_event():
     # Initialize scheduler
     init_scheduler()
     logger.info("Scheduler initialized")
+    
+    # Restore scheduled jobs from config
+    try:
+        from core.database import load_config
+        from apscheduler.triggers.cron import CronTrigger
+        
+        config = load_config()
+        scheduler = get_scheduler()
+        restored_count = 0
+        
+        for sub in config.get('subscriptions', []):
+            if sub.get('type') == 'local':
+                continue
+                
+            cron_expr = sub.get('cron_expr')
+            if cron_expr:
+                try:
+                    trigger = CronTrigger.from_crontab(cron_expr)
+                    job_id = f"sub_refresh_{sub['id']}"
+                    
+                    scheduler.scheduler.add_job(
+                        refresh_subscription_job,
+                        trigger=trigger,
+                        args=[sub['id']],
+                        id=job_id,
+                        replace_existing=True
+                    )
+                    
+                    # Update next_update timestamp
+                    job = scheduler.scheduler.get_job(job_id)
+                    if job and job.next_run_time:
+                        sub['next_update'] = int(job.next_run_time.timestamp())
+                        restored_count += 1
+                        logger.info(f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job.next_run_time}")
+                except Exception as e:
+                    logger.error(f"Failed to restore schedule for subscription '{sub.get('name')}': {e}")
+                    sub['next_update'] = None
+        
+        if restored_count > 0:
+            from core.database import save_config
+            save_config(config)
+            logger.info(f"Restored {restored_count} scheduled job(s)")
+    except Exception as e:
+        logger.error(f"Failed to restore scheduled jobs: {e}")
 
 
 @app.on_event("shutdown")
@@ -492,6 +536,68 @@ try:
 except ValueError:
     # Not in main thread, skip signal registration
     pass
+
+
+# ==================== Scheduled Job Functions ====================
+
+def refresh_subscription_job(sub_id: str):
+    """
+    Job function for scheduled subscription refresh.
+    This is called by the scheduler and runs in a background thread.
+    """
+    try:
+        from core.database import load_config, save_config
+        import asyncio
+        
+        logger.info(f"Scheduled refresh triggered for subscription {sub_id}")
+        
+        config = load_config()
+        sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+        
+        if not sub:
+            logger.error(f"Subscription {sub_id} not found for scheduled refresh")
+            return
+        
+        if sub.get('type') == 'local':
+            logger.warning(f"Skipping scheduled refresh for local subscription {sub_id}")
+            return
+        
+        # Run the async refresh in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            proxy_node = get_configured_proxy_node()
+            force_proxy = sub.get('force_proxy', False)
+            
+            content, sub_info, node_count = loop.run_until_complete(
+                fetch_subscription_async(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+            )
+            
+            sub.update({
+                'upload': sub_info.get('upload', 0),
+                'download': sub_info.get('download', 0),
+                'total': sub_info.get('total', 0),
+                'expire': sub_info.get('expire', 0),
+                'node_count': node_count,
+                'last_update': int(time.time()),
+                'update_status': 'success'
+            })
+            
+            save_subscription_content(sub_id, content, Constants.YAML_SOURCE_DIR)
+            save_config(config)
+            invalidate_stats_cache()
+            
+            logger.info(f"Scheduled refresh completed for subscription {sub_id}, got {node_count} nodes")
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
+            sub['update_status'] = f'error: {error_msg}'
+            save_config(config)
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
+
 
 # ==================== Config Management ====================
 
