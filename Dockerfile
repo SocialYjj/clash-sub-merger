@@ -1,9 +1,14 @@
 # Multi-stage build - Frontend
 FROM node:20-alpine AS frontend-builder
+WORKDIR /app
+# Copy VERSION file first (needed for version sync)
+COPY VERSION ./
 WORKDIR /app/submerger
 COPY submerger/package*.json ./
+COPY submerger/scripts/ ./scripts/
 RUN npm ci --prefer-offline
 COPY submerger/ ./
+# Build will automatically sync version via prebuild hook
 RUN npm run build
 
 # Multi-stage build - Go speedtest service
@@ -38,6 +43,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Install Python dependencies (separate layer for better caching)
 COPY requirements.txt ./
 RUN uv pip install --system --no-cache -r requirements.txt
+
+# Copy VERSION file (needed for dynamic version reading)
+COPY VERSION ./
 
 # Copy backend code
 COPY *.py ./

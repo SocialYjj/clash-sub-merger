@@ -84,8 +84,18 @@ class AppConfig:
     KEY_ROTATION_DAYS = int(os.environ.get('KEY_ROTATION_DAYS', '90'))
     KEY_ROTATION_CHECK_ENABLED = os.environ.get('KEY_ROTATION_CHECK_ENABLED', 'true').lower() == 'true'
     
-    # Version
-    VERSION = "3.1.0"
+    # Version - read from VERSION file
+    @staticmethod
+    def _read_version():
+        """Read version from VERSION file"""
+        try:
+            version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
+            with open(version_file, 'r') as f:
+                return f.read().strip()
+        except Exception:
+            return "3.1.1"  # Fallback version
+    
+    VERSION = _read_version.__func__()
 
 
 def get_config_file() -> str:

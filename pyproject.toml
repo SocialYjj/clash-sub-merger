@@ -1,6 +1,6 @@
 [project]
 name = "submerger"
-version = "3.1.0"
+dynamic = ["version"]
 description = "Modern subscription aggregation management panel for Clash/Mihomo"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +20,9 @@ dependencies = [
     "aiofiles>=25.1.0",
     "python-dotenv>=1.2.1",
 ]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.uv]
 dev-dependencies = [

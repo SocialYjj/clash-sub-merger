@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -45,6 +45,21 @@ const menuItems = [
 export default function Sidebar({ collapsed, setCollapsed }) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [version, setVersion] = useState('...');
+
+  // Fetch version from API
+  useEffect(() => {
+    fetch('/health')
+      .then(res => res.json())
+      .then(data => {
+        if (data.version) {
+          setVersion(data.version);
+        }
+      })
+      .catch(() => {
+        setVersion('3.2.0');
+      });
+  }, []);
 
   const NavItem = ({ item }) => {
     const isActive = location.pathname === item.path;
@@ -111,10 +126,10 @@ export default function Sidebar({ collapsed, setCollapsed }) {
       <div className="p-4 border-t border-gray-800">
         {!collapsed ? (
           <div className="text-xs text-gray-500 text-center">
-            Clash Sub Merger v3.0.0
+            Clash Sub Merger v{version}
           </div>
         ) : (
-          <div className="text-xs text-gray-500 text-center">v2</div>
+          <div className="text-xs text-gray-500 text-center">v{version.split('.')[0]}</div>
         )}
       </div>
     </div>

@@ -259,6 +259,40 @@ async def startup_event():
             logger.info(f"Restored {restored_count} scheduled job(s)")
     except Exception as e:
         logger.error(f"Failed to restore scheduled jobs: {e}")
+    
+    # Schedule FlClash version check (only if using flclash mode)
+    try:
+        ua_mode = os.getenv('SUBSCRIPTION_UA_MODE', 'flclash').strip().lower()
+        if ua_mode == 'flclash':
+            from helpers_ua import refresh_version_cache
+            from apscheduler.triggers.cron import CronTrigger
+            
+            # Get cron expression from env, default to daily at 3 AM
+            cron_expr = os.getenv('FLCLASH_VERSION_UPDATE_CRON', '0 3 * * *').strip()
+            
+            try:
+                trigger = CronTrigger.from_crontab(cron_expr)
+                scheduler.scheduler.add_job(
+                    refresh_version_cache,
+                    trigger=trigger,
+                    id="flclash_version_refresh",
+                    replace_existing=True
+                )
+                logger.info(f"Scheduled FlClash version check with cron: {cron_expr}")
+            except Exception as e:
+                logger.warning(f"Invalid FLCLASH_VERSION_UPDATE_CRON '{cron_expr}': {e}, using default")
+                # Fallback to default
+                scheduler.scheduler.add_job(
+                    refresh_version_cache,
+                    trigger=CronTrigger(hour=3, minute=0),
+                    id="flclash_version_refresh",
+                    replace_existing=True
+                )
+                logger.info("Scheduled FlClash version check at 3:00 AM (default)")
+        else:
+            logger.info(f"FlClash version check disabled (UA mode: {ua_mode})")
+    except Exception as e:
+        logger.warning(f"Failed to schedule FlClash version check: {e}")
 
 
 @app.on_event("shutdown")
@@ -1083,8 +1117,9 @@ async def fetch_subscription_async(url: str, proxy_node: dict = None, force_prox
     """
     # Use FlClash User-Agent to get all nodes including anytls
     # Format: FlClash/v{version} clash-verge Platform/{os}
-    # Configurable via SUBSCRIPTION_USER_AGENT environment variable
-    user_agent = os.getenv('SUBSCRIPTION_USER_AGENT', 'FlClash/v0.8.91 clash-verge Platform/windows')
+    # Priority: 1. SUBSCRIPTION_USER_AGENT env var, 2. Auto-fetch latest version
+    from helpers_ua import get_subscription_user_agent
+    user_agent = get_subscription_user_agent()
     headers = {
         'User-Agent': user_agent,
     }
