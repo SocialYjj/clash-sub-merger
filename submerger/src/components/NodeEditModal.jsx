@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Server } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -191,7 +191,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
         }
         setSaving(true);
         try {
-            await axios.put(`${API_BASE}/custom-nodes/${node.id}/full`, { node: buildNodeObject() });
+            await request.put(`${API_BASE}/custom-nodes/${node.id}/full`, { node: buildNodeObject() });
             showToast?.('节点已更新');
             if (onSave) await onSave();
             onClose();

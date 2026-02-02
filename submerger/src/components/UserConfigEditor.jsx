@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Loader2, RotateCcw } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 import GroupCard from './GroupCard';
 import NodeSelector from './NodeSelector';
 
@@ -33,7 +33,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
   const loadGroupConfig = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${apiBasePath}/group-config`);
+      const response = await request.get(`${apiBasePath}/group-config`);
       const data = response.data;
       
       setTemplateId(data.template_id);
@@ -101,7 +101,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
 
   const updateYamlPreview = async () => {
     try {
-      const response = await axios.get(`/api/users/${user.id}/preview-yaml`);
+      const response = await request.get(`/api/users/${user.id}/preview-yaml`);
       setYamlPreview(response.data.yaml);
     } catch (error) {
       console.error('Failed to update YAML preview:', error);
@@ -128,7 +128,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
   const handleSave = async () => {
     try {
       setSaving(true);
-      await axios.put(`${apiBasePath}/group-config`, {
+      await request.put(`${apiBasePath}/group-config`, {
         group_config: groupConfig
       });
       showToast('配置保存成功', 'success');
@@ -145,7 +145,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
   const handleReset = async () => {
     try {
       setSaving(true);
-      await axios.post(`${apiBasePath}/reset-group-config`);
+      await request.post(`${apiBasePath}/reset-group-config`);
       showToast('配置已重置', 'success');
       setShowResetConfirm(false);
       // Reload the config

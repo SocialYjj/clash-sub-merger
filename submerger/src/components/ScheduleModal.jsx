@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Clock } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -36,7 +36,7 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
 
         // Call backend API for accurate validation
         try {
-            const response = await axios.post(`${API_BASE}/scheduler/validate-cron`, {
+            const response = await request.post(`${API_BASE}/scheduler/validate-cron`, {
                 cron_expr: cron.trim()
             });
 
@@ -85,7 +85,7 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
         try {
             const valueToSave = cronValue.trim() || null;
 
-            const response = await axios.put(`${API_BASE}/subscriptions/${sub.id}/schedule`, {
+            const response = await request.put(`${API_BASE}/subscriptions/${sub.id}/schedule`, {
                 cron_expr: valueToSave
             });
 

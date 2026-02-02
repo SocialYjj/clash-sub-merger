@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Trash2 } from 'lucide-react';
-import axios from 'axios';
+import request from '../utils/request';
 
 const API_BASE = '/api';
 
