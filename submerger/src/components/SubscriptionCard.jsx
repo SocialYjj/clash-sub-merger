@@ -147,6 +147,12 @@ export default function SubscriptionCard({
                                     />
                                 </div>
                             )}
+                            <div className="flex items-center justify-between text-xs pt-1 border-t border-gray-700/50">
+                                <span className="text-gray-500">过期时间</span>
+                                <span className="text-gray-300 font-medium">
+                                    {traffic.expire || '长期有效'}
+                                </span>
+                            </div>
                         </div>
                     ) : (
                         <div className="text-sm text-gray-500 py-1">
