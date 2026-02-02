@@ -1,6 +1,6 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Eye, EyeOff, Lock } from 'lucide-react';
+import { Eye, EyeOff, Lock, X, Copy, Check } from 'lucide-react';
 import request from './utils/request';
 
 // Components (keep these as regular imports since they're small and used frequently)
@@ -125,6 +125,9 @@ export default function App() {
     type: 'warning',
     onConfirm: null
   });
+
+  // Format selector state for user subscription
+  const [formatSelectorUser, setFormatSelectorUser] = useState(null);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -330,10 +333,16 @@ export default function App() {
   };
 
   const copyUserSubUrl = async (user) => {
+    setFormatSelectorUser(user);
+  };
+
+  const copyUserSubUrlWithFormat = async (user, format) => {
     try {
       const res = await request.get(`${API_BASE}/users/${user.id}`);
-      const url = `${window.location.origin}/sub?token=${res.data.user.token}`;
+      let url = `${window.location.origin}/sub?token=${res.data.user.token}`;
+      url += `&format=${format}`;
       navigator.clipboard.writeText(url);
+      setFormatSelectorUser(null);
       showToast('订阅地址已复制');
     } catch (err) {
       showToast('复制失败', 'error');
@@ -491,6 +500,50 @@ export default function App() {
         message={confirmModal.message}
         type={confirmModal.type}
       />
+      
+      {/* Format Selector for User Subscription */}
+      {formatSelectorUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setFormatSelectorUser(null)}>
+          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-white">选择格式</h3>
+              <button onClick={() => setFormatSelectorUser(null)} className="text-gray-400 hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-2">
+              <button
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'base64')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">Base64</div>
+                <div className="text-xs text-gray-400 mt-1">通用订阅格式</div>
+              </button>
+              <button
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'clash')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">Clash</div>
+                <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
+              </button>
+              <button
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'socks')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">SOCKS (自动)</div>
+                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口（从42000开始）</div>
+              </button>
+              <button
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'socks-manual')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">SOCKS (手动)</div>
+                <div className="text-xs text-gray-400 mt-1">仅使用手动配置的端口映射</div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </BrowserRouter>
   );
 }

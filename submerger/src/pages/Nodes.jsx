@@ -1906,7 +1906,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   type="number"
                   value={portMappingValue}
                   onChange={(e) => setPortMappingValue(e.target.value)}
-                  placeholder="如: 52001"
+                  placeholder="如: 42001"
                   min={1024}
                   max={65535}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-green-500"

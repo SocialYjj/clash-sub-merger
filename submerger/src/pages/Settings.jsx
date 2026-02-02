@@ -156,6 +156,7 @@ const AdminTokenSection = ({ showToast }) => {
   const [copiedId, setCopiedId] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);  // Token ID to delete
   const [configToken, setConfigToken] = useState(null);  // Token for visual config editor
+  const [showFormatSelector, setShowFormatSelector] = useState(null);  // Token ID for format selector
 
   useEffect(() => {
     fetchData();
@@ -243,14 +244,16 @@ const AdminTokenSection = ({ showToast }) => {
     }
   };
 
-  const copySubUrl = async (tokenId) => {
+  const copySubUrl = async (tokenId, format = 'base64') => {
     try {
       // Fetch full token from API
       const res = await request.get(`${API_BASE}/admin-tokens/${tokenId}`);
       const fullToken = res.data.token.token;
-      const url = `${window.location.origin}/sub?token=${fullToken}`;
+      let url = `${window.location.origin}/sub?token=${fullToken}`;
+      url += `&format=${format}`;
       navigator.clipboard.writeText(url);
       setCopiedId(tokenId);
+      setShowFormatSelector(null);
       setTimeout(() => setCopiedId(null), 2000);
       showToast?.('订阅地址已复制');
     } catch (err) {
@@ -388,7 +391,7 @@ const AdminTokenSection = ({ showToast }) => {
 
               <div className="flex items-center gap-2 ml-4">
                 <button
-                  onClick={() => copySubUrl(token.id)}
+                  onClick={() => setShowFormatSelector(token.id)}
                   className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
                   title="复制订阅地址"
                 >
@@ -677,6 +680,50 @@ const AdminTokenSection = ({ showToast }) => {
           showToast={showToast}
           isAdminToken={true}
         />
+      )}
+
+      {/* Format Selector Popup */}
+      {showFormatSelector && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowFormatSelector(null)}>
+          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-white">选择格式</h3>
+              <button onClick={() => setShowFormatSelector(null)} className="text-gray-400 hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-2">
+              <button
+                onClick={() => copySubUrl(showFormatSelector, 'base64')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">Base64</div>
+                <div className="text-xs text-gray-400 mt-1">通用订阅格式</div>
+              </button>
+              <button
+                onClick={() => copySubUrl(showFormatSelector, 'clash')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">Clash</div>
+                <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
+              </button>
+              <button
+                onClick={() => copySubUrl(showFormatSelector, 'socks')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">SOCKS (自动)</div>
+                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口（从42000开始）</div>
+              </button>
+              <button
+                onClick={() => copySubUrl(showFormatSelector, 'socks-manual')}
+                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+              >
+                <div className="font-medium">SOCKS (手动)</div>
+                <div className="text-xs text-gray-400 mt-1">仅使用手动配置的端口映射</div>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

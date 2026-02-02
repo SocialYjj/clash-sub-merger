@@ -114,7 +114,6 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
             </div>
           </div>
         </div>
-
         <div className="flex justify-end gap-3 mt-6">
           <button
             onClick={onClose}

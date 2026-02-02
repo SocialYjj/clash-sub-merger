@@ -2351,6 +2351,103 @@ async def get_merged_subscription(
                 }
             )
         
+        # SOCKS format output - minimal config with listeners
+        if format == 'socks' or format == 'socks-manual':
+            # Get custom config name
+            from urllib.parse import quote
+            encoded_name = quote(sub_name)
+            safe_name = ''.join(c for c in sub_name if c.isalnum() or c in ' _-' or '\u4e00' <= c <= '\u9fff')
+            if not safe_name:
+                safe_name = 'socks-config'
+            
+            # Filter out traffic info nodes (those starting with 📊)
+            socks_proxies = [p for p in proxies if not p.get('name', '').startswith('📊')]
+            
+            # Parse header to extract DNS configuration
+            dns_config = None
+            try:
+                header_yaml = yaml.load(header, Loader=YAMLLoader)
+                if isinstance(header_yaml, dict) and 'dns' in header_yaml:
+                    dns_config = header_yaml['dns']
+            except Exception as e:
+                logger.warning(f"Failed to parse DNS from header: {e}")
+            
+            # Build minimal YAML with only 4 sections
+            output_parts = []
+            
+            # 1. allow-lan
+            output_parts.append('allow-lan: true')
+            
+            # 2. DNS configuration (from template or fallback)
+            if dns_config:
+                output_parts.append('\ndns:')
+                output_parts.append(yaml.dump({'dns': dns_config}, allow_unicode=True, default_flow_style=False).replace('dns:\n', '').rstrip())
+            else:
+                # Fallback DNS config
+                fallback_dns = """
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 114.114.114.114
+  nameserver:
+    - https://doh.pub/dns-query"""
+                output_parts.append(fallback_dns)
+            
+            # 3. Listeners
+            output_parts.append('\nlisteners:')
+            
+            if format == 'socks-manual':
+                # Manual mode: only use configured port mappings
+                port_mappings = config.get('port_mappings', {})
+                if port_mappings:
+                    # Get current proxy names for validation (excluding traffic info nodes)
+                    proxy_names = {p.get('name', '') for p in socks_proxies}
+                    
+                    # Build listeners for valid mappings only
+                    listener_idx = 0
+                    for node_name, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                        if node_name in proxy_names:
+                            listener = {
+                                'name': f'mixed{listener_idx}',
+                                'type': 'mixed',
+                                'port': port,
+                                'proxy': node_name
+                            }
+                            output_parts.append(f'  - {json.dumps(listener, ensure_ascii=False, separators=(",",":"))}')
+                            listener_idx += 1
+            else:
+                # Auto mode: generate listeners for all nodes starting from port 42000
+                start_port = 42000
+                for idx, proxy in enumerate(socks_proxies):
+                    listener = {
+                        'name': f'mixed{idx}',
+                        'type': 'mixed',
+                        'port': start_port + idx,
+                        'proxy': proxy.get('name', '')
+                    }
+                    output_parts.append(f'  - {json.dumps(listener, ensure_ascii=False, separators=(",",":"))}')
+            
+            # 4. Proxies (excluding traffic info nodes)
+            output_parts.append('\nproxies:')
+            for proxy in socks_proxies:
+                output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+            
+            yaml_content = "\n".join(output_parts)
+            response_headers = {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}-socks.yaml",
+                "profile-title": encoded_name,
+                "profile-update-interval": "24",
+                "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+            }
+            
+            return PlainTextResponse(
+                yaml_content,
+                media_type='text/yaml',
+                headers=response_headers
+            )
+        
         # Clash YAML format output (default)
         output_parts = [f'name: {sub_name}\n' + header.rstrip()]
         
@@ -2406,7 +2503,7 @@ async def get_merged_subscription(
         
         yaml_content = "\n".join(output_parts)
         response_headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}.yaml",
             "profile-title": encoded_name,
             "profile-update-interval": "24",
             "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
