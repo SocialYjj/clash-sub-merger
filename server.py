@@ -13,6 +13,7 @@ import base64  # Used for node parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
 import signal  # Used for signal handling
+from contextlib import asynccontextmanager
 
 # Use C-accelerated YAML loader for better performance
 try:
@@ -112,6 +113,8 @@ class AppConfig:
     # Go Speedtest Service
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
     GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
+    GO_SPEEDTEST_ENABLED = os.environ.get('GO_SPEEDTEST_ENABLED', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
+    GO_SPEEDTEST_BIN = os.environ.get('GO_SPEEDTEST_BIN', '').strip()
     
     # Timeouts (seconds) - fine-grained control
     DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
@@ -155,6 +158,14 @@ class AppConfig:
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
 app = FastAPI(
     title="Clash Config Merger API",
     description="Modern subscription aggregation management panel for Clash/Mihomo",
@@ -170,7 +181,8 @@ app = FastAPI(
         {"name": "templates", "description": "Template management"},
         {"name": "speedtest", "description": "Speed test operations"},
         {"name": "stats", "description": "Statistics and analytics"},
-    ]
+    ],
+    lifespan=lifespan
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -201,16 +213,18 @@ app.add_middleware(GZipMiddleware, minimum_size=AppConfig.GZIP_MIN_SIZE)
 
 # ==================== Startup/Shutdown Events ====================
 
-@app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     logger.info("Starting up application...")
     
     # Start Go speedtest service
-    if start_go_speedtest_service():
-        logger.info("Go speedtest service started successfully")
+    if AppConfig.GO_SPEEDTEST_ENABLED:
+        if start_go_speedtest_service():
+            logger.info("Go speedtest service started successfully")
+        else:
+            logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
     else:
-        logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
+        logger.info("Go speedtest service disabled")
     
     # Initialize scheduler
     init_scheduler()
@@ -295,11 +309,12 @@ async def startup_event():
         logger.warning(f"Failed to schedule FlClash version check: {e}")
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down application...")
     stop_go_speedtest_service()
+    if http_client:
+        await http_client.aclose()
     logger.info("Application shutdown complete")
 # Security headers middleware
 @app.middleware("http")
@@ -503,11 +518,15 @@ def start_go_speedtest_service():
         return True
     
     # Find the speedtest executable
-    speedtest_dir = os.path.join(BASE_DIR, 'speedtest')
-    if sys.platform == 'win32':
-        speedtest_exe = os.path.join(speedtest_dir, 'speedtest.exe')
+    speedtest_exe = AppConfig.GO_SPEEDTEST_BIN
+    if speedtest_exe:
+        speedtest_dir = os.path.dirname(speedtest_exe) or BASE_DIR
     else:
-        speedtest_exe = os.path.join(speedtest_dir, 'speedtest')
+        speedtest_dir = os.path.join(BASE_DIR, 'speedtest')
+        if sys.platform == 'win32':
+            speedtest_exe = os.path.join(speedtest_dir, 'speedtest.exe')
+        else:
+            speedtest_exe = os.path.join(speedtest_dir, 'speedtest')
     
     if not os.path.exists(speedtest_exe):
         logger.error("Go speedtest executable not found at %s", speedtest_exe)
@@ -525,7 +544,7 @@ def start_go_speedtest_service():
         logger.info("Go speedtest service started (PID: %s)", GO_SPEEDTEST_PROCESS.pid)
         return True
     except FileNotFoundError:
-        logger.error("Go speedtest binary not found: %s", speedtest_path)
+        logger.error("Go speedtest binary not found: %s", speedtest_exe)
         return False
     except Exception as e:
         logger.error("Failed to start Go speedtest service: %s", e, exc_info=True)

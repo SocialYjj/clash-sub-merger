@@ -110,11 +110,8 @@ def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = De
     scheduler = get_scheduler()
     
     # Remove existing job if any
-    job_id = f"sub_refresh_{sub_id}"
-    try:
-        scheduler.remove_job(job_id)
-    except Exception:
-        pass
+    task_id = f"sub_refresh_{sub_id}"
+    scheduler.remove_job(task_id)
     
     if data.cron_expr:
         # Validate and add new job
@@ -123,15 +120,14 @@ def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = De
             trigger = CronTrigger.from_crontab(data.cron_expr)
             
             scheduler.add_job(
+                task_id,
+                data.cron_expr,
                 srv.refresh_subscription_job,
-                trigger=trigger,
-                args=[sub_id],
-                id=job_id,
-                replace_existing=True
+                sub_id
             )
             
-            job = scheduler.get_job(job_id)
-            next_run = job.next_run_time.timestamp() if job and job.next_run_time else None
+            job_info = scheduler.get_job_info(task_id)
+            next_run = job_info["next_run"].timestamp() if job_info and job_info.get("next_run") else None
             
             sub['cron_expr'] = data.cron_expr
             sub['next_update'] = int(next_run) if next_run else None
@@ -164,11 +160,8 @@ def remove_subscription_schedule(sub_id: str, _: bool = Depends(verify_session))
     from scheduler_service import get_scheduler
     scheduler = get_scheduler()
     
-    job_id = f"sub_refresh_{sub_id}"
-    try:
-        scheduler.remove_job(job_id)
-    except Exception:
-        pass
+    task_id = f"sub_refresh_{sub_id}"
+    scheduler.remove_job(task_id)
     
     sub['cron_expr'] = None
     sub['next_update'] = None
@@ -183,14 +176,5 @@ def list_scheduled_jobs(_: bool = Depends(verify_session)):
     """List all scheduled jobs"""
     from scheduler_service import get_scheduler
     scheduler = get_scheduler()
-    
-    jobs = []
-    for job in scheduler.get_jobs():
-        jobs.append({
-            "id": job.id,
-            "name": job.name,
-            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
-            "trigger": str(job.trigger)
-        })
-    
+    jobs = scheduler.list_jobs()
     return {"jobs": jobs, "count": len(jobs)}

@@ -85,7 +85,7 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
         try {
             const valueToSave = cronValue.trim() || null;
 
-            const response = await request.put(`${API_BASE}/subscriptions/${sub.id}/schedule`, {
+            const response = await request.put(`${API_BASE}/scheduler/subscriptions/${sub.id}`, {
                 cron_expr: valueToSave
             });
 

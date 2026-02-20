@@ -38,6 +38,8 @@ class AppConfig:
     # Go Speedtest Service
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
     GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
+    GO_SPEEDTEST_ENABLED = os.environ.get('GO_SPEEDTEST_ENABLED', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
+    GO_SPEEDTEST_BIN = os.environ.get('GO_SPEEDTEST_BIN', '').strip()
     
     # Timeouts (seconds) - fine-grained control
     DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
