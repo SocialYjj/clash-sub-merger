@@ -130,6 +130,8 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     # Count nodes and protocols (exclude info nodes)
     total_nodes = 0
     by_protocol = {}
+    best_node = None
+    best_latency = None
     
     for sub in enabled_subs:
         # Load subscription to count actual nodes (excluding info nodes)
@@ -143,6 +145,21 @@ def get_stats_overview(_: bool = Depends(verify_session)):
                 total_nodes += 1
                 ptype = proxy.get('type', 'unknown')
                 by_protocol[ptype] = by_protocol.get(ptype, 0) + 1
+
+                latency = proxy.get('last_latency')
+                if latency is not None:
+                    try:
+                        latency_value = float(latency)
+                    except (TypeError, ValueError):
+                        latency_value = None
+                    if latency_value is not None and latency_value > 0:
+                        if best_latency is None or latency_value < best_latency:
+                            transformed = NameTransformer.transform_name(proxy, sub['name'])
+                            best_latency = latency_value
+                            best_node = {
+                                "name": transformed.get('name', proxy.get('name', 'Unknown')),
+                                "latency": int(latency_value)
+                            }
         except Exception:
             pass
     
@@ -151,6 +168,23 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     for node in custom_nodes_list:
         ptype = node.get('type', 'unknown')
         by_protocol[ptype] = by_protocol.get(ptype, 0) + 1
+
+        if _is_info_node(node.get('name', '')):
+            continue
+        latency = node.get('last_latency')
+        if latency is not None:
+            try:
+                latency_value = float(latency)
+            except (TypeError, ValueError):
+                latency_value = None
+            if latency_value is not None and latency_value > 0:
+                if best_latency is None or latency_value < best_latency:
+                    transformed = NameTransformer.transform_name(node, 'Custom')
+                    best_latency = latency_value
+                    best_node = {
+                        "name": transformed.get('name', node.get('name', 'Unknown')),
+                        "latency": int(latency_value)
+                    }
     
     # Count users
     users = config.get('users', [])
@@ -184,7 +218,8 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         "admin_tokens": {
             "total": len(admin_tokens),
             "enabled": len(enabled_tokens)
-        }
+        },
+        "best_node": best_node
     }
 
 
