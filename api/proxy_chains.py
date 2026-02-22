@@ -70,6 +70,7 @@ def _get_all_nodes_for_chain():
                     'sub_name': sub['name'],
                     'node_index': i,
                     'node_name': transformed.get('name', proxy.get('name', 'Unknown')),
+                    'node_type': proxy.get('type', 'unknown'),
                     'type': proxy.get('type', 'unknown'),
                     'server': proxy.get('server', '')
                 })
@@ -84,6 +85,7 @@ def _get_all_nodes_for_chain():
             'sub_name': 'Custom',
             'node_index': i,
             'node_name': transformed.get('name', node.get('name', 'Unknown')),
+            'node_type': node.get('type', 'unknown'),
             'type': node.get('type', 'unknown'),
             'server': node.get('server', '')
         })

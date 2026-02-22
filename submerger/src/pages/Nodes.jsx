@@ -177,7 +177,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const fetchAvailableChainNodes = async () => {
     try {
       const res = await request.get(`${API_BASE}/proxy-chains/available-nodes`);
-      setAvailableChainNodes(res.data.nodes || []);
+      const nodes = (res.data.nodes || []).map(node => {
+        const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
+        const nodeType = node?.node_type ?? node?.type ?? '';
+        return {
+          ...node,
+          node_name: nodeName,
+          node_type: nodeType
+        };
+      });
+      setAvailableChainNodes(nodes);
     } catch (err) {
       console.error('Failed to fetch available chain nodes', err);
     }
@@ -955,16 +964,23 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     const [subId, nodeIndex] = nodeKey.split('|');
     const node = availableChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+    const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
 
     setChainRows(prev => {
       const newRows = [...prev];
       newRows[rowIndex][colIndex] = node ? {
         sub_id: node.sub_id,
         node_index: node.node_index,
-        node_name: node.node_name
+        node_name: nodeName
       } : null;
       return newRows;
     });
+  };
+
+  const getChainNodeLabel = (node) => {
+    const name = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
+    const type = node?.node_type ?? node?.type ?? '';
+    return type ? `${name} (${type})` : name;
   };
 
   const getChainNodeKey = (node) => {
@@ -2078,7 +2094,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {/* Use flat list like node management page */}
                                 {availableChainNodes.map(n => (
                                   <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
-                                    {n.node_name} ({n.node_type})
+                                    {getChainNodeLabel(n)}
                                   </option>
                                 ))}
                               </select>
@@ -2109,7 +2125,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
                       {/* Preview */}
                       <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
-                        预览: 我 → {row.map(n => n?.node_name || '?').join(' → ')} → 服务
+                        预览: 我 → {row.map(n => n?.node_name || n?.display_name || n?.name || '?').join(' → ')} → 服务
                       </div>
                     </div>
                   ))}
