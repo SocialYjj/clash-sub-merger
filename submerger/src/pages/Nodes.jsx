@@ -139,6 +139,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [editingChain, setEditingChain] = useState(null);
   const [chainName, setChainName] = useState('');
   const [chainRows, setChainRows] = useState([[null, null]]);
+  const [groupDrafts, setGroupDrafts] = useState({});
+  const [groupEditing, setGroupEditing] = useState({});
   const [deleteChainConfirm, setDeleteChainConfirm] = useState({ open: false, chainId: null });
   const [showAddDropdown, setShowAddDropdown] = useState(false);
 
@@ -396,7 +398,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
       // Build chain path for display
       const firstRow = chain.rows?.[0];
-      const chainPath = firstRow?.nodes?.map(n => n.node_name).join(' → ') || '';
+      const chainPath = firstRow?.nodes?.map(n => {
+        if (n?.type === 'group') return `组:${n.group_name || '落地池'}`;
+        return n.node_name;
+      }).join(' → ') || '';
 
       nodes.push({
         name: `🔗 ${chain.name}`,
@@ -928,11 +933,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (chain) {
       setChainName(chain.name);
       const rows = chain.rows.map(row =>
-        row.nodes.map(node => ({
-          sub_id: node.sub_id,
-          node_index: node.node_index,
-          node_name: node.node_name
-        }))
+        row.nodes.map(node => {
+          if (node?.type === 'group') {
+            return {
+              type: 'group',
+              group_name: node.group_name || '落地池',
+              group_strategy: node.group_strategy || 'load-balance',
+              lb_strategy: node.lb_strategy || 'round-robin',
+              group_nodes: (node.group_nodes || []).map(n => ({
+                type: 'node',
+                sub_id: n.sub_id,
+                node_index: n.node_index,
+                node_name: n.node_name
+              }))
+            };
+          }
+          return {
+            type: 'node',
+            sub_id: node.sub_id,
+            node_index: node.node_index,
+            node_name: node.node_name
+          };
+        })
       );
       setChainRows(rows);
       setEditingChain(chain);
@@ -941,6 +963,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       setChainRows([[null, null]]);
       setEditingChain(null);
     }
+    setGroupEditing({});
+    setGroupDrafts({});
     setShowChainModal(true);
   };
 
@@ -955,6 +979,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setChainRows(prev => {
       const newRows = [...prev];
       newRows[rowIndex] = [...newRows[rowIndex], null];
+      // If last was a group, keep it at the end
+      const lastIdx = newRows[rowIndex].length - 2;
+      if (newRows[rowIndex][lastIdx]?.type === 'group') {
+        const groupCell = newRows[rowIndex][lastIdx];
+        newRows[rowIndex][lastIdx] = null;
+        newRows[rowIndex][lastIdx + 1] = groupCell;
+      }
       return newRows;
     });
   };
@@ -964,6 +995,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const newRows = [...prev];
       if (newRows[rowIndex].length > 2) {
         newRows[rowIndex] = newRows[rowIndex].filter((_, i) => i !== colIndex);
+        // Ensure group stays at the end
+        const groupIdx = newRows[rowIndex].findIndex(n => n?.type === 'group');
+        if (groupIdx !== -1 && groupIdx !== newRows[rowIndex].length - 1) {
+          const groupCell = newRows[rowIndex][groupIdx];
+          newRows[rowIndex].splice(groupIdx, 1);
+          newRows[rowIndex].push(groupCell);
+        }
       }
       return newRows;
     });
@@ -996,10 +1034,119 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setChainRows(prev => {
       const newRows = [...prev];
       newRows[rowIndex][colIndex] = node ? {
+        type: 'node',
         sub_id: node.sub_id,
         node_index: node.node_index,
         node_name: nodeName
       } : null;
+      return newRows;
+    });
+  };
+
+  const updateChainCellType = (rowIndex, colIndex, cellType) => {
+    setChainRows(prev => {
+      const newRows = [...prev];
+      if (cellType === 'group') {
+        const defaultName = chainName.trim() ? `${chainName.trim()} 落地池` : '落地池';
+        newRows[rowIndex][colIndex] = {
+          type: 'group',
+          group_name: defaultName,
+          group_strategy: 'load-balance',
+          lb_strategy: 'round-robin',
+          group_nodes: []
+        };
+      } else {
+        newRows[rowIndex][colIndex] = null;
+      }
+      return newRows;
+    });
+
+    const key = getGroupCellKey(rowIndex, colIndex);
+    if (cellType === 'group') {
+      setGroupDrafts(prev => ({ ...prev, [key]: [] }));
+      setGroupEditing(prev => ({ ...prev, [key]: true }));
+    } else {
+      setGroupEditing(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const updateChainGroup = (rowIndex, colIndex, patch) => {
+    setChainRows(prev => {
+      const newRows = [...prev];
+      const current = newRows[rowIndex][colIndex];
+      if (!current || current.type !== 'group') return newRows;
+      newRows[rowIndex][colIndex] = { ...current, ...patch };
+      return newRows;
+    });
+  };
+
+  const updateChainGroupMembers = (rowIndex, colIndex, selectedKeys) => {
+    const nodes = selectedKeys.map(key => {
+      const [subId, nodeIndex] = key.split('|');
+      const node = orderedChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+      const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
+      return node ? {
+        type: 'node',
+        sub_id: node.sub_id,
+        node_index: node.node_index,
+        node_name: nodeName
+      } : null;
+    }).filter(Boolean);
+    updateChainGroup(rowIndex, colIndex, { group_nodes: nodes });
+  };
+
+  const getGroupCellKey = (rowIndex, colIndex) => `${rowIndex}-${colIndex}`;
+
+  const beginGroupEdit = (rowIndex, colIndex) => {
+    const key = getGroupCellKey(rowIndex, colIndex);
+    const current = chainRows[rowIndex]?.[colIndex];
+    const keys = (current?.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+    setGroupDrafts(prev => ({ ...prev, [key]: keys }));
+    setGroupEditing(prev => ({ ...prev, [key]: true }));
+  };
+
+  const toggleGroupDraft = (rowIndex, colIndex, nodeKey) => {
+    const key = getGroupCellKey(rowIndex, colIndex);
+    setGroupDrafts(prev => {
+      const cur = prev[key] || [];
+      const next = cur.includes(nodeKey) ? cur.filter(k => k !== nodeKey) : [...cur, nodeKey];
+      return { ...prev, [key]: next };
+    });
+  };
+
+  const setGroupDraftKeys = (rowIndex, colIndex, keys) => {
+    const key = getGroupCellKey(rowIndex, colIndex);
+    setGroupDrafts(prev => ({ ...prev, [key]: keys }));
+  };
+
+  const confirmGroupDraft = (rowIndex, colIndex) => {
+    const key = getGroupCellKey(rowIndex, colIndex);
+    const keys = groupDrafts[key] || [];
+    updateChainGroupMembers(rowIndex, colIndex, keys);
+    setGroupEditing(prev => ({ ...prev, [key]: false }));
+  };
+
+  const toggleChainGroupMember = (rowIndex, colIndex, nodeKey) => {
+    setChainRows(prev => {
+      const newRows = [...prev];
+      const current = newRows[rowIndex]?.[colIndex];
+      if (!current || current.type !== 'group') return newRows;
+      const selectedKeys = (current.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+      const nextKeys = selectedKeys.includes(nodeKey)
+        ? selectedKeys.filter(k => k !== nodeKey)
+        : [...selectedKeys, nodeKey];
+      const nodes = nextKeys.map(key => {
+        const [subId, nodeIndex] = key.split('|');
+        const node = orderedChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+        const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
+        return node ? {
+          type: 'node',
+          sub_id: node.sub_id,
+          node_index: node.node_index,
+          node_name: nodeName
+        } : null;
+      }).filter(Boolean);
+      newRows[rowIndex][colIndex] = { ...current, group_nodes: nodes };
       return newRows;
     });
   };
@@ -1011,7 +1158,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   const getChainNodeKey = (node) => {
-    if (!node) return '';
+    if (!node || node.type === 'group') return '';
     return `${node.sub_id}|${node.node_index}`;
   };
 
@@ -1026,16 +1173,49 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         showToast?.('请选择所有节点', 'error');
         return;
       }
+      for (let i = 0; i < row.length; i++) {
+        const node = row[i];
+        if (node?.type === 'group') {
+          if (i !== row.length - 1) {
+            showToast?.('组只能放在最后一跳', 'error');
+            return;
+          }
+          if (!node.group_name || !node.group_name.trim()) {
+            showToast?.('请填写组名称', 'error');
+            return;
+          }
+          if (!node.group_nodes || node.group_nodes.length === 0) {
+            showToast?.('组内至少选择一个节点', 'error');
+            return;
+          }
+        }
+      }
     }
 
     const payload = {
       name: chainName.trim(),
       rows: chainRows.map(row => ({
-        nodes: row.map(node => ({
-          sub_id: node.sub_id,
-          node_index: node.node_index,
-          node_name: node.node_name
-        }))
+        nodes: row.map(node => {
+          if (node.type === 'group') {
+            return {
+              type: 'group',
+              group_name: node.group_name,
+              group_strategy: node.group_strategy,
+              lb_strategy: node.lb_strategy,
+              group_nodes: (node.group_nodes || []).map(n => ({
+                sub_id: n.sub_id,
+                node_index: n.node_index,
+                node_name: n.node_name
+              }))
+            };
+          }
+          return {
+            type: 'node',
+            sub_id: node.sub_id,
+            node_index: node.node_index,
+            node_name: node.node_name
+          };
+        })
       }))
     };
 
@@ -2106,36 +2286,170 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                       <div className="space-y-2">
                         <div className="text-sm text-gray-500 text-center">我</div>
                         
-                        {row.map((node, colIndex) => (
-                          <React.Fragment key={colIndex}>
-                            <div className="flex justify-center">
-                              <ArrowRight size={16} className="text-gray-600 rotate-90" />
-                            </div>
-                            <div className="relative">
-                              <select
-                                value={getChainNodeKey(node)}
-                                onChange={(e) => updateChainNode(rowIndex, colIndex, e.target.value)}
-                                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 appearance-none"
-                              >
-                                <option value="">选择节点</option>
-                                {/* Use flat list like node management page */}
-                                {orderedChainNodes.map(n => (
-                                  <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
-                                    {getChainNodeLabel(n)}
-                                  </option>
-                                ))}
-                              </select>
-                              {row.length > 2 && (
-                                <button
-                                  onClick={() => removeChainColumn(rowIndex, colIndex)}
-                                  className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-400"
-                                >
-                                  ×
-                                </button>
-                              )}
-                            </div>
-                          </React.Fragment>
-                        ))}
+                        {row.map((node, colIndex) => {
+                          const isLast = colIndex === row.length - 1;
+                          const cellType = node?.type || 'node';
+                          const selectedKeys = (node?.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+                          return (
+                            <React.Fragment key={colIndex}>
+                              <div className="flex justify-center">
+                                <ArrowRight size={16} className="text-gray-600 rotate-90" />
+                              </div>
+                              <div className="relative space-y-2">
+                                {isLast && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-gray-500">类型</span>
+                                    <select
+                                      value={cellType}
+                                      onChange={(e) => updateChainCellType(rowIndex, colIndex, e.target.value)}
+                                      className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                                    >
+                                      <option value="node">节点</option>
+                                      <option value="group">组(落地池)</option>
+                                    </select>
+                                  </div>
+                                )}
+
+                                {cellType === 'group' ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      type="text"
+                                      value={node?.group_name || ''}
+                                      onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_name: e.target.value })}
+                                      placeholder="组名称"
+                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                    />
+                                    <select
+                                      value={node?.group_strategy || 'load-balance'}
+                                      onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_strategy: e.target.value })}
+                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                    >
+                                      <option value="load-balance">负载均衡(随机/轮询)</option>
+                                      <option value="url-test">自动测速</option>
+                                      <option value="fallback">故障切换</option>
+                                    </select>
+
+                                    {node?.group_strategy === 'load-balance' && (
+                                      <select
+                                        value={node?.lb_strategy || 'round-robin'}
+                                        onChange={(e) => updateChainGroup(rowIndex, colIndex, { lb_strategy: e.target.value })}
+                                        className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                      >
+                                        <option value="round-robin">轮询 (round-robin)</option>
+                                        <option value="consistent-hashing">同目标固定 (consistent-hashing)</option>
+                                        <option value="sticky-sessions">同会话固定 (sticky-sessions)</option>
+                                      </select>
+                                    )}
+
+                                    {(() => {
+                                      const cellKey = getGroupCellKey(rowIndex, colIndex);
+                                      const isEditing = groupEditing[cellKey];
+                                      const draftKeys = groupDrafts[cellKey] || [];
+                                      const selectedNames = (node?.group_nodes || []).map(n => n.node_name);
+
+                                      if (!isEditing) {
+                                        return (
+                                          <div className="space-y-2">
+                                            <div className="text-xs text-gray-500">已选 {selectedNames.length} 个</div>
+                                            {selectedNames.length > 0 ? (
+                                              <div className="flex flex-wrap gap-1">
+                                                {selectedNames.map((name, i) => (
+                                                  <span key={`${name}-${i}`} className="px-2 py-0.5 bg-gray-700 text-gray-200 rounded text-xs">{name}</span>
+                                                ))}
+                                              </div>
+                                            ) : (
+                                              <div className="text-xs text-gray-500">尚未选择落地节点</div>
+                                            )}
+                                            <button
+                                              type="button"
+                                              onClick={() => beginGroupEdit(rowIndex, colIndex)}
+                                              className="text-xs text-blue-400 hover:text-blue-300"
+                                            >
+                                              修改
+                                            </button>
+                                          </div>
+                                        );
+                                      }
+
+                                      return (
+                                        <div className="space-y-2">
+                                          <div className="flex items-center justify-between text-xs text-gray-500">
+                                            <span>点击选择，已选 {draftKeys.length} 个</span>
+                                            <div className="flex gap-2">
+                                              <button
+                                                type="button"
+                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, orderedChainNodes.map(n => `${n.sub_id}|${n.node_index}`))}
+                                                className="text-blue-400 hover:text-blue-300"
+                                              >
+                                                全选
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, [])}
+                                                className="text-gray-400 hover:text-gray-300"
+                                              >
+                                                清空
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="max-h-40 overflow-y-auto border border-gray-700 rounded-lg bg-gray-800">
+                                            {orderedChainNodes.map(n => {
+                                              const key = `${n.sub_id}|${n.node_index}`;
+                                              const checked = draftKeys.includes(key);
+                                              return (
+                                                <div
+                                                  key={key}
+                                                  onClick={() => toggleGroupDraft(rowIndex, colIndex, key)}
+                                                  className="px-3 py-2 text-sm text-white hover:bg-gray-700/50 cursor-pointer flex items-center justify-between"
+                                                >
+                                                  <span className="truncate">{getChainNodeLabel(n)}</span>
+                                                  <span className={checked ? 'text-blue-400' : 'text-gray-600'}>{checked ? '已选' : ''}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-xs text-gray-500">选择落地节点，系统会自动生成链路组</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => confirmGroupDraft(rowIndex, colIndex)}
+                                              className="px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30"
+                                            >
+                                              确定
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                ) : (
+                                  <select
+                                    value={getChainNodeKey(node)}
+                                    onChange={(e) => updateChainNode(rowIndex, colIndex, e.target.value)}
+                                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 appearance-none"
+                                  >
+                                    <option value="">选择节点</option>
+                                    {/* Use flat list like node management page */}
+                                    {orderedChainNodes.map(n => (
+                                      <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
+                                        {getChainNodeLabel(n)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                {row.length > 2 && (
+                                  <button
+                                    onClick={() => removeChainColumn(rowIndex, colIndex)}
+                                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-400"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                            </React.Fragment>
+                          );
+                        })}
 
                         <div className="flex justify-center">
                           <ArrowRight size={16} className="text-gray-600 rotate-90" />

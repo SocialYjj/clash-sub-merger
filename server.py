@@ -2265,6 +2265,8 @@ async def get_merged_subscription(
 
         existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
+        pool_groups_by_country = {}
+
         def unique_chain_name(base: str) -> str:
             if base not in existing_names:
                 existing_names.add(base)
@@ -2275,6 +2277,54 @@ async def get_merged_subscription(
             name = f"{base} ({idx})"
             existing_names.add(name)
             return name
+
+        existing_group_names = {g.get('name') for g in proxy_groups if isinstance(g, dict) and g.get('name')}
+
+        def unique_group_name(base: str) -> str:
+            if base not in existing_group_names:
+                existing_group_names.add(base)
+                return base
+            idx = 2
+            while f"{base} ({idx})" in existing_group_names:
+                idx += 1
+            name = f"{base} ({idx})"
+            existing_group_names.add(name)
+            return name
+
+        def build_chain_entry(chain_display_name: str, chain_nodes: list, add_to_manual: bool = True, include_country_info: bool = True) -> str | None:
+            """Build chain proxies for given nodes and return the final chain proxy name."""
+            if len(chain_nodes) < 2:
+                return None
+            last_node = chain_nodes[-1]
+            chain_proxy = dict(last_node)
+
+            last_node_name = last_node.get('name', '')
+            last_node_server = last_node.get('server', '')
+            chain_country_info = extract_country_from_name(last_node_name, last_node_server)
+
+            chain_proxy['name'] = unique_chain_name(chain_display_name)
+            if include_country_info and chain_country_info:
+                chain_proxy['_country_info'] = chain_country_info
+
+            if len(chain_nodes) == 2:
+                chain_proxy['dialer-proxy'] = chain_nodes[0]['name']
+            else:
+                prev_proxy_name = chain_nodes[0]['name']
+                for i in range(1, len(chain_nodes) - 1):
+                    intermediate = dict(chain_nodes[i])
+                    intermediate_name = unique_chain_name(f"{chain_display_name} (via {i})")
+                    intermediate['name'] = intermediate_name
+                    intermediate['dialer-proxy'] = prev_proxy_name
+                    chain_proxies.append(intermediate)
+                    if add_to_manual:
+                        chain_proxy_names.append(intermediate_name)
+                    prev_proxy_name = intermediate_name
+                chain_proxy['dialer-proxy'] = prev_proxy_name
+
+            chain_proxies.append(chain_proxy)
+            if add_to_manual:
+                chain_proxy_names.append(chain_proxy['name'])
+            return chain_proxy['name']
 
         
         for chain in proxy_chains:
@@ -2290,58 +2340,109 @@ async def get_merged_subscription(
                 # For chain [A, B, C]: B.dialer-proxy = A, C.dialer-proxy = B
                 # We create a new proxy entry based on the last node with dialer-proxy set
                 
-                # Find all nodes in the chain
+                # Split base nodes and optional group (group must be last)
+                base_node_refs = []
+                group_spec = None
+                for idx, node_ref in enumerate(nodes):
+                    if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
+                        if idx != len(nodes) - 1:
+                            logger.warning("Proxy chain group must be the last node: %s", chain.get('name'))
+                            group_spec = None
+                            base_node_refs = []
+                        else:
+                            group_spec = node_ref
+                        break
+                    base_node_refs.append(node_ref)
+
+                if not base_node_refs:
+                    continue
+
+                # Resolve base nodes
                 chain_node_proxies = []
-                for node_ref in nodes:
+                for node_ref in base_node_refs:
                     node_proxy = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
                     if node_proxy:
                         chain_node_proxies.append(dict(node_proxy))
-                
-                if len(chain_node_proxies) < 2:
+
+                if len(chain_node_proxies) < 1:
                     continue
-                
-                # Create chain proxy entry based on the last node
-                last_node = chain_node_proxies[-1]
-                chain_proxy = dict(last_node)
-                
-                # Extract country info from the last node (exit node) for grouping
-                last_node_name = last_node.get('name', '')
-                last_node_server = last_node.get('server', '')
-                chain_country_info = extract_country_from_name(last_node_name, last_node_server)
-                
-                # Set chain name
+
+                # Set chain display name (with row suffix when multiple rows)
                 chain_name = chain['name']
                 if len(chain.get('rows', [])) > 1:
                     chain_name = f"{chain_name} #{row_idx + 1}"
-                chain_proxy['name'] = unique_chain_name(f"🔗 {chain_name}")
-                
-                # Store country info for later grouping
-                if chain_country_info:
-                    chain_proxy['_country_info'] = chain_country_info
-                
-                # Set dialer-proxy to the second-to-last node
-                # For longer chains, we need intermediate proxies
-                if len(chain_node_proxies) == 2:
-                    # Simple 2-node chain: last node uses first as dialer-proxy
-                    chain_proxy['dialer-proxy'] = chain_node_proxies[0]['name']
+
+                if group_spec:
+                    group_nodes = group_spec.get('group_nodes', []) or []
+                    member_proxies = []
+                    for member_ref in group_nodes:
+                        node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
+                        if node_proxy:
+                            member_proxies.append(dict(node_proxy))
+
+                    if not member_proxies:
+                        continue
+
+                    chain_member_names = []
+                    pool_countries = set()
+                    for member_proxy in member_proxies:
+                        chain_nodes = chain_node_proxies + [member_proxy]
+                        chain_name_full = f"🔗 {chain_name}"
+                        chain_proxy_name = build_chain_entry(chain_name_full, chain_nodes, add_to_manual=False, include_country_info=False)
+                        if chain_proxy_name:
+                            chain_member_names.append(chain_proxy_name)
+
+                        # Collect country group from exit node for pool placement
+                        country_info = member_proxy.get('_country')
+                        if country_info and country_info.get('flag') and country_info.get('country'):
+                            pool_countries.add(f"{country_info['flag']} {country_info['country']}")
+                        else:
+                            info = extract_country_from_name(member_proxy.get('name', ''), member_proxy.get('server', ''))
+                            if info:
+                                pool_countries.add(f"{info['flag']} {info['country']}")
+
+                    if not chain_member_names:
+                        continue
+
+                    # Build group for chain members
+                    group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
+                    group_name = unique_group_name(f"🔀 {group_base_name}")
+                    strategy = (group_spec.get('group_strategy') or 'load-balance').strip()
+                    strategy = strategy if strategy in ['url-test', 'fallback', 'load-balance'] else 'load-balance'
+
+                    group_cfg = {
+                        'name': group_name,
+                        'type': strategy,
+                        'proxies': chain_member_names
+                    }
+                    if strategy in ['url-test', 'fallback']:
+                        group_cfg['url'] = group_spec.get('group_url') or 'http://www.gstatic.com/generate_204'
+                        group_cfg['interval'] = int(group_spec.get('group_interval') or 300)
+                    if strategy == 'url-test':
+                        group_cfg['tolerance'] = int(group_spec.get('group_tolerance') or 50)
+                    if strategy == 'load-balance':
+                        lb_strategy = (group_spec.get('lb_strategy') or 'round-robin').strip()
+                        if lb_strategy not in ['round-robin', 'consistent-hashing', 'sticky-sessions']:
+                            lb_strategy = 'round-robin'
+                        group_cfg['strategy'] = lb_strategy
+
+                    # Insert pool group between fallback and country groups
+                    insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') == '🔯 故障转移'), -1)
+                    if insert_idx != -1:
+                        proxy_groups.insert(insert_idx + 1, group_cfg)
+                    else:
+                        proxy_groups.append(group_cfg)
+                    chain_proxy_names.append(group_name)
+
+                    # Map pool group into country groups
+                    for country_name in pool_countries:
+                        pool_groups_by_country.setdefault(country_name, []).append(group_name)
                 else:
-                    # Multi-node chain: create intermediate proxies
-                    # For [A, B, C]: create B' with dialer-proxy=A, then C' with dialer-proxy=B'
-                    prev_proxy_name = chain_node_proxies[0]['name']
-                    
-                    for i in range(1, len(chain_node_proxies) - 1):
-                        intermediate = dict(chain_node_proxies[i])
-                        intermediate_name = unique_chain_name(f"🔗 {chain_name} (via {i})")
-                        intermediate['name'] = intermediate_name
-                        intermediate['dialer-proxy'] = prev_proxy_name
-                        chain_proxies.append(intermediate)
-                        chain_proxy_names.append(intermediate_name)
-                        prev_proxy_name = intermediate_name
-                    
-                    chain_proxy['dialer-proxy'] = prev_proxy_name
-                
-                chain_proxies.append(chain_proxy)
-                chain_proxy_names.append(chain_proxy['name'])
+                    # Normal chain (no group)
+                    if len(chain_node_proxies) < 2:
+                        continue
+                    chain_name_full = f"🔗 {chain_name}"
+                    build_chain_entry(chain_name_full, chain_node_proxies, add_to_manual=True)
         
         # Add chain proxies to the proxies list
         # Position: after custom nodes, before subscription nodes
@@ -2366,7 +2467,7 @@ async def get_merged_subscription(
             # Insert chain proxies after custom nodes
             proxies = proxies[:custom_node_end_idx] + chain_proxies + proxies[custom_node_end_idx:]
             
-            # Add chain proxies to corresponding country groups
+            # Add chain proxies to corresponding country groups (only when country info is present)
             for chain_proxy in chain_proxies:
                 chain_proxy_name = chain_proxy.get('name', '')
                 # Use stored country info from exit node
@@ -2381,6 +2482,17 @@ async def get_merged_subscription(
                             break
                     # Clean up temporary field before output
                     del chain_proxy['_country_info']
+
+            # Add pool groups to corresponding country groups
+            for country_group_name, group_names in pool_groups_by_country.items():
+                for group in proxy_groups:
+                    if group.get('name') == country_group_name:
+                        current = group.get('proxies', [])
+                        for gname in group_names:
+                            if gname not in current:
+                                current.insert(0, gname)
+                        group['proxies'] = current
+                        break
         
         # Add traffic info nodes and chain proxies to manual select group
         if traffic_info_names or chain_proxy_names:

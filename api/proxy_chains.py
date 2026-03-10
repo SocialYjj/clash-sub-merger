@@ -27,9 +27,16 @@ YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 # ==================== Data Models ====================
 
 class ProxyChainNode(BaseModel):
-    sub_id: str
-    node_index: int
-    node_name: str
+    # type: 'node' (default) or 'group'
+    type: str = 'node'
+    sub_id: str | None = None
+    node_index: int | None = None
+    node_name: str | None = None
+    # group fields (used when type == 'group')
+    group_name: str | None = None
+    group_strategy: str | None = None
+    lb_strategy: str | None = None
+    group_nodes: list | None = None
 
 
 class ProxyChainRow(BaseModel):
