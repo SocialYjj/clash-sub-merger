@@ -47,6 +47,7 @@ from core import (
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
+from services.proxy_filter import ProxyFilter
 from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP, detect_country
 from services.node_parser import parse_node_link
 from geoip_service import GeoIPService, lookup_ip_online
@@ -473,6 +474,44 @@ def find_proxy_chain_by_id(config: dict, chain_id: str) -> Optional[dict]:
     for chain in config.get('proxy_chains', []):
         if chain['id'] == chain_id:
             return chain
+    return None
+
+def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
+    """Get a proxy node by reference (sub_id + node_index) with transformed name.
+
+    Returns a proxy dict aligned with ConfigMerger naming, or None if not found/invalid.
+    """
+    config = load_config()
+
+    # Custom nodes
+    if sub_id == 'custom':
+        custom_nodes = config.get('custom_nodes', [])
+        if 0 <= node_index < len(custom_nodes):
+            node = custom_nodes[node_index]
+            # Strip metadata fields not part of Clash proxy config
+            exclude_fields = {
+                'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
+                'last_peak_speed', 'last_speed_time', 'geoip'
+            }
+            proxy = {k: v for k, v in node.items() if k not in exclude_fields}
+            proxy = ProxyFilter.sanitize_proxy(proxy)
+            return NameTransformer.transform_name(proxy, 'Custom')
+        return None
+
+    # Subscription nodes
+    sub = find_subscription_by_id(config, sub_id)
+    source_name = sub['name'] if sub else sub_id
+    try:
+        cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+        proxies = cfg.get('proxies', []) if cfg else []
+        if 0 <= node_index < len(proxies):
+            proxy = proxies[node_index]
+            if not ProxyFilter.is_valid_proxy(proxy):
+                return None
+            proxy = ProxyFilter.sanitize_proxy(proxy)
+            return NameTransformer.transform_name(proxy, source_name)
+    except Exception as e:
+        logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
     return None
 
 # ==================== Request Deduplication ====================
@@ -2223,6 +2262,20 @@ async def get_merged_subscription(
         proxy_chains = config.get('proxy_chains', [])
         chain_proxies = []
         chain_proxy_names = []
+
+        existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
+
+        def unique_chain_name(base: str) -> str:
+            if base not in existing_names:
+                existing_names.add(base)
+                return base
+            idx = 2
+            while f"{base} ({idx})" in existing_names:
+                idx += 1
+            name = f"{base} ({idx})"
+            existing_names.add(name)
+            return name
+
         
         for chain in proxy_chains:
             if not chain.get('enabled', True):
@@ -2260,7 +2313,7 @@ async def get_merged_subscription(
                 chain_name = chain['name']
                 if len(chain.get('rows', [])) > 1:
                     chain_name = f"{chain_name} #{row_idx + 1}"
-                chain_proxy['name'] = f"🔗 {chain_name}"
+                chain_proxy['name'] = unique_chain_name(f"🔗 {chain_name}")
                 
                 # Store country info for later grouping
                 if chain_country_info:
@@ -2278,7 +2331,7 @@ async def get_merged_subscription(
                     
                     for i in range(1, len(chain_node_proxies) - 1):
                         intermediate = dict(chain_node_proxies[i])
-                        intermediate_name = f"🔗 {chain_name} (via {i})"
+                        intermediate_name = unique_chain_name(f"🔗 {chain_name} (via {i})")
                         intermediate['name'] = intermediate_name
                         intermediate['dialer-proxy'] = prev_proxy_name
                         chain_proxies.append(intermediate)

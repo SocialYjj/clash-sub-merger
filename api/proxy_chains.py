@@ -12,6 +12,7 @@ from core.dependencies import verify_session
 from core.database import load_config, save_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.proxy_filter import ProxyFilter
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,9 @@ def _get_all_nodes_for_chain():
         try:
             sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
             for i, proxy in enumerate(sub_data.get('proxies', [])):
+                # Skip invalid/info nodes but keep original index
+                if not ProxyFilter.is_valid_proxy(proxy):
+                    continue
                 transformed = NameTransformer.transform_name(proxy, sub['name'])
                 nodes.append({
                     'sub_id': sub['id'],

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
@@ -451,6 +451,76 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return ['all', ...Array.from(srcs)];
   }, [subscriptions, customNodes]);
 
+  const compareNodes = useCallback((a, b) => {
+    // Custom nodes first
+    if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
+    if (a.sourceType !== 'custom' && b.sourceType === 'custom') return 1;
+
+    // Chain nodes second
+    if (a.sourceType === 'chain' && b.sourceType !== 'chain' && b.sourceType !== 'custom') return -1;
+    if (a.sourceType !== 'chain' && a.sourceType !== 'custom' && b.sourceType === 'chain') return 1;
+
+    // If both are custom, keep original order (by idx)
+    if (a.sourceType === 'custom' && b.sourceType === 'custom') {
+      return a.idx - b.idx;
+    }
+
+    // If both are chain, keep original order (by idx)
+    if (a.sourceType === 'chain' && b.sourceType === 'chain') {
+      return a.idx - b.idx;
+    }
+
+    // For non-custom nodes, apply secondary sort with direction
+    const dir = sortOrder === 'asc' ? 1 : -1;
+
+    if (sortBy === 'name') return dir * (a.name || '').localeCompare(b.name || '');
+    if (sortBy === 'type') return dir * (a.type || '').localeCompare(b.type || '');
+    if (sortBy === 'source') return dir * (a.source || '').localeCompare(b.source || '');
+    if (sortBy === 'region') return dir * (a.region || '').localeCompare(b.region || '');
+    if (sortBy === 'latency') {
+      // Untested nodes go to the end
+      if (a.latency === undefined && b.latency === undefined) return (a.name || '').localeCompare(b.name || '');
+      if (a.latency === undefined) return 1;
+      if (b.latency === undefined) return -1;
+      if (a.latency === null || a.latency < 0) return 1;
+      if (b.latency === null || b.latency < 0) return -1;
+      return dir * (a.latency - b.latency);
+    }
+    if (sortBy === 'speed') {
+      // Untested nodes go to the end
+      if (a.speed === undefined && b.speed === undefined) return (a.name || '').localeCompare(b.name || '');
+      if (a.speed === undefined) return 1;
+      if (b.speed === undefined) return -1;
+      return dir * (a.speed - b.speed);
+    }
+    return 0;
+  }, [sortBy, sortOrder]);
+
+  const orderedChainNodes = useMemo(() => {
+    const nodes = [...availableChainNodes];
+    if (!nodes.length) return nodes;
+
+    // Build order map from current node management ordering (excluding chain nodes)
+    const sortable = allNodes.filter(n => n.sourceType !== 'chain');
+    sortable.sort(compareNodes);
+    const orderMap = new Map();
+    sortable.forEach((n, idx) => {
+      const key = `${n.sourceId}|${n.idx}`;
+      orderMap.set(key, idx);
+    });
+
+    nodes.sort((a, b) => {
+      const ka = `${a.sub_id}|${a.node_index}`;
+      const kb = `${b.sub_id}|${b.node_index}`;
+      const ia = orderMap.has(ka) ? orderMap.get(ka) : Number.POSITIVE_INFINITY;
+      const ib = orderMap.has(kb) ? orderMap.get(kb) : Number.POSITIVE_INFINITY;
+      if (ia === ib) return 0;
+      return ia - ib;
+    });
+
+    return nodes;
+  }, [availableChainNodes, allNodes, compareNodes]);
+
   // Filter and sort
   const filteredNodes = useMemo(() => {
     let result = allNodes;
@@ -486,50 +556,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
 
     // Primary sort: custom nodes first, then chain nodes, then subscription nodes
-    result.sort((a, b) => {
-      // Custom nodes first
-      if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
-      if (a.sourceType !== 'custom' && b.sourceType === 'custom') return 1;
-
-      // Chain nodes second
-      if (a.sourceType === 'chain' && b.sourceType !== 'chain' && b.sourceType !== 'custom') return -1;
-      if (a.sourceType !== 'chain' && a.sourceType !== 'custom' && b.sourceType === 'chain') return 1;
-
-      // If both are custom, keep original order (by idx)
-      if (a.sourceType === 'custom' && b.sourceType === 'custom') {
-        return a.idx - b.idx;
-      }
-
-      // If both are chain, keep original order (by idx)
-      if (a.sourceType === 'chain' && b.sourceType === 'chain') {
-        return a.idx - b.idx;
-      }
-
-      // For non-custom nodes, apply secondary sort with direction
-      const dir = sortOrder === 'asc' ? 1 : -1;
-      
-      if (sortBy === 'name') return dir * (a.name || '').localeCompare(b.name || '');
-      if (sortBy === 'type') return dir * (a.type || '').localeCompare(b.type || '');
-      if (sortBy === 'source') return dir * (a.source || '').localeCompare(b.source || '');
-      if (sortBy === 'region') return dir * (a.region || '').localeCompare(b.region || '');
-      if (sortBy === 'latency') {
-        // Untested nodes go to the end
-        if (a.latency === undefined && b.latency === undefined) return (a.name || '').localeCompare(b.name || '');
-        if (a.latency === undefined) return 1;
-        if (b.latency === undefined) return -1;
-        if (a.latency === null || a.latency < 0) return 1;
-        if (b.latency === null || b.latency < 0) return -1;
-        return dir * (a.latency - b.latency);
-      }
-      if (sortBy === 'speed') {
-        // Untested nodes go to the end
-        if (a.speed === undefined && b.speed === undefined) return (a.name || '').localeCompare(b.name || '');
-        if (a.speed === undefined) return 1;
-        if (b.speed === undefined) return -1;
-        return dir * (a.speed - b.speed);
-      }
-      return 0;
-    });
+    result.sort(compareNodes);
 
     return result;
   }, [allNodes, search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
@@ -2092,7 +2119,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               >
                                 <option value="">选择节点</option>
                                 {/* Use flat list like node management page */}
-                                {availableChainNodes.map(n => (
+                                {orderedChainNodes.map(n => (
                                   <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
                                     {getChainNodeLabel(n)}
                                   </option>
