@@ -1971,9 +1971,6 @@ async def get_merged_subscription(
         
         # Filter proxies based on user allocations (specific nodes)
         if user_allocations is not None:
-            # Import NameTransformer for flag removal
-            from services.name_transformer import NameTransformer
-            
             filtered_proxies = []
             for proxy in proxies:
                 proxy_name = proxy.get('name', '')
@@ -2266,6 +2263,15 @@ async def get_merged_subscription(
         existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
         pool_groups_by_country = {}
+        pool_group_names = []
+
+        def short_node_name(name: str) -> str:
+            if not name:
+                return ''
+            clean = NameTransformer.remove_flags(name)
+            if ' ' in clean:
+                clean = clean.split(' ', 1)[1]
+            return clean.strip()
 
         def unique_chain_name(base: str) -> str:
             if base not in existing_names:
@@ -2385,9 +2391,12 @@ async def get_merged_subscription(
 
                     chain_member_names = []
                     pool_countries = set()
+                    base_start_name = short_node_name(chain_node_proxies[0].get('name', '')) if chain_node_proxies else ''
                     for member_proxy in member_proxies:
                         chain_nodes = chain_node_proxies + [member_proxy]
-                        chain_name_full = f"🔗 {chain_name}"
+                        end_name = short_node_name(member_proxy.get('name', ''))
+                        path_name = f"{base_start_name} → {end_name}" if base_start_name and end_name else chain_name
+                        chain_name_full = f"🔗 {chain_name}: {path_name}"
                         chain_proxy_name = build_chain_entry(chain_name_full, chain_nodes, add_to_manual=False, include_country_info=False)
                         if chain_proxy_name:
                             chain_member_names.append(chain_proxy_name)
@@ -2406,7 +2415,7 @@ async def get_merged_subscription(
 
                     # Build group for chain members
                     group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
-                    group_name = unique_group_name(f"🔀 {group_base_name}")
+                    group_name = f"🔀 {group_base_name}"
                     strategy = (group_spec.get('group_strategy') or 'load-balance').strip()
                     strategy = strategy if strategy in ['url-test', 'fallback', 'load-balance'] else 'load-balance'
 
@@ -2426,13 +2435,21 @@ async def get_merged_subscription(
                             lb_strategy = 'round-robin'
                         group_cfg['strategy'] = lb_strategy
 
+                    # Remove any existing group with same name to avoid duplicates
+                    proxy_groups = [g for g in proxy_groups if g.get('name') != group_name]
+
                     # Insert pool group between fallback and country groups
                     insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') == '🔯 故障转移'), -1)
-                    if insert_idx != -1:
-                        proxy_groups.insert(insert_idx + 1, group_cfg)
+                    if insert_idx == -1:
+                        # If no fallback group, insert before first country group
+                        country_names = set(ProxyGroupGenerator.COUNTRY_ORDER)
+                        insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') in country_names), len(proxy_groups))
+                        proxy_groups.insert(insert_idx, group_cfg)
                     else:
-                        proxy_groups.append(group_cfg)
+                        proxy_groups.insert(insert_idx + 1, group_cfg)
                     chain_proxy_names.append(group_name)
+                    if group_name not in pool_group_names:
+                        pool_group_names.append(group_name)
 
                     # Map pool group into country groups
                     for country_name in pool_countries:
@@ -2444,6 +2461,22 @@ async def get_merged_subscription(
                     chain_name_full = f"🔗 {chain_name}"
                     build_chain_entry(chain_name_full, chain_node_proxies, add_to_manual=True)
         
+        # Add pool groups to GLOBAL after fallback
+        if pool_group_names:
+            for group in proxy_groups:
+                if group.get('name') == 'GLOBAL':
+                    proxies_list = list(group.get('proxies', []))
+                    if '🔯 故障转移' in proxies_list:
+                        insert_idx = proxies_list.index('🔯 故障转移') + 1
+                    else:
+                        insert_idx = len(proxies_list)
+                    for name in pool_group_names:
+                        if name not in proxies_list:
+                            proxies_list.insert(insert_idx, name)
+                            insert_idx += 1
+                    group['proxies'] = proxies_list
+                    break
+
         # Add chain proxies to the proxies list
         # Position: after custom nodes, before subscription nodes
         # Order: traffic_info -> custom_nodes -> chain_proxies -> subscription_nodes
@@ -2468,6 +2501,17 @@ async def get_merged_subscription(
             proxies = proxies[:custom_node_end_idx] + chain_proxies + proxies[custom_node_end_idx:]
             
             # Add chain proxies to corresponding country groups (only when country info is present)
+
+            # Add pool groups to corresponding country groups
+            for country_group_name, group_names in pool_groups_by_country.items():
+                for group in proxy_groups:
+                    if group.get('name') == country_group_name:
+                        current = group.get('proxies', [])
+                        for gname in group_names:
+                            if gname not in current:
+                                current.insert(0, gname)
+                        group['proxies'] = current
+                        break
             for chain_proxy in chain_proxies:
                 chain_proxy_name = chain_proxy.get('name', '')
                 # Use stored country info from exit node
@@ -2483,24 +2527,30 @@ async def get_merged_subscription(
                     # Clean up temporary field before output
                     del chain_proxy['_country_info']
 
-            # Add pool groups to corresponding country groups
-            for country_group_name, group_names in pool_groups_by_country.items():
-                for group in proxy_groups:
-                    if group.get('name') == country_group_name:
-                        current = group.get('proxies', [])
-                        for gname in group_names:
-                            if gname not in current:
-                                current.insert(0, gname)
-                        group['proxies'] = current
-                        break
         
         # Add traffic info nodes and chain proxies to manual select group
         if traffic_info_names or chain_proxy_names:
             for group in proxy_groups:
                 if group.get('name') == '🚀 手动选择':
-                    # Insert traffic info at the beginning, chain proxies after traffic info
                     current_proxies = group.get('proxies', [])
-                    group['proxies'] = traffic_info_names + chain_proxy_names + current_proxies
+
+                    # Insert chain proxies after REJECT (or DIRECT if REJECT not present)
+                    updated = list(current_proxies)
+                    if 'REJECT' in updated:
+                        insert_idx = updated.index('REJECT') + 1
+                    elif 'DIRECT' in updated:
+                        insert_idx = updated.index('DIRECT') + 1
+                    else:
+                        insert_idx = 0
+
+                    for name in chain_proxy_names:
+                        if name not in updated:
+                            updated.insert(insert_idx, name)
+                            insert_idx += 1
+
+                    # Prepend traffic info nodes, avoid duplicates
+                    final_proxies = traffic_info_names + [p for p in updated if p not in traffic_info_names]
+                    group['proxies'] = final_proxies
                     break
         
         # Calculate total traffic info from all subscriptions
@@ -2588,6 +2638,7 @@ dns:
                 if port_mappings:
                     # Get current proxy names for validation (excluding traffic info nodes)
                     proxy_names = {p.get('name', '') for p in socks_proxies}
+                    proxy_names.update({g.get('name', '') for g in proxy_groups if isinstance(g, dict)})
                     
                     # Build listeners for valid mappings only
                     listener_idx = 0
@@ -2640,6 +2691,7 @@ dns:
         if port_mappings:
             # Get current proxy names for validation
             proxy_names = {p.get('name', '') for p in proxies}
+            proxy_names.update({g.get('name', '') for g in proxy_groups if isinstance(g, dict)})
             
             # Build listeners for valid mappings only
             listeners = []

@@ -403,10 +403,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         return n.node_name;
       }).join(' → ') || '';
 
+      // Compute pool group name for port mapping (only when last hop is group)
+      let poolGroupName = null;
+      if (firstRow?.nodes?.length) {
+        const lastNode = firstRow.nodes[firstRow.nodes.length - 1];
+        if (lastNode?.type === 'group') {
+          const base = lastNode.group_name || `${chain.name} 落地池`;
+          poolGroupName = `🔀 ${base}`;
+        }
+      }
+
       nodes.push({
         name: `🔗 ${chain.name}`,
         display_name: `🔗 ${chain.name}`,
-        final_name: `🔗 ${chain.name}`,
+        final_name: poolGroupName || `🔗 ${chain.name}`,
+        pool_group_name: poolGroupName,
         type: 'chain',
         server: chainPath,  // Show chain path as server
         source: '链式代理',
@@ -1280,8 +1291,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Port mapping functions
   const openPortMapping = (node) => {
-    // Get the final name with fallback
-    const finalName = node.final_name || node.display_name || node.name;
+    // Get the final name with fallback (use pool group name for chain if available)
+    const finalName = node.pool_group_name || node.final_name || node.display_name || node.name;
     
     // After initial load, use localPortMappings as single source of truth
     // This ensures deletions from management panel are immediately reflected
@@ -2466,7 +2477,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
                       {/* Preview */}
                       <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
-                        预览: 我 → {row.map(n => n?.node_name || n?.display_name || n?.name || '?').join(' → ')} → 服务
+                        预览: 我 → {row.map((n, colIndex) => {
+                          if (n?.type === 'group') {
+                            const groupName = n?.group_name || '落地池';
+                            const key = getGroupCellKey(rowIndex, colIndex);
+                            const draftCount = (groupDrafts[key] || []).length;
+                            const savedCount = (n?.group_nodes || []).length;
+                            const count = groupEditing[key] ? draftCount : savedCount;
+                            return count > 0 ? `组:${groupName}(${count}个)` : `组:${groupName}`;
+                          }
+                          return n?.node_name || n?.display_name || n?.name || '?';
+                        }).join(' → ')} → 服务
                       </div>
                     </div>
                   ))}

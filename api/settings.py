@@ -181,6 +181,21 @@ def get_port_mappings(_: bool = Depends(verify_session)):
         except Exception as e:
             logger.warning(f"Failed to load subscription {sub['id']}: {e}")
     
+
+    # Add chain pool groups (group nodes in proxy chains)
+    for chain in config.get('proxy_chains', []):
+        if not chain.get('enabled', True):
+            continue
+        rows = chain.get('rows', [])
+        for row_idx, row in enumerate(rows):
+            nodes = row.get('nodes', [])
+            for node in nodes:
+                if isinstance(node, dict) and node.get('type') == 'group':
+                    chain_name = chain.get('name', 'Chain')
+                    if len(rows) > 1:
+                        chain_name = f"{chain_name} #{row_idx + 1}"
+                    group_base_name = node.get('group_name') or f"{chain_name} 落地池"
+                    available_nodes.add(f"🔀 {group_base_name}")
     # Convert to list format for frontend with active status
     result = []
     for node_name, port in mappings.items():
