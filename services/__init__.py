@@ -22,7 +22,8 @@ from .key_rotation import check_key_rotation_needed, log_rotation_reminder
 from .node_parser import (
     decode_base64, parse_node_link, parse_vmess_link, parse_vless_link,
     parse_ss_link, parse_ssr_link, parse_trojan_link, parse_hysteria_link,
-    parse_hysteria2_link, parse_tuic_link, parse_socks_link, parse_http_link
+    parse_hysteria2_link, parse_tuic_link, parse_anytls_link, parse_wireguard_link,
+    parse_socks_link, parse_http_link
 )
 
 # Proxy Filter
@@ -64,7 +65,8 @@ __all__ = [
     # Node Parser
     'decode_base64', 'parse_node_link', 'parse_vmess_link', 'parse_vless_link',
     'parse_ss_link', 'parse_ssr_link', 'parse_trojan_link', 'parse_hysteria_link',
-    'parse_hysteria2_link', 'parse_tuic_link', 'parse_socks_link', 'parse_http_link',
+    'parse_hysteria2_link', 'parse_tuic_link', 'parse_anytls_link', 'parse_wireguard_link',
+    'parse_socks_link', 'parse_http_link',
     # Proxy Filter
     'ProxyFilter',
     # Name Transformer

@@ -54,8 +54,8 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                 // Transport
                 network: node.network || 'tcp',
                 headerType: node['header-type'] || '',
-                host: wsOpts.headers?.Host || h2Opts.host || '',
-                path: wsOpts.path || h2Opts.path || '',
+                host: wsOpts.headers?.Host || (Array.isArray(h2Opts.host) ? h2Opts.host[0] : h2Opts.host) || node.host || '',
+                path: wsOpts.path || h2Opts.path || node.path || '',
                 grpcServiceName: grpcOpts['grpc-service-name'] || '',
                 grpcMode: grpcOpts.mode || 'gun',
                 xhttpMode: node['xhttp-mode'] || 'auto',
@@ -113,8 +113,11 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
         // VLESS
         if (formData.type === 'vless') {
             if (formData.flow) nodeObj.flow = formData.flow;
-            if (formData.encryption && formData.encryption !== 'none') {
-                nodeObj.encryption = formData.encryption;
+            if (formData.encryption !== undefined) {
+                const enc = String(formData.encryption || '').trim();
+                if (enc) {
+                    nodeObj.encryption = enc;
+                }
             }
         }
 
@@ -265,9 +268,15 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                                 </select>
                             </Field>
                             <Field label="加密方式 (encryption)">
-                                <select value={formData.encryption} onChange={(e) => handleChange('encryption', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                                    <option value="none">none</option>
-                                </select>
+                                <input
+                                    type="text"
+                                    value={formData.encryption}
+                                    onChange={(e) => handleChange('encryption', e.target.value)}
+                                    disabled={!isCustomNode}
+                                    placeholder="none 或其它加密名"
+                                    className={inputClass(!isCustomNode)}
+                                />
+                                <p className="text-xs text-gray-500 mt-1">常见值: none / aes-128-gcm / chacha20-poly1305 / auto</p>
                             </Field>
                         </>
                     )}
@@ -425,9 +434,12 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                             <Field label="Alpn">
                                 <select value={formData.alpn} onChange={(e) => handleChange('alpn', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
                                     <option value=""></option>
+                                    <option value="h3">h3</option>
                                     <option value="h2,http/1.1">h2,http/1.1</option>
                                     <option value="h2">h2</option>
                                     <option value="http/1.1">http/1.1</option>
+                                    <option value="h3,h2">h3,h2</option>
+                                    <option value="h3,h2,http/1.1">h3,h2,http/1.1</option>
                                 </select>
                             </Field>
                             <Field label="跳过证书验证 (allowInsecure)">

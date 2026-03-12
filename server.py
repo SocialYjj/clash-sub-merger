@@ -12,6 +12,7 @@ import atexit
 import base64  # Used for node parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
+import ipaddress  # IPv6 formatting for URI links
 import signal  # Used for signal handling
 from contextlib import asynccontextmanager
 
@@ -22,7 +23,7 @@ except ImportError:
     from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, unquote, quote
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Callable
 from collections import OrderedDict
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, BackgroundTasks, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
@@ -1540,7 +1541,8 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
             original_name = node.get('name', '')
             if is_info_node(original_name):
                 continue
-            node_names.append(original_name)
+            transformed = NameTransformer.transform_name(node, 'Custom')
+            node_names.append(transformed.get('name', original_name))
         if node_names:
             sources['custom_nodes'] = {
                 'name': '自建节点',
@@ -1561,7 +1563,8 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
                 original_name = proxy.get('name', '')
                 if is_info_node(original_name):
                     continue
-                node_names.append(original_name)
+                transformed = NameTransformer.transform_name(proxy, sub['name'])
+                node_names.append(transformed.get('name', original_name))
             
             if node_names:
                 sources[sub['id']] = {
@@ -1570,6 +1573,96 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
                 }
         except Exception as e:
             logger.warning(f"Failed to load subscription {sub['id']}: {e}")
+
+    # Get chain nodes and chain pools
+    proxy_chains = config.get('proxy_chains', [])
+    if proxy_chains:
+        chain_nodes = []
+        chain_pools = []
+
+        existing_names = get_all_final_node_names()
+
+        def unique_chain_name(base: str) -> str:
+            if base not in existing_names:
+                existing_names.add(base)
+                return base
+            idx = 2
+            while f"{base} ({idx})" in existing_names:
+                idx += 1
+            name = f"{base} ({idx})"
+            existing_names.add(name)
+            return name
+
+        for chain in proxy_chains:
+            if not chain.get('enabled', True):
+                continue
+
+            rows = chain.get('rows', [])
+            for row_idx, row in enumerate(rows):
+                nodes = row.get('nodes', [])
+                if len(nodes) < 2:
+                    continue
+
+                base_node_refs = []
+                group_spec = None
+                for idx, node_ref in enumerate(nodes):
+                    if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
+                        if idx != len(nodes) - 1:
+                            group_spec = None
+                            base_node_refs = []
+                        else:
+                            group_spec = node_ref
+                        break
+                    base_node_refs.append(node_ref)
+
+                if not base_node_refs:
+                    continue
+
+                chain_node_proxies = []
+                base_valid = True
+                for node_ref in base_node_refs:
+                    node_proxy = find_node_by_reference(node_ref.get('sub_id'), node_ref.get('node_index'))
+                    if not node_proxy:
+                        base_valid = False
+                        break
+                    chain_node_proxies.append(node_proxy)
+                if not base_valid or len(chain_node_proxies) < len(base_node_refs):
+                    continue
+
+                chain_name = chain.get('name', '')
+                if len(rows) > 1:
+                    chain_name = f"{chain_name} #{row_idx + 1}"
+
+                if group_spec:
+                    group_nodes = group_spec.get('group_nodes', []) or []
+                    member_proxies = []
+                    for member_ref in group_nodes:
+                        node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
+                        if node_proxy:
+                            member_proxies.append(node_proxy)
+                    if not member_proxies:
+                        continue
+
+                    group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
+                    group_name = f"🔀 {group_base_name}"
+                    if group_name not in chain_pools:
+                        chain_pools.append(group_name)
+                else:
+                    if len(chain_node_proxies) < 2:
+                        continue
+                    chain_name_full = f"🔗 {chain_name}"
+                    chain_nodes.append(unique_chain_name(chain_name_full))
+
+        if chain_nodes:
+            sources['chain_nodes'] = {
+                'name': '链式代理单节点',
+                'nodes': chain_nodes
+            }
+        if chain_pools:
+            sources['chain_pools'] = {
+                'name': '链式代理池',
+                'nodes': chain_pools
+            }
     
     return {"sources": sources}
 
@@ -1580,6 +1673,21 @@ def proxy_to_link(proxy: dict) -> str:
     name = proxy.get('name', '')
     server = proxy.get('server', '')
     port = proxy.get('port', '')
+
+    def format_server_for_uri(host: str) -> str:
+        if not host:
+            return host
+        if host.startswith('[') and host.endswith(']'):
+            return host
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.version == 6:
+                return f'[{host}]'
+        except ValueError:
+            pass
+        return host
+
+    server_uri = format_server_for_uri(server)
     
     try:
         if proxy_type == 'vmess':
@@ -1612,8 +1720,14 @@ def proxy_to_link(proxy: dict) -> str:
         elif proxy_type == 'vless':
             # vless://uuid@server:port?params#name
             params = []
-            if proxy.get('network'):
-                params.append(f"type={proxy['network']}")
+            network = proxy.get('network')
+            if network:
+                if network == 'h2':
+                    params.append("type=http")
+                else:
+                    params.append(f"type={network}")
+            if proxy.get('encryption') is not None:
+                params.append(f"encryption={quote(str(proxy.get('encryption')))}")
             if proxy.get('tls'):
                 if proxy.get('reality-opts'):
                     params.append('security=reality')
@@ -1621,33 +1735,71 @@ def proxy_to_link(proxy: dict) -> str:
                         params.append(f"pbk={proxy['reality-opts']['public-key']}")
                     if proxy['reality-opts'].get('short-id'):
                         params.append(f"sid={proxy['reality-opts']['short-id']}")
+                    if proxy['reality-opts'].get('spider-x'):
+                        params.append(f"spx={quote(str(proxy['reality-opts']['spider-x']))}")
                 else:
                     params.append('security=tls')
             if proxy.get('servername'):
-                params.append(f"sni={proxy['servername']}")
+                params.append(f"sni={quote(str(proxy['servername']))}")
             if proxy.get('client-fingerprint'):
-                params.append(f"fp={proxy['client-fingerprint']}")
+                params.append(f"fp={quote(str(proxy['client-fingerprint']))}")
+            if proxy.get('alpn'):
+                alpn_val = proxy.get('alpn')
+                if isinstance(alpn_val, list):
+                    alpn_val = ','.join(alpn_val)
+                params.append(f"alpn={quote(str(alpn_val))}")
+            if proxy.get('skip-cert-verify'):
+                params.append("allowInsecure=1")
+                params.append("insecure=1")
             if proxy.get('flow'):
-                params.append(f"flow={proxy['flow']}")
-            if proxy.get('network') == 'ws':
+                params.append(f"flow={quote(str(proxy['flow']))}")
+            if proxy.get('ech'):
+                params.append(f"ech={quote(str(proxy['ech']))}")
+            if proxy.get('pqv'):
+                params.append(f"pqv={quote(str(proxy['pqv']))}")
+            if proxy.get('cert-sha'):
+                params.append(f"pcs={quote(str(proxy['cert-sha']))}")
+            if proxy.get('finalmask'):
+                params.append(f"fm={quote(str(proxy['finalmask']))}")
+            if network in ['ws', 'httpupgrade']:
                 ws_opts = proxy.get('ws-opts', {})
                 if ws_opts.get('path'):
                     params.append(f"path={quote(ws_opts['path'])}")
                 if ws_opts.get('headers', {}).get('Host'):
                     params.append(f"host={ws_opts['headers']['Host']}")
-            elif proxy.get('network') == 'grpc':
+            elif network == 'grpc':
                 grpc_opts = proxy.get('grpc-opts', {})
                 if grpc_opts.get('grpc-service-name'):
                     params.append(f"serviceName={grpc_opts['grpc-service-name']}")
+                if grpc_opts.get('mode'):
+                    params.append(f"mode={grpc_opts['mode']}")
+                if grpc_opts.get('authority'):
+                    params.append(f"authority={grpc_opts['authority']}")
+            elif network in ['h2', 'http']:
+                h2_opts = proxy.get('h2-opts', {})
+                if h2_opts.get('path'):
+                    params.append(f"path={quote(h2_opts['path'])}")
+                host_val = h2_opts.get('host')
+                if isinstance(host_val, list) and host_val:
+                    host_val = host_val[0]
+                if host_val:
+                    params.append(f"host={host_val}")
+            elif network == 'xhttp':
+                if proxy.get('xhttp-mode'):
+                    params.append(f"mode={quote(str(proxy['xhttp-mode']))}")
+                if proxy.get('host'):
+                    params.append(f"host={quote(str(proxy['host']))}")
+                if proxy.get('path'):
+                    params.append(f"path={quote(str(proxy['path']))}")
             query = '&'.join(params) if params else ''
-            return f"vless://{proxy.get('uuid', '')}@{server}:{port}{'?' + query if query else ''}#{quote(name)}"
+            return f"vless://{proxy.get('uuid', '')}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         
         elif proxy_type == 'ss':
             # ss://base64(method:password)@server:port#name
             method = proxy.get('cipher', '')
             password = proxy.get('password', '')
             userinfo = base64.b64encode(f"{method}:{password}".encode()).decode()
-            return f"ss://{userinfo}@{server}:{port}#{quote(name)}"
+            return f"ss://{userinfo}@{server_uri}:{port}#{quote(name)}"
         
         elif proxy_type == 'ssr':
             # ssr://base64(server:port:protocol:method:obfs:base64(password)/?params)
@@ -1676,7 +1828,7 @@ def proxy_to_link(proxy: dict) -> str:
             elif proxy.get('network') == 'grpc':
                 params.append('type=grpc')
             query = '&'.join(params) if params else ''
-            return f"trojan://{quote(proxy.get('password', ''))}@{server}:{port}{'?' + query if query else ''}#{quote(name)}"
+            return f"trojan://{quote(proxy.get('password', ''))}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         
         elif proxy_type == 'hysteria2':
             # hysteria2://password@server:port?params#name
@@ -1688,7 +1840,7 @@ def proxy_to_link(proxy: dict) -> str:
                 if proxy.get('obfs-password'):
                     params.append(f"obfs-password={proxy['obfs-password']}")
             query = '&'.join(params) if params else ''
-            return f"hysteria2://{quote(proxy.get('password', ''))}@{server}:{port}{'?' + query if query else ''}#{quote(name)}"
+            return f"hysteria2://{quote(proxy.get('password', ''))}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         
         elif proxy_type == 'tuic':
             # tuic://uuid:password@server:port?params#name
@@ -1698,7 +1850,7 @@ def proxy_to_link(proxy: dict) -> str:
             if proxy.get('congestion-controller'):
                 params.append(f"congestion_control={proxy['congestion-controller']}")
             query = '&'.join(params) if params else ''
-            return f"tuic://{proxy.get('uuid', '')}:{proxy.get('password', '')}@{server}:{port}{'?' + query if query else ''}#{quote(name)}"
+            return f"tuic://{proxy.get('uuid', '')}:{proxy.get('password', '')}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         
         elif proxy_type == 'hysteria':
             # hysteria://server:port?params#name
@@ -1712,7 +1864,7 @@ def proxy_to_link(proxy: dict) -> str:
             if proxy.get('down'):
                 params.append(f"downmbps={proxy['down']}")
             query = '&'.join(params) if params else ''
-            return f"hysteria://{server}:{port}{'?' + query if query else ''}#{quote(name)}"
+            return f"hysteria://{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         
         elif proxy_type == 'socks5':
             # socks5://user:pass@server:port#name
@@ -1720,7 +1872,7 @@ def proxy_to_link(proxy: dict) -> str:
             if proxy.get('username'):
                 auth = f"{quote(proxy['username'])}:{quote(proxy.get('password', ''))}@"
             prefix = 'socks5+tls://' if proxy.get('tls') else 'socks5://'
-            return f"{prefix}{auth}{server}:{port}#{quote(name)}"
+            return f"{prefix}{auth}{server_uri}:{port}#{quote(name)}"
         
         elif proxy_type == 'http':
             # http://user:pass@server:port#name
@@ -1728,7 +1880,7 @@ def proxy_to_link(proxy: dict) -> str:
             if proxy.get('username'):
                 auth = f"{quote(proxy['username'])}:{quote(proxy.get('password', ''))}@"
             prefix = 'https://' if proxy.get('tls') else 'http://'
-            return f"{prefix}{auth}{server}:{port}#{quote(name)}"
+            return f"{prefix}{auth}{server_uri}:{port}#{quote(name)}"
         
         else:
             # Unsupported type, return empty
@@ -2020,12 +2172,19 @@ async def get_merged_subscription(
                     if 'Custom' in proxy_name:
                         allocated_custom = user_allocations['custom_nodes']
                         # Get the list of custom node names from config
-                        all_custom_node_names = [cn['name'] for cn in config.get('custom_nodes', [])]
+                        all_custom_nodes = [cn for cn in config.get('custom_nodes', []) if cn.get('name')]
+                        custom_name_map = {}
+                        for cn in all_custom_nodes:
+                            cn_name = cn.get('name', '')
+                            if not cn_name:
+                                continue
+                            transformed = NameTransformer.transform_name(cn, 'Custom')
+                            custom_name_map[cn_name] = transformed.get('name', cn_name)
                         
                         # Find which custom node this proxy matches
                         # Sort by length descending to match longer names first (e.g., "SG-azure" before "SG")
                         matching_custom_name = None
-                        for cn_name in sorted(all_custom_node_names, key=len, reverse=True):
+                        for cn_name in sorted(custom_name_map.keys(), key=len, reverse=True):
                             # Proxy name format: "🇸🇬 Custom SG" where "SG" is the custom node name
                             # Use exact end match to avoid "SG" matching "SG-azure"
                             expected_suffix = f"Custom {cn_name}"
@@ -2036,8 +2195,19 @@ async def get_merged_subscription(
                         if matching_custom_name:
                             if allocated_custom == ['*']:
                                 included = True
-                            elif matching_custom_name in allocated_custom:
-                                included = True
+                            else:
+                                display_name = custom_name_map.get(matching_custom_name, '')
+                                if matching_custom_name in allocated_custom:
+                                    included = True
+                                elif display_name and display_name in allocated_custom:
+                                    included = True
+                                else:
+                                    expected_suffix = f"Custom {matching_custom_name}"
+                                    for alloc_name in allocated_custom:
+                                        alloc_clean = NameTransformer.remove_flags(alloc_name)
+                                        if alloc_clean == expected_suffix or alloc_clean.endswith(expected_suffix):
+                                            included = True
+                                            break
                 
                 if included:
                     filtered_proxies.append(proxy)
@@ -2262,7 +2432,6 @@ async def get_merged_subscription(
 
         existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
-        pool_groups_by_country = {}
         pool_group_names = []
 
         def short_node_name(name: str) -> str:
@@ -2297,7 +2466,13 @@ async def get_merged_subscription(
             existing_group_names.add(name)
             return name
 
-        def build_chain_entry(chain_display_name: str, chain_nodes: list, add_to_manual: bool = True, include_country_info: bool = True) -> str | None:
+        def build_chain_entry(
+            chain_display_name: str,
+            chain_nodes: list,
+            add_to_manual: bool = True,
+            include_country_info: bool = True,
+            allow_name: Callable[[str], bool] | None = None
+        ) -> str | None:
             """Build chain proxies for given nodes and return the final chain proxy name."""
             if len(chain_nodes) < 2:
                 return None
@@ -2308,7 +2483,11 @@ async def get_merged_subscription(
             last_node_server = last_node.get('server', '')
             chain_country_info = extract_country_from_name(last_node_name, last_node_server)
 
-            chain_proxy['name'] = unique_chain_name(chain_display_name)
+            final_chain_name = unique_chain_name(chain_display_name)
+            if allow_name and not allow_name(final_chain_name):
+                return None
+
+            chain_proxy['name'] = final_chain_name
             if include_country_info and chain_country_info:
                 chain_proxy['_country_info'] = chain_country_info
 
@@ -2316,21 +2495,82 @@ async def get_merged_subscription(
                 chain_proxy['dialer-proxy'] = chain_nodes[0]['name']
             else:
                 prev_proxy_name = chain_nodes[0]['name']
+                intermediates = []
                 for i in range(1, len(chain_nodes) - 1):
                     intermediate = dict(chain_nodes[i])
                     intermediate_name = unique_chain_name(f"{chain_display_name} (via {i})")
                     intermediate['name'] = intermediate_name
                     intermediate['dialer-proxy'] = prev_proxy_name
-                    chain_proxies.append(intermediate)
+                    intermediates.append(intermediate)
                     if add_to_manual:
                         chain_proxy_names.append(intermediate_name)
                     prev_proxy_name = intermediate_name
                 chain_proxy['dialer-proxy'] = prev_proxy_name
+                for intermediate in intermediates:
+                    chain_proxies.append(intermediate)
 
             chain_proxies.append(chain_proxy)
             if add_to_manual:
                 chain_proxy_names.append(chain_proxy['name'])
             return chain_proxy['name']
+
+        def is_allocated_ref(node_ref: dict, node_proxy: dict | None) -> bool:
+            if user_allocations is None:
+                return True
+            if not node_ref:
+                return False
+            sub_id = node_ref.get('sub_id')
+            if not sub_id:
+                return False
+            alloc_key = 'custom_nodes' if sub_id == 'custom' else sub_id
+            allocated_nodes = user_allocations.get(alloc_key)
+            if not allocated_nodes:
+                return False
+            if allocated_nodes == ['*']:
+                return True
+
+            name = ''
+            if node_proxy and node_proxy.get('name'):
+                name = node_proxy.get('name', '')
+            if not name:
+                name = node_ref.get('node_name', '')
+
+            if not name:
+                return False
+
+            name_clean = NameTransformer.remove_flags(name)
+            for alloc in allocated_nodes:
+                if not alloc:
+                    continue
+                if alloc == name:
+                    return True
+                if alloc in name:
+                    return True
+                alloc_clean = NameTransformer.remove_flags(alloc)
+                if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
+                    return True
+            return False
+
+        def is_allocated_chain_name(name: str, alloc_key: str) -> bool:
+            if user_allocations is None:
+                return True
+            if not name:
+                return False
+            allocated = user_allocations.get(alloc_key)
+            if not allocated:
+                return False
+            if allocated == ['*']:
+                return True
+            name_clean = NameTransformer.remove_flags(name)
+            for alloc in allocated:
+                if not alloc:
+                    continue
+                if alloc == name or alloc in name:
+                    return True
+                alloc_clean = NameTransformer.remove_flags(alloc)
+                if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
+                    return True
+            return False
 
         
         for chain in proxy_chains:
@@ -2363,14 +2603,17 @@ async def get_merged_subscription(
                 if not base_node_refs:
                     continue
 
-                # Resolve base nodes
+                # Resolve base nodes (respect user allocations)
                 chain_node_proxies = []
+                base_allowed = True
                 for node_ref in base_node_refs:
                     node_proxy = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
-                    if node_proxy:
-                        chain_node_proxies.append(dict(node_proxy))
+                    if not node_proxy or not is_allocated_ref(node_ref, node_proxy):
+                        base_allowed = False
+                        break
+                    chain_node_proxies.append(dict(node_proxy))
 
-                if len(chain_node_proxies) < 1:
+                if not base_allowed or len(chain_node_proxies) < len(base_node_refs):
                     continue
 
                 # Set chain display name (with row suffix when multiple rows)
@@ -2379,18 +2622,23 @@ async def get_merged_subscription(
                     chain_name = f"{chain_name} #{row_idx + 1}"
 
                 if group_spec:
+                    # Build group name first to check allocation
+                    group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
+                    group_name = f"🔀 {group_base_name}"
+                    if not is_allocated_chain_name(group_name, 'chain_pools'):
+                        continue
+
                     group_nodes = group_spec.get('group_nodes', []) or []
                     member_proxies = []
                     for member_ref in group_nodes:
                         node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
-                        if node_proxy:
+                        if node_proxy and is_allocated_ref(member_ref, node_proxy):
                             member_proxies.append(dict(node_proxy))
 
                     if not member_proxies:
                         continue
 
                     chain_member_names = []
-                    pool_countries = set()
                     base_start_name = short_node_name(chain_node_proxies[0].get('name', '')) if chain_node_proxies else ''
                     for member_proxy in member_proxies:
                         chain_nodes = chain_node_proxies + [member_proxy]
@@ -2401,21 +2649,10 @@ async def get_merged_subscription(
                         if chain_proxy_name:
                             chain_member_names.append(chain_proxy_name)
 
-                        # Collect country group from exit node for pool placement
-                        country_info = member_proxy.get('_country')
-                        if country_info and country_info.get('flag') and country_info.get('country'):
-                            pool_countries.add(f"{country_info['flag']} {country_info['country']}")
-                        else:
-                            info = extract_country_from_name(member_proxy.get('name', ''), member_proxy.get('server', ''))
-                            if info:
-                                pool_countries.add(f"{info['flag']} {info['country']}")
-
                     if not chain_member_names:
                         continue
 
                     # Build group for chain members
-                    group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
-                    group_name = f"🔀 {group_base_name}"
                     strategy = (group_spec.get('group_strategy') or 'load-balance').strip()
                     strategy = strategy if strategy in ['url-test', 'fallback', 'load-balance'] else 'load-balance'
 
@@ -2450,16 +2687,17 @@ async def get_merged_subscription(
                     chain_proxy_names.append(group_name)
                     if group_name not in pool_group_names:
                         pool_group_names.append(group_name)
-
-                    # Map pool group into country groups
-                    for country_name in pool_countries:
-                        pool_groups_by_country.setdefault(country_name, []).append(group_name)
                 else:
                     # Normal chain (no group)
                     if len(chain_node_proxies) < 2:
                         continue
                     chain_name_full = f"🔗 {chain_name}"
-                    build_chain_entry(chain_name_full, chain_node_proxies, add_to_manual=True)
+                    build_chain_entry(
+                        chain_name_full,
+                        chain_node_proxies,
+                        add_to_manual=True,
+                        allow_name=lambda n: is_allocated_chain_name(n, 'chain_nodes')
+                    )
         
         # Add pool groups to GLOBAL after fallback
         if pool_group_names:
@@ -2502,16 +2740,6 @@ async def get_merged_subscription(
             
             # Add chain proxies to corresponding country groups (only when country info is present)
 
-            # Add pool groups to corresponding country groups
-            for country_group_name, group_names in pool_groups_by_country.items():
-                for group in proxy_groups:
-                    if group.get('name') == country_group_name:
-                        current = group.get('proxies', [])
-                        for gname in group_names:
-                            if gname not in current:
-                                current.insert(0, gname)
-                        group['proxies'] = current
-                        break
             for chain_proxy in chain_proxies:
                 chain_proxy_name = chain_proxy.get('name', '')
                 # Use stored country info from exit node
