@@ -74,6 +74,15 @@ class ReorderNodes(BaseModel):
     order: List[str]
 
 
+class BatchCustomNodes(BaseModel):
+    links: List[str] = Field(min_items=1)
+    names: Optional[List[str]] = None
+
+
+class BatchDeleteNodes(BaseModel):
+    ids: List[str] = Field(min_items=1)
+
+
 # ==================== Custom Nodes API ====================
 
 @router.get("/custom-nodes")
@@ -133,6 +142,58 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     return {"status": "success", "node": node}
 
 
+@router.post("/custom-nodes/batch")
+@handle_api_errors
+def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_session)):
+    """Batch add custom nodes from links"""
+    srv = _get_server()
+    config = load_config()
+
+    links = [link.strip() for link in (data.links or []) if link and link.strip()]
+    if not links:
+        raise HTTPException(status_code=400, detail="No valid links provided")
+    names = [name.strip() for name in (data.names or [])]
+
+    added_nodes = []
+    errors = []
+
+    for idx, link in enumerate(links):
+        parsed = parse_node_link(link)
+        if not parsed:
+            errors.append({'link': link, 'reason': 'Invalid node link format'})
+            continue
+
+        node_id = f"{generate_timestamp_id('node_')}_{idx}"
+        node = {
+            'id': node_id,
+            'link': link,
+            **parsed
+        }
+        if idx < len(names):
+            custom_name = names[idx]
+            if custom_name:
+                node['name'] = custom_name
+        added_nodes.append(node)
+
+    if not added_nodes:
+        raise HTTPException(status_code=400, detail="No valid nodes parsed")
+
+    if 'custom_nodes' not in config:
+        config['custom_nodes'] = []
+    config['custom_nodes'].extend(added_nodes)
+
+    save_config(config)
+    srv.update_custom_nodes_yaml()
+    srv.invalidate_stats_cache()
+
+    return {
+        "status": "success",
+        "added": len(added_nodes),
+        "failed": len(errors),
+        "errors": errors
+    }
+
+
 @router.delete("/custom-nodes/{node_id}")
 @handle_api_errors
 def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
@@ -145,6 +206,30 @@ def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
     return {"status": "success"}
+
+
+@router.post("/custom-nodes/batch-delete")
+@handle_api_errors
+def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_session)):
+    """Batch delete custom nodes by IDs"""
+    srv = _get_server()
+    config = load_config()
+    nodes = config.get('custom_nodes', [])
+    id_set = set(data.ids or [])
+
+    if not id_set:
+        raise HTTPException(status_code=400, detail="No node IDs provided")
+
+    remaining = [n for n in nodes if n.get('id') not in id_set]
+    deleted_count = len(nodes) - len(remaining)
+    if deleted_count == 0:
+        return {"status": "success", "deleted": 0}
+
+    config['custom_nodes'] = remaining
+    save_config(config)
+    srv.update_custom_nodes_yaml()
+    srv.invalidate_stats_cache()
+    return {"status": "success", "deleted": deleted_count}
 
 
 @router.put("/custom-nodes/reorder")

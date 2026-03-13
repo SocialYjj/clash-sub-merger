@@ -102,6 +102,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [subNodes, setSubNodes] = useState({});
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, nodeId: null });
+  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState({ open: false, ids: [], keys: [], count: 0 });
   const [testingNode, setTestingNode] = useState(null);
   const [testingType, setTestingType] = useState('latency');
   const [nodeTestResults, setNodeTestResults] = useState({});
@@ -115,6 +116,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [testSpeed, setTestSpeed] = useState(false);
   const [showBatchTestMenu, setShowBatchTestMenu] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
+  const [customOrderMap, setCustomOrderMap] = useState({});
 
   // GeoIP API selection for region detection
   const [geoipApis, setGeoipApis] = useState([]);
@@ -156,6 +158,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     fetchAvailableChainNodes();
     fetchGeoipApis();
   }, []);
+
+  useEffect(() => {
+    const next = {};
+    (customNodes || []).forEach((node, idx) => {
+      if (node?.id) {
+        next[node.id] = String(idx + 1);
+      }
+    });
+    setCustomOrderMap(next);
+  }, [customNodes]);
 
   const fetchGeoipApis = async () => {
     try {
@@ -584,6 +596,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return filteredNodes.slice(startIndex, endIndex);
   }, [filteredNodes, currentPage, pageSize]);
 
+  const selectedCustomNodes = useMemo(() => {
+    return allNodes.filter(n => n.sourceType === 'custom' && selectedNodes.has(n.nodeKey));
+  }, [allNodes, selectedNodes]);
+  const selectedCustomCount = selectedCustomNodes.length;
+
   // 总页数
   const totalPages = Math.ceil(filteredNodes.length / pageSize);
 
@@ -860,19 +877,50 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Add custom node
   const addCustomNode = async () => {
-    if (!newNodeLink.trim()) return;
+    const links = newNodeLink
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+    if (links.length === 0) return;
+    let nameList = [];
+    if (newNodeName.trim()) {
+      nameList = newNodeName.split(';').map(item => item.trim());
+      while (nameList.length > 0 && nameList[nameList.length - 1] === '') {
+        nameList.pop();
+      }
+    }
     setLoading(true);
     try {
-      const payload = { link: newNodeLink.trim() };
-      if (newNodeName.trim()) {
-        payload.name = newNodeName.trim();
+      if (links.length === 1) {
+        const payload = { link: links[0] };
+        if (nameList.length > 0) {
+          payload.name = nameList[0];
+        } else if (newNodeName.trim()) {
+          payload.name = newNodeName.trim();
+        }
+        await request.post(`${API_BASE}/custom-nodes`, payload);
+        showToast?.('节点添加成功');
+      } else {
+        if (nameList.length > links.length) {
+          nameList = nameList.slice(0, links.length);
+        }
+        const payload = { links };
+        if (nameList.length > 0) {
+          payload.names = nameList;
+        }
+        const res = await request.post(`${API_BASE}/custom-nodes/batch`, payload);
+        const added = res.data?.added ?? links.length;
+        const failed = res.data?.failed ?? 0;
+        if (failed > 0) {
+          showToast?.(`批量添加完成：成功 ${added}，失败 ${failed}`, 'warning');
+        } else {
+          showToast?.(`批量添加完成：成功 ${added}`, 'success');
+        }
       }
-      await request.post(`${API_BASE}/custom-nodes`, payload);
       setNewNodeLink('');
       setNewNodeName('');
       setShowAddModal(false);
       onRefreshCustomNodes?.();
-      showToast?.('节点添加成功');
     } catch (err) {
       showToast?.('添加失败: ' + (err.response?.data?.detail || err.message), 'error');
     } finally {
@@ -893,6 +941,75 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const confirmDeleteNode = (nodeId) => {
     setDeleteConfirm({ open: true, nodeId });
+  };
+
+  const openBatchDeleteCustomNodes = () => {
+    const ids = selectedCustomNodes.map(n => n.id).filter(Boolean);
+    const keys = selectedCustomNodes.map(n => n.nodeKey);
+    if (ids.length === 0) {
+      showToast?.('请选择要删除的自建节点', 'warning');
+      return;
+    }
+    setBatchDeleteConfirm({ open: true, ids, keys, count: ids.length });
+  };
+
+  const confirmBatchDeleteCustomNodes = async () => {
+    const { ids, keys } = batchDeleteConfirm;
+    if (!ids || ids.length === 0) return;
+    try {
+      const res = await request.post(`${API_BASE}/custom-nodes/batch-delete`, { ids });
+      const deleted = res.data?.deleted ?? ids.length;
+      setSelectedNodes(prev => {
+        const next = new Set(prev);
+        (keys || []).forEach(k => next.delete(k));
+        return next;
+      });
+      onRefreshCustomNodes?.();
+      showToast?.(`已删除 ${deleted} 个自建节点`, 'success');
+    } catch (err) {
+      showToast?.('批量删除失败', 'error');
+    }
+  };
+
+  const updateCustomOrderValue = (nodeId, value) => {
+    setCustomOrderMap(prev => ({
+      ...prev,
+      [nodeId]: value
+    }));
+  };
+
+  const applyCustomOrder = async () => {
+    const list = customNodes || [];
+    if (list.length < 2) return;
+
+    const items = list.map((node, idx) => {
+      const raw = customOrderMap[node.id];
+      const parsed = parseInt(raw, 10);
+      const order = Number.isFinite(parsed) && parsed > 0 ? parsed : idx + 1;
+      return { id: node.id, order, idx };
+    }).filter(item => item.id);
+
+    if (items.length < 2) return;
+
+    items.sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return a.idx - b.idx;
+    });
+
+    const desiredOrder = items.map(item => item.id);
+    const currentOrder = list.map(node => node.id).filter(Boolean);
+
+    if (currentOrder.length === desiredOrder.length && currentOrder.every((id, i) => id === desiredOrder[i])) {
+      return;
+    }
+
+    try {
+      await request.put(`${API_BASE}/custom-nodes/reorder`, { order: desiredOrder });
+      onRefreshCustomNodes?.();
+      showToast?.('自建节点排序已更新', 'success');
+    } catch (err) {
+      showToast?.('排序失败', 'error');
+    }
   };
 
   // Refresh all nodes
@@ -1536,6 +1653,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             )}
           </div>
           <button
+            onClick={openBatchDeleteCustomNodes}
+            disabled={selectedCustomCount === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50"
+          >
+            <Trash2 size={18} />
+            {selectedCustomCount > 0 ? `批量删除 (${selectedCustomCount})` : '批量删除'}
+          </button>
+          <button
             onClick={refreshAllNodes}
             disabled={loadingNodes}
             className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
@@ -1713,7 +1838,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            {node.sourceType === 'custom' && (
+                            {node.sourceType === 'custom' && node.id && (
+                              <input
+                                type="number"
+                                min={1}
+                                value={customOrderMap[node.id] ?? ''}
+                                onChange={(e) => updateCustomOrderValue(node.id, e.target.value)}
+                                onBlur={applyCustomOrder}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    applyCustomOrder();
+                                  }
+                                }}
+                                className="w-12 px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 text-xs font-mono border border-orange-500/30 focus:outline-none focus:border-orange-400"
+                                title="自建节点序号，修改后自动按序排列"
+                              />
+                            )}
+                            {node.sourceType === 'custom' && !node.id && (
                               <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-orange-500/20 text-orange-400 text-xs font-bold">
                                 {node.idx + 1}
                               </span>
@@ -1994,7 +2136,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <textarea
                   value={newNodeLink}
                   onChange={(e) => setNewNodeLink(e.target.value)}
-                  placeholder="vless://... or vmess://... or trojan://..."
+                  placeholder="支持多行，一行一个链接（vless://... / vmess://... / trojan://...)"
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 h-24 resize-none"
                 />
               </div>
@@ -2004,7 +2146,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   type="text"
                   value={newNodeName}
                   onChange={(e) => setNewNodeName(e.target.value)}
-                  placeholder="留空则使用链接中的名称"
+                  placeholder="留空则使用链接名；批量用分号分隔"
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -2102,6 +2244,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         onConfirm={() => deleteCustomNode(deleteConfirm.nodeId)}
         title="删除节点"
         message="确定要删除这个节点吗？"
+        type="danger"
+      />
+      <ConfirmModal
+        isOpen={batchDeleteConfirm.open}
+        onClose={() => setBatchDeleteConfirm({ open: false, ids: [], keys: [], count: 0 })}
+        onConfirm={confirmBatchDeleteCustomNodes}
+        title="批量删除"
+        message={`确定要删除选中的 ${batchDeleteConfirm.count} 个自建节点吗？`}
         type="danger"
       />
 
