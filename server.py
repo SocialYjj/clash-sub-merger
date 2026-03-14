@@ -1961,20 +1961,51 @@ async def get_merged_subscription(
     custom_nodes = config.get('custom_nodes', [])
     
     # Filter subscriptions based on user allocations
+    has_chain_allocations = False
     if user_allocations is not None:
         # User mode: only show allocated subscriptions
-        allocated_sub_ids = set(user_allocations.keys()) - {'custom_nodes'}
+        all_sub_ids = {s['id'] for s in subs}
+        allocated_sub_ids = {sid for sid in user_allocations.keys() if sid in all_sub_ids}
         enabled_subs = [s for s in enabled_subs if s['id'] in allocated_sub_ids]
         
         # Filter custom nodes if allocated
         if 'custom_nodes' in user_allocations:
             allocated_custom = user_allocations['custom_nodes']
             if allocated_custom != ['*']:
-                custom_nodes = [n for n in custom_nodes if n['name'] in allocated_custom]
+                def custom_node_allocated(node: dict) -> bool:
+                    node_name = node.get('name', '')
+                    transformed = NameTransformer.transform_name(node, 'Custom').get('name', node_name)
+                    node_clean = NameTransformer.remove_flags(node_name)
+                    transformed_clean = NameTransformer.remove_flags(transformed)
+                    for alloc in allocated_custom:
+                        if not alloc:
+                            continue
+                        if alloc == node_name or alloc == transformed:
+                            return True
+                        if node_name and (alloc in node_name or node_name in alloc):
+                            return True
+                        if transformed and (alloc in transformed or transformed in alloc):
+                            return True
+                        alloc_clean = NameTransformer.remove_flags(alloc)
+                        if alloc_clean and (
+                            alloc_clean == node_clean
+                            or alloc_clean == transformed_clean
+                            or (transformed_clean and alloc_clean in transformed_clean)
+                            or (alloc_clean and transformed_clean and transformed_clean in alloc_clean)
+                        ):
+                            return True
+                        if node_name and alloc_clean.endswith(f"Custom {node_name}"):
+                            return True
+                    return False
+
+                custom_nodes = [n for n in custom_nodes if custom_node_allocated(n)]
         else:
             custom_nodes = []  # No custom nodes allocated
+
+        # Chain allocations allow chain-only subscriptions even without sub/custom allocations
+        has_chain_allocations = bool(user_allocations.get('chain_nodes') or user_allocations.get('chain_pools'))
     
-    if not enabled_subs and not custom_nodes:
+    if not enabled_subs and not custom_nodes and not has_chain_allocations:
         raise HTTPException(status_code=404, detail="No enabled subscriptions or custom nodes")
     
     # Check and auto-refresh missing subscription files
@@ -2433,6 +2464,9 @@ async def get_merged_subscription(
         existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
         pool_group_names = []
+        chain_allocations_enabled = user_allocations is not None and bool(
+            user_allocations.get('chain_nodes') or user_allocations.get('chain_pools')
+        )
 
         def short_node_name(name: str) -> str:
             if not name:
@@ -2603,12 +2637,13 @@ async def get_merged_subscription(
                 if not base_node_refs:
                     continue
 
-                # Resolve base nodes (respect user allocations)
+                # Resolve base nodes (respect user allocations unless chain allocations are explicitly enabled)
                 chain_node_proxies = []
                 base_allowed = True
+                require_base_allocation = not (user_allocations is not None and chain_allocations_enabled)
                 for node_ref in base_node_refs:
                     node_proxy = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
-                    if not node_proxy or not is_allocated_ref(node_ref, node_proxy):
+                    if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
                         base_allowed = False
                         break
                     chain_node_proxies.append(dict(node_proxy))
@@ -2625,14 +2660,14 @@ async def get_merged_subscription(
                     # Build group name first to check allocation
                     group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
                     group_name = f"🔀 {group_base_name}"
-                    if not is_allocated_chain_name(group_name, 'chain_pools'):
+                    if user_allocations is not None and not is_allocated_chain_name(group_name, 'chain_pools'):
                         continue
 
                     group_nodes = group_spec.get('group_nodes', []) or []
                     member_proxies = []
                     for member_ref in group_nodes:
                         node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
-                        if node_proxy and is_allocated_ref(member_ref, node_proxy):
+                        if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
                             member_proxies.append(dict(node_proxy))
 
                     if not member_proxies:
@@ -2692,12 +2727,9 @@ async def get_merged_subscription(
                     if len(chain_node_proxies) < 2:
                         continue
                     chain_name_full = f"🔗 {chain_name}"
-                    build_chain_entry(
-                        chain_name_full,
-                        chain_node_proxies,
-                        add_to_manual=True,
-                        allow_name=lambda n: is_allocated_chain_name(n, 'chain_nodes')
-                    )
+                    if user_allocations is not None and not is_allocated_chain_name(chain_name_full, 'chain_nodes'):
+                        continue
+                    build_chain_entry(chain_name_full, chain_node_proxies, add_to_manual=True)
         
         # Add pool groups to GLOBAL after fallback
         if pool_group_names:
