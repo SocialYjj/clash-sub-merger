@@ -411,6 +411,7 @@ DATA_DIR = AppConfig.DATA_DIR
 YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 OUTPUT_FILE = os.path.join(DATA_DIR, 'myconfig.yaml')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
+MIGRATIONS_LOG = os.path.join(DATA_DIR, 'migrations.log')
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
@@ -477,8 +478,8 @@ def find_proxy_chain_by_id(config: dict, chain_id: str) -> Optional[dict]:
             return chain
     return None
 
-def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
-    """Get a proxy node by reference (sub_id + node_index) with transformed name.
+def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name: str | None = None) -> Optional[dict]:
+    """Get a proxy node by reference (sub_id + node_name/node_index) with transformed name.
 
     Returns a proxy dict aligned with ConfigMerger naming, or None if not found/invalid.
     """
@@ -487,7 +488,18 @@ def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
     # Custom nodes
     if sub_id == 'custom':
         custom_nodes = config.get('custom_nodes', [])
-        if 0 <= node_index < len(custom_nodes):
+        if node_name:
+            for node in custom_nodes:
+                exclude_fields = {
+                    'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
+                    'last_peak_speed', 'last_speed_time', 'geoip'
+                }
+                proxy = {k: v for k, v in node.items() if k not in exclude_fields}
+                proxy = ProxyFilter.sanitize_proxy(proxy)
+                transformed = NameTransformer.transform_name(proxy, 'Custom')
+                if transformed.get('name') == node_name:
+                    return transformed
+        if node_index is not None and 0 <= node_index < len(custom_nodes):
             node = custom_nodes[node_index]
             # Strip metadata fields not part of Clash proxy config
             exclude_fields = {
@@ -505,7 +517,15 @@ def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
     try:
         cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
         proxies = cfg.get('proxies', []) if cfg else []
-        if 0 <= node_index < len(proxies):
+        if node_name:
+            for proxy in proxies:
+                if not ProxyFilter.is_valid_proxy(proxy):
+                    continue
+                proxy = ProxyFilter.sanitize_proxy(proxy)
+                transformed = NameTransformer.transform_name(proxy, source_name)
+                if transformed.get('name') == node_name:
+                    return transformed
+        if node_index is not None and 0 <= node_index < len(proxies):
             proxy = proxies[node_index]
             if not ProxyFilter.is_valid_proxy(proxy):
                 return None
@@ -514,6 +534,31 @@ def find_node_by_reference(sub_id: str, node_index: int) -> Optional[dict]:
     except Exception as e:
         logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
     return None
+
+def normalize_alloc_name(name: str) -> str:
+    """Normalize node name for allocation matching (remove flags and trim)."""
+    return NameTransformer.remove_flags(name or '').strip()
+
+def is_name_allocated(name: str, allocated_nodes: list | None) -> bool:
+    """Check if a node name is in allocation list (supports legacy partial matches)."""
+    if not allocated_nodes:
+        return False
+    if allocated_nodes == ['*']:
+        return True
+    if not name:
+        return False
+    name_clean = normalize_alloc_name(name)
+    for alloc in allocated_nodes:
+        if not alloc:
+            continue
+        if alloc == name:
+            return True
+        if alloc in name:
+            return True
+        alloc_clean = normalize_alloc_name(alloc)
+        if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
+            return True
+    return False
 
 # ==================== Request Deduplication ====================
 # Track ongoing subscription refresh operations to prevent duplicates
@@ -827,6 +872,17 @@ def migrate_old_config():
     
     save_config(config)
     logger.info("Config migration completed")
+    log_migration("migrate_old_config: legacy files merged into config.json")
+
+def log_migration(message: str):
+    """Write migration message to a separate log file."""
+    try:
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(MIGRATIONS_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception as e:
+        logger.warning("Failed to write migrations log: %s", e)
 
 def migrate_legacy_sub_token():
     """Migrate legacy auth.sub_token to admin_tokens if not already migrated"""
@@ -870,6 +926,7 @@ def migrate_legacy_sub_token():
     
     save_config(config)
     logger.info("Legacy sub_token migrated to admin_tokens: %s...", legacy_token[:8])
+    log_migration(f"migrate_legacy_sub_token: migrated legacy token {legacy_token[:8]}...")
 
 def migrate_subscription_fields():
     """Migrate subscriptions to add missing cron_expr and next_update fields"""
@@ -891,11 +948,41 @@ def migrate_subscription_fields():
     if updated:
         save_config(config)
         logger.info("Subscription fields migrated: added cron_expr and next_update to %s subscriptions", len(subs))
+        log_migration(f"migrate_subscription_fields: updated {len(subs)} subscriptions")
+
+def migrate_proxy_chain_group_ids():
+    """Add missing group_id for proxy chain group nodes."""
+    config = load_config()
+    chains = config.get('proxy_chains', [])
+    if not chains:
+        return
+
+    updated = False
+    added = 0
+    for chain in chains:
+        chain_id = chain.get('id') or chain.get('name', '')
+        rows = chain.get('rows', [])
+        for row_idx, row in enumerate(rows):
+            nodes = row.get('nodes', [])
+            for col_idx, node in enumerate(nodes):
+                if isinstance(node, dict) and node.get('type') == 'group':
+                    if not node.get('group_id'):
+                        seed = f"{chain_id}:{row_idx}:{col_idx}"
+                        digest = hashlib.sha1(seed.encode('utf-8')).hexdigest()[:8]
+                        node['group_id'] = f"grp_{digest}"
+                        updated = True
+                        added += 1
+
+    if updated:
+        save_config(config)
+        logger.info("Proxy chain group_id migration completed")
+        log_migration(f"migrate_proxy_chain_group_ids: added {added} group_id")
 
 # Run migration on startup
 migrate_old_config()
 migrate_legacy_sub_token()
 migrate_subscription_fields()
+migrate_proxy_chain_group_ids()
 
 # Initialize GeoIP config from saved config
 def init_geoip_config():
@@ -1124,6 +1211,42 @@ def get_proxy_node_by_id(node_id: str) -> dict:
     
     return None
 
+def get_proxy_node_by_name(node_name: str) -> dict:
+    """Get proxy node config by transformed display name."""
+    if not node_name:
+        return None
+    config = load_config()
+
+    # Custom nodes
+    for node in config.get('custom_nodes', []):
+        exclude_fields = {
+            'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
+            'last_peak_speed', 'last_speed_time', 'geoip'
+        }
+        proxy = {k: v for k, v in node.items() if k not in exclude_fields}
+        proxy = ProxyFilter.sanitize_proxy(proxy)
+        transformed = NameTransformer.transform_name(proxy, 'Custom')
+        if transformed.get('name') == node_name:
+            return transformed
+
+    # Subscription nodes
+    for sub in config.get('subscriptions', []):
+        if not sub.get('enabled', True):
+            continue
+        try:
+            cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
+            proxies = cfg.get('proxies', []) if cfg else []
+            for proxy in proxies:
+                if not ProxyFilter.is_valid_proxy(proxy):
+                    continue
+                proxy = ProxyFilter.sanitize_proxy(proxy)
+                transformed = NameTransformer.transform_name(proxy, sub['name'])
+                if transformed.get('name') == node_name:
+                    return transformed
+        except Exception as e:
+            logger.warning("Failed to load node by name from %s: %s", sub.get('id'), e)
+    return None
+
 
 def get_configured_proxy_node() -> dict:
     """Get the configured proxy node from settings"""
@@ -1131,7 +1254,12 @@ def get_configured_proxy_node() -> dict:
     settings = config.get('settings', {})
     proxy_node_id = settings.get('proxy_node_id')
     if proxy_node_id:
-        return get_proxy_node_by_id(proxy_node_id)
+        node = get_proxy_node_by_id(proxy_node_id)
+        if node:
+            return node
+    proxy_node_name = settings.get('proxy_node_name')
+    if proxy_node_name:
+        return get_proxy_node_by_name(proxy_node_name)
     return None
 
 # Node Parsing moved to services/node_parser.py
@@ -1581,6 +1709,7 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
         chain_pools = []
 
         existing_names = get_all_final_node_names()
+        existing_group_names = set()
 
         def unique_chain_name(base: str) -> str:
             if base not in existing_names:
@@ -1593,6 +1722,46 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
             existing_names.add(name)
             return name
 
+        def _group_id_suffix(group_id: str | None) -> str:
+            if not group_id:
+                return ''
+            clean = re.sub(r'[^A-Za-z0-9]', '', group_id)
+            return clean[-4:] if clean else ''
+
+        def unique_group_name(base: str, group_id: str | None = None) -> str:
+            if base not in existing_group_names:
+                existing_group_names.add(base)
+                return base
+            suffix = _group_id_suffix(group_id)
+            if suffix:
+                candidate = f"{base} ({suffix})"
+                if candidate not in existing_group_names:
+                    existing_group_names.add(candidate)
+                    return candidate
+            idx = 2
+            while f"{base} ({idx})" in existing_group_names:
+                idx += 1
+            name = f"{base} ({idx})"
+            existing_group_names.add(name)
+            return name
+
+        def coerce_group_strategy(spec: dict) -> dict:
+            strategy = (spec.get('group_strategy') or 'load-balance').strip()
+            strategy = strategy if strategy in ['url-test', 'fallback', 'load-balance'] else 'load-balance'
+            group_cfg = {'type': strategy}
+            if strategy in ['url-test', 'fallback']:
+                group_cfg['url'] = spec.get('group_url') or 'http://www.gstatic.com/generate_204'
+                group_cfg['interval'] = int(spec.get('group_interval') or 300)
+            if strategy == 'url-test':
+                group_cfg['tolerance'] = int(spec.get('group_tolerance') or 50)
+            if strategy == 'load-balance':
+                lb_strategy = (spec.get('lb_strategy') or 'round-robin').strip()
+                if lb_strategy not in ['round-robin', 'consistent-hashing', 'sticky-sessions']:
+                    lb_strategy = 'round-robin'
+                group_cfg['strategy'] = lb_strategy
+            return group_cfg
+
+
         for chain in proxy_chains:
             if not chain.get('enabled', True):
                 continue
@@ -1603,53 +1772,35 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
                 if len(nodes) < 2:
                     continue
 
-                base_node_refs = []
-                group_spec = None
-                for idx, node_ref in enumerate(nodes):
-                    if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
-                        if idx != len(nodes) - 1:
-                            group_spec = None
-                            base_node_refs = []
-                        else:
-                            group_spec = node_ref
-                        break
-                    base_node_refs.append(node_ref)
-
-                if not base_node_refs:
-                    continue
-
-                chain_node_proxies = []
-                base_valid = True
-                for node_ref in base_node_refs:
-                    node_proxy = find_node_by_reference(node_ref.get('sub_id'), node_ref.get('node_index'))
-                    if not node_proxy:
-                        base_valid = False
-                        break
-                    chain_node_proxies.append(node_proxy)
-                if not base_valid or len(chain_node_proxies) < len(base_node_refs):
-                    continue
-
                 chain_name = chain.get('name', '')
                 if len(rows) > 1:
                     chain_name = f"{chain_name} #{row_idx + 1}"
 
-                if group_spec:
-                    group_nodes = group_spec.get('group_nodes', []) or []
-                    member_proxies = []
-                    for member_ref in group_nodes:
-                        node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
-                        if node_proxy:
-                            member_proxies.append(node_proxy)
-                    if not member_proxies:
-                        continue
+                # Collect transit groups and terminal group
+                terminal_group = None
+                transit_groups = []
+                for idx, node_ref in enumerate(nodes):
+                    if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
+                        if idx == len(nodes) - 1:
+                            terminal_group = node_ref
+                        else:
+                            transit_groups.append(node_ref)
 
-                    group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
-                    group_name = f"🔀 {group_base_name}"
+                # Record transit pools
+                for t_idx, spec in enumerate(transit_groups):
+                    base_name = spec.get('group_name') or f"{chain_name} 中转池{t_idx + 1}"
+                    group_name = unique_group_name(f"🔀 {base_name}", spec.get('group_id'))
+                    if group_name not in chain_pools:
+                        chain_pools.append(group_name)
+
+                # Record terminal pool
+                if terminal_group:
+                    group_base_name = terminal_group.get('group_name') or f"{chain_name} 落地池"
+                    group_name = unique_group_name(f"🔀 {group_base_name}", terminal_group.get('group_id'))
                     if group_name not in chain_pools:
                         chain_pools.append(group_name)
                 else:
-                    if len(chain_node_proxies) < 2:
-                        continue
+                    # Normal chain (no terminal pool)
                     chain_name_full = f"🔗 {chain_name}"
                     chain_nodes.append(unique_chain_name(chain_name_full))
 
@@ -1972,33 +2123,13 @@ async def get_merged_subscription(
         if 'custom_nodes' in user_allocations:
             allocated_custom = user_allocations['custom_nodes']
             if allocated_custom != ['*']:
-                def custom_node_allocated(node: dict) -> bool:
-                    node_name = node.get('name', '')
-                    transformed = NameTransformer.transform_name(node, 'Custom').get('name', node_name)
-                    node_clean = NameTransformer.remove_flags(node_name)
-                    transformed_clean = NameTransformer.remove_flags(transformed)
-                    for alloc in allocated_custom:
-                        if not alloc:
-                            continue
-                        if alloc == node_name or alloc == transformed:
-                            return True
-                        if node_name and (alloc in node_name or node_name in alloc):
-                            return True
-                        if transformed and (alloc in transformed or transformed in alloc):
-                            return True
-                        alloc_clean = NameTransformer.remove_flags(alloc)
-                        if alloc_clean and (
-                            alloc_clean == node_clean
-                            or alloc_clean == transformed_clean
-                            or (transformed_clean and alloc_clean in transformed_clean)
-                            or (alloc_clean and transformed_clean and transformed_clean in alloc_clean)
-                        ):
-                            return True
-                        if node_name and alloc_clean.endswith(f"Custom {node_name}"):
-                            return True
-                    return False
-
-                custom_nodes = [n for n in custom_nodes if custom_node_allocated(n)]
+                filtered = []
+                for node in custom_nodes:
+                    transformed = NameTransformer.transform_name(node, 'Custom')
+                    node_name = transformed.get('name', node.get('name', ''))
+                    if is_name_allocated(node_name, allocated_custom):
+                        filtered.append(node)
+                custom_nodes = filtered
         else:
             custom_nodes = []  # No custom nodes allocated
 
@@ -2154,103 +2285,41 @@ async def get_merged_subscription(
         
         # Filter proxies based on user allocations (specific nodes)
         if user_allocations is not None:
-            filtered_proxies = []
-            for proxy in proxies:
-                proxy_name = proxy.get('name', '')
-                # Determine which subscription this proxy belongs to
-                # The proxy name format is: "Flag Provider NodeName"
-                # We need to check against allocations
-                included = False
-                
-                for sub_id, allocated_nodes in user_allocations.items():
-                    if sub_id == 'custom_nodes':
-                        continue  # Custom nodes handled separately
-                    
-                    # Find the subscription name
-                    sub_name_match = None
-                    for s in config.get('subscriptions', []):
-                        if s['id'] == sub_id:
-                            sub_name_match = s['name']
-                            break
-                    
-                    if sub_name_match and sub_name_match in proxy_name:
-                        if allocated_nodes == ['*']:
-                            # All nodes from this subscription
-                            included = True
-                            break
-                        else:
-                            # Check if this specific node is allocated
-                            # Original node name might have flags, e.g., "🇭🇰HK@xxx"
-                            # Transformed name is "flag + name + code@info"
-                            # We need to match the core part (without flags)
-                            for alloc_node in allocated_nodes:
-                                # Remove flags from allocated node name for matching
-                                alloc_node_clean = NameTransformer.remove_flags(alloc_node)
-                                if alloc_node_clean and alloc_node_clean in proxy_name:
-                                    included = True
-                                    break
-                                # Also try direct match (in case no transformation)
-                                if alloc_node in proxy_name:
-                                    included = True
-                                    break
-                        if included:
-                            break
-                
-                # Check custom nodes - need to verify it's actually a custom node
-                # Custom nodes have "Custom" in their name after transformation (e.g., "🇸🇬 Custom SG")
-                if not included and 'custom_nodes' in user_allocations:
-                    # Only check if this is actually a custom node (contains "Custom" provider name)
-                    if 'Custom' in proxy_name:
-                        allocated_custom = user_allocations['custom_nodes']
-                        # Get the list of custom node names from config
-                        all_custom_nodes = [cn for cn in config.get('custom_nodes', []) if cn.get('name')]
-                        custom_name_map = {}
-                        for cn in all_custom_nodes:
-                            cn_name = cn.get('name', '')
-                            if not cn_name:
-                                continue
-                            transformed = NameTransformer.transform_name(cn, 'Custom')
-                            custom_name_map[cn_name] = transformed.get('name', cn_name)
-                        
-                        # Find which custom node this proxy matches
-                        # Sort by length descending to match longer names first (e.g., "SG-azure" before "SG")
-                        matching_custom_name = None
-                        for cn_name in sorted(custom_name_map.keys(), key=len, reverse=True):
-                            # Proxy name format: "🇸🇬 Custom SG" where "SG" is the custom node name
-                            # Use exact end match to avoid "SG" matching "SG-azure"
-                            expected_suffix = f"Custom {cn_name}"
-                            if proxy_name.endswith(expected_suffix):
-                                matching_custom_name = cn_name
-                                break
-                        
-                        if matching_custom_name:
-                            if allocated_custom == ['*']:
-                                included = True
-                            else:
-                                display_name = custom_name_map.get(matching_custom_name, '')
-                                if matching_custom_name in allocated_custom:
-                                    included = True
-                                elif display_name and display_name in allocated_custom:
-                                    included = True
-                                else:
-                                    expected_suffix = f"Custom {matching_custom_name}"
-                                    for alloc_name in allocated_custom:
-                                        alloc_clean = NameTransformer.remove_flags(alloc_name)
-                                        if alloc_clean == expected_suffix or alloc_clean.endswith(expected_suffix):
-                                            included = True
-                                            break
-                
-                if included:
-                    filtered_proxies.append(proxy)
-            
-            proxies = filtered_proxies
-            
+            allowed_proxy_names = set()
+
+            # Subscription nodes
+            for sub in enabled_subs:
+                alloc_list = user_allocations.get(sub['id'])
+                if not alloc_list:
+                    continue
+                try:
+                    sub_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
+                    sub_proxies = sub_cfg.get('proxies', []) if sub_cfg else []
+                    for proxy in sub_proxies:
+                        transformed = NameTransformer.transform_name(proxy, sub['name'])
+                        proxy_name = transformed.get('name', proxy.get('name', ''))
+                        if is_name_allocated(proxy_name, alloc_list):
+                            allowed_proxy_names.add(proxy_name)
+                except Exception as e:
+                    logger.warning("Failed to build allocation list for %s: %s", sub['id'], e)
+
+            # Custom nodes
+            alloc_custom = user_allocations.get('custom_nodes')
+            if alloc_custom and custom_nodes:
+                for node in custom_nodes:
+                    transformed = NameTransformer.transform_name(node, 'Custom')
+                    node_name = transformed.get('name', node.get('name', ''))
+                    if is_name_allocated(node_name, alloc_custom):
+                        allowed_proxy_names.add(node_name)
+
+            proxies = [p for p in proxies if p.get('name', '') in allowed_proxy_names]
+
             # Regenerate proxy groups based on filtered proxies
             from services.country_grouper import CountryGrouper
             from services.config_merger import ProxyGroupGenerator
             country_groups = CountryGrouper.group_by_country(proxies)
             proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
-        
+
         # If using custom template with proxy-groups, process user config
         if template_proxy_groups and isinstance(template_proxy_groups, list) and len(template_proxy_groups) > 0:
             # Get all proxy names
@@ -2489,16 +2558,60 @@ async def get_merged_subscription(
 
         existing_group_names = {g.get('name') for g in proxy_groups if isinstance(g, dict) and g.get('name')}
 
-        def unique_group_name(base: str) -> str:
+        def _group_id_suffix(group_id: str | None) -> str:
+            if not group_id:
+                return ''
+            clean = re.sub(r'[^A-Za-z0-9]', '', group_id)
+            return clean[-4:] if clean else ''
+
+        def unique_group_name(base: str, group_id: str | None = None) -> str:
             if base not in existing_group_names:
                 existing_group_names.add(base)
                 return base
+            suffix = _group_id_suffix(group_id)
+            if suffix:
+                candidate = f"{base} ({suffix})"
+                if candidate not in existing_group_names:
+                    existing_group_names.add(candidate)
+                    return candidate
             idx = 2
             while f"{base} ({idx})" in existing_group_names:
                 idx += 1
             name = f"{base} ({idx})"
             existing_group_names.add(name)
             return name
+
+        def coerce_group_strategy(spec: dict) -> dict:
+            strategy = (spec.get('group_strategy') or 'load-balance').strip()
+            strategy = strategy if strategy in ['url-test', 'fallback', 'load-balance'] else 'load-balance'
+            group_cfg = {'type': strategy}
+            if strategy in ['url-test', 'fallback']:
+                group_cfg['url'] = spec.get('group_url') or 'http://www.gstatic.com/generate_204'
+                group_cfg['interval'] = int(spec.get('group_interval') or 300)
+            if strategy == 'url-test':
+                group_cfg['tolerance'] = int(spec.get('group_tolerance') or 50)
+            if strategy == 'load-balance':
+                lb_strategy = (spec.get('lb_strategy') or 'round-robin').strip()
+                if lb_strategy not in ['round-robin', 'consistent-hashing', 'sticky-sessions']:
+                    lb_strategy = 'round-robin'
+                group_cfg['strategy'] = lb_strategy
+            return group_cfg
+
+        def insert_pool_group(group_cfg: dict) -> None:
+            group_name = group_cfg.get('name')
+            if not group_name:
+                return
+            proxy_groups[:] = [g for g in proxy_groups if g.get('name') != group_name]
+
+            insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') == '🔯 故障转移'), -1)
+            if insert_idx == -1:
+                country_names = set(ProxyGroupGenerator.COUNTRY_ORDER)
+                insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') in country_names), len(proxy_groups))
+            else:
+                insert_idx += 1
+                while insert_idx < len(proxy_groups) and proxy_groups[insert_idx].get('name') in pool_group_names:
+                    insert_idx += 1
+            proxy_groups.insert(insert_idx, group_cfg)
 
         def build_chain_entry(
             chain_display_name: str,
@@ -2510,7 +2623,16 @@ async def get_merged_subscription(
             """Build chain proxies for given nodes and return the final chain proxy name."""
             if len(chain_nodes) < 2:
                 return None
+            def hop_name(hop: dict) -> str:
+                if not hop:
+                    return ''
+                if hop.get('type') == 'group':
+                    return hop.get('name', '')
+                return hop.get('name', '')
+
             last_node = chain_nodes[-1]
+            if last_node.get('type') == 'group':
+                return None
             chain_proxy = dict(last_node)
 
             last_node_name = last_node.get('name', '')
@@ -2526,12 +2648,24 @@ async def get_merged_subscription(
                 chain_proxy['_country_info'] = chain_country_info
 
             if len(chain_nodes) == 2:
-                chain_proxy['dialer-proxy'] = chain_nodes[0]['name']
+                prev_name = hop_name(chain_nodes[0])
+                if not prev_name:
+                    return None
+                chain_proxy['dialer-proxy'] = prev_name
             else:
-                prev_proxy_name = chain_nodes[0]['name']
+                prev_proxy_name = hop_name(chain_nodes[0])
+                if not prev_proxy_name:
+                    return None
                 intermediates = []
                 for i in range(1, len(chain_nodes) - 1):
-                    intermediate = dict(chain_nodes[i])
+                    hop = chain_nodes[i]
+                    hop_display = hop_name(hop)
+                    if hop.get('type') == 'group':
+                        if not hop_display:
+                            return None
+                        prev_proxy_name = hop_display
+                        continue
+                    intermediate = dict(hop)
                     intermediate_name = unique_chain_name(f"{chain_display_name} (via {i})")
                     intermediate['name'] = intermediate_name
                     intermediate['dialer-proxy'] = prev_proxy_name
@@ -2571,19 +2705,7 @@ async def get_merged_subscription(
 
             if not name:
                 return False
-
-            name_clean = NameTransformer.remove_flags(name)
-            for alloc in allocated_nodes:
-                if not alloc:
-                    continue
-                if alloc == name:
-                    return True
-                if alloc in name:
-                    return True
-                alloc_clean = NameTransformer.remove_flags(alloc)
-                if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
-                    return True
-            return False
+            return is_name_allocated(name, allocated_nodes)
 
         def is_allocated_chain_name(name: str, alloc_key: str) -> bool:
             if user_allocations is None:
@@ -2595,14 +2717,21 @@ async def get_merged_subscription(
                 return False
             if allocated == ['*']:
                 return True
-            name_clean = NameTransformer.remove_flags(name)
+            name_clean = normalize_alloc_name(name)
+            base_name = re.sub(r" \\([A-Za-z0-9]{4}\\)$", "", name)
+            base_clean = normalize_alloc_name(base_name)
             for alloc in allocated:
                 if not alloc:
                     continue
                 if alloc == name or alloc in name:
                     return True
-                alloc_clean = NameTransformer.remove_flags(alloc)
-                if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
+                alloc_clean = normalize_alloc_name(alloc)
+                if alloc_clean and (
+                    alloc_clean == name_clean
+                    or alloc_clean in name_clean
+                    or alloc_clean == base_clean
+                    or (base_clean and alloc_clean in base_clean)
+                ):
                     return True
             return False
 
@@ -2620,35 +2749,19 @@ async def get_merged_subscription(
                 # For chain [A, B, C]: B.dialer-proxy = A, C.dialer-proxy = B
                 # We create a new proxy entry based on the last node with dialer-proxy set
                 
-                # Split base nodes and optional group (group must be last)
-                base_node_refs = []
+                # Parse chain hops (nodes + transit groups), terminal group is handled separately
+                chain_hops = []
                 group_spec = None
                 for idx, node_ref in enumerate(nodes):
                     if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
-                        if idx != len(nodes) - 1:
-                            logger.warning("Proxy chain group must be the last node: %s", chain.get('name'))
-                            group_spec = None
-                            base_node_refs = []
-                        else:
+                        if idx == len(nodes) - 1:
                             group_spec = node_ref
-                        break
-                    base_node_refs.append(node_ref)
+                            break
+                        chain_hops.append({'type': 'group', 'spec': node_ref})
+                        continue
+                    chain_hops.append({'type': 'node', 'ref': node_ref})
 
-                if not base_node_refs:
-                    continue
-
-                # Resolve base nodes (respect user allocations unless chain allocations are explicitly enabled)
-                chain_node_proxies = []
-                base_allowed = True
-                require_base_allocation = not (user_allocations is not None and chain_allocations_enabled)
-                for node_ref in base_node_refs:
-                    node_proxy = find_node_by_reference(node_ref['sub_id'], node_ref['node_index'])
-                    if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
-                        base_allowed = False
-                        break
-                    chain_node_proxies.append(dict(node_proxy))
-
-                if not base_allowed or len(chain_node_proxies) < len(base_node_refs):
+                if not chain_hops:
                     continue
 
                 # Set chain display name (with row suffix when multiple rows)
@@ -2656,17 +2769,80 @@ async def get_merged_subscription(
                 if len(chain.get('rows', [])) > 1:
                     chain_name = f"{chain_name} #{row_idx + 1}"
 
+                def build_transit_group(base_name: str, spec: dict) -> str | None:
+                    group_base_name = spec.get('group_name') or base_name
+                    group_name = unique_group_name(f"🔀 {group_base_name}", spec.get('group_id'))
+                    if user_allocations is not None and not is_allocated_chain_name(group_name, 'chain_pools'):
+                        return None
+                    group_nodes = spec.get('group_nodes', []) or []
+                    member_proxies = []
+                    for member_ref in group_nodes:
+                        node_proxy = find_node_by_reference(
+                            member_ref.get('sub_id'),
+                            member_ref.get('node_index'),
+                            member_ref.get('node_name')
+                        )
+                        if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
+                            member_proxies.append(dict(node_proxy))
+                    if not member_proxies:
+                        return None
+                    member_names = [p.get('name', '') for p in member_proxies if p.get('name')]
+                    if not member_names:
+                        return None
+                    group_cfg = {'name': group_name, 'proxies': member_names}
+                    group_cfg.update(coerce_group_strategy(spec))
+                    insert_pool_group(group_cfg)
+                    chain_proxy_names.append(group_name)
+                    if group_name not in pool_group_names:
+                        pool_group_names.append(group_name)
+                    return group_name
+
+                # Resolve hops into chain nodes (proxies + group placeholders)
+                chain_nodes = []
+                base_allowed = True
+                require_base_allocation = not (user_allocations is not None and chain_allocations_enabled)
+                transit_idx = 0
+                for hop in chain_hops:
+                    if hop['type'] == 'node':
+                        node_ref = hop['ref']
+                        node_proxy = find_node_by_reference(
+                            node_ref.get('sub_id'),
+                            node_ref.get('node_index'),
+                            node_ref.get('node_name')
+                        )
+                        if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
+                            base_allowed = False
+                            break
+                        chain_nodes.append(dict(node_proxy))
+                    else:
+                        transit_idx += 1
+                        base_name = hop['spec'].get('group_name') or f"{chain_name} 中转池{transit_idx}"
+                        group_name = build_transit_group(base_name, hop['spec'])
+                        if not group_name:
+                            base_allowed = False
+                            break
+                        chain_nodes.append({'type': 'group', 'name': group_name})
+
+                if not base_allowed or not chain_nodes:
+                    continue
+                if not group_spec and len(chain_nodes) < 2:
+                    continue
+
                 if group_spec:
                     # Build group name first to check allocation
                     group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
-                    group_name = f"🔀 {group_base_name}"
+                    group_name = unique_group_name(f"🔀 {group_base_name}", group_spec.get('group_id'))
                     if user_allocations is not None and not is_allocated_chain_name(group_name, 'chain_pools'):
                         continue
 
                     group_nodes = group_spec.get('group_nodes', []) or []
                     member_proxies = []
                     for member_ref in group_nodes:
-                        node_proxy = find_node_by_reference(member_ref.get('sub_id'), member_ref.get('node_index'))
+                        node_proxy = find_node_by_reference(
+                            member_ref.get('sub_id'),
+                            member_ref.get('node_index'),
+                            member_ref.get('node_name')
+                        )
                         if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
                             member_proxies.append(dict(node_proxy))
 
@@ -2674,13 +2850,13 @@ async def get_merged_subscription(
                         continue
 
                     chain_member_names = []
-                    base_start_name = short_node_name(chain_node_proxies[0].get('name', '')) if chain_node_proxies else ''
+                    base_start_name = short_node_name(chain_nodes[0].get('name', '')) if chain_nodes else ''
                     for member_proxy in member_proxies:
-                        chain_nodes = chain_node_proxies + [member_proxy]
+                        chain_nodes_with_member = chain_nodes + [member_proxy]
                         end_name = short_node_name(member_proxy.get('name', ''))
                         path_name = f"{base_start_name} → {end_name}" if base_start_name and end_name else chain_name
                         chain_name_full = f"🔗 {chain_name}: {path_name}"
-                        chain_proxy_name = build_chain_entry(chain_name_full, chain_nodes, add_to_manual=False, include_country_info=False)
+                        chain_proxy_name = build_chain_entry(chain_name_full, chain_nodes_with_member, add_to_manual=False, include_country_info=False)
                         if chain_proxy_name:
                             chain_member_names.append(chain_proxy_name)
 
@@ -2707,29 +2883,18 @@ async def get_merged_subscription(
                             lb_strategy = 'round-robin'
                         group_cfg['strategy'] = lb_strategy
 
-                    # Remove any existing group with same name to avoid duplicates
-                    proxy_groups = [g for g in proxy_groups if g.get('name') != group_name]
-
-                    # Insert pool group between fallback and country groups
-                    insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') == '🔯 故障转移'), -1)
-                    if insert_idx == -1:
-                        # If no fallback group, insert before first country group
-                        country_names = set(ProxyGroupGenerator.COUNTRY_ORDER)
-                        insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') in country_names), len(proxy_groups))
-                        proxy_groups.insert(insert_idx, group_cfg)
-                    else:
-                        proxy_groups.insert(insert_idx + 1, group_cfg)
+                    insert_pool_group(group_cfg)
                     chain_proxy_names.append(group_name)
                     if group_name not in pool_group_names:
                         pool_group_names.append(group_name)
                 else:
                     # Normal chain (no group)
-                    if len(chain_node_proxies) < 2:
+                    if len(chain_nodes) < 2:
                         continue
                     chain_name_full = f"🔗 {chain_name}"
                     if user_allocations is not None and not is_allocated_chain_name(chain_name_full, 'chain_nodes'):
                         continue
-                    build_chain_entry(chain_name_full, chain_node_proxies, add_to_manual=True)
+                    build_chain_entry(chain_name_full, chain_nodes, add_to_manual=True)
         
         # Add pool groups to GLOBAL after fallback
         if pool_group_names:

@@ -2,7 +2,8 @@
 GeoIP API
 GeoIP lookup endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from core.dependencies import verify_session
@@ -61,15 +62,17 @@ async def _do_lookup(ip: str):
 async def batch_lookup_ips(data: BatchGeoIPRequest, _: bool = Depends(verify_session)):
     """Batch lookup GeoIP info for multiple IPs"""
     from geoip_service import lookup_ip_online
+    import asyncio
     
     results = {}
-    
-    for ip in data.ips[:100]:  # Limit to 100 IPs
-        try:
-            result = await lookup_ip_online(ip)
-            results[ip] = result
-        except Exception:
+    ips = data.ips[:100]  # Limit to 100 IPs
+    tasks = [lookup_ip_online(ip) for ip in ips]
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    for ip, res in zip(ips, task_results):
+        if isinstance(res, Exception):
             results[ip] = None
+        else:
+            results[ip] = res
     
     return {"results": results, "count": len(results)}
 
@@ -79,9 +82,17 @@ async def batch_lookup_ips(data: BatchGeoIPRequest, _: bool = Depends(verify_ses
 def get_geoip_cache_stats(_: bool = Depends(verify_session)):
     """Get GeoIP cache statistics"""
     from geoip_service import _online_geoip_cache
-    
+    positive = 0
+    negative = 0
+    for entry in _online_geoip_cache.values():
+        if isinstance(entry, dict) and entry.get('_negative'):
+            negative += 1
+        else:
+            positive += 1
     return {
         "cache_size": len(_online_geoip_cache),
+        "positive": positive,
+        "negative": negative,
         "database_available": False  # No local database
     }
 
@@ -96,6 +107,130 @@ def clear_geoip_cache(_: bool = Depends(verify_session)):
     save_geoip_cache_to_disk()
     
     return {"status": "success", "message": "GeoIP cache cleared"}
+
+
+def _filter_geoip_entries(entries, q=None, api_id=None, status=None, max_age=None):
+    result = []
+    q_lower = q.lower() if q else None
+    for entry in entries:
+        if api_id and api_id != 'all' and entry.get('api_id') != api_id:
+            continue
+        if status == 'positive' and entry.get('negative'):
+            continue
+        if status == 'negative' and not entry.get('negative'):
+            continue
+        if max_age is not None and entry.get('age') is not None and entry.get('age') > max_age:
+            continue
+        if q_lower:
+            hay = ' '.join([
+                entry.get('ip', ''),
+                entry.get('country', '') or '',
+                entry.get('city', '') or '',
+                entry.get('iso_code', '') or '',
+                entry.get('api_id', '') or ''
+            ]).lower()
+            if q_lower not in hay:
+                continue
+        result.append(entry)
+    return result
+
+
+def _build_geoip_entries():
+    import time as _time
+    from geoip_service import _online_geoip_cache
+
+    entries = []
+    now = _time.time()
+    for key, entry in _online_geoip_cache.items():
+        if not isinstance(entry, dict):
+            continue
+        if ':' in key:
+            ip, api_id = key.rsplit(':', 1)
+        else:
+            ip, api_id = key, 'default'
+        ts = entry.get('timestamp') or 0
+        entries.append({
+            "ip": ip,
+            "api_id": api_id,
+            "timestamp": ts,
+            "age": int(now - ts) if ts else None,
+            "negative": bool(entry.get('_negative')),
+            "country": entry.get('country_name'),
+            "city": entry.get('city'),
+            "iso_code": entry.get('iso_code'),
+            "flag": entry.get('flag')
+        })
+    entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+    return entries
+
+
+@router.get("/cache/entries")
+@handle_api_errors
+def get_geoip_cache_entries(
+    limit: int = Query(100, ge=1, le=500),
+    q: str | None = None,
+    api_id: str | None = None,
+    status: str | None = None,
+    max_age: int | None = None,
+    sort: str | None = Query('newest', pattern='^(newest|oldest|age_desc)$'),
+    _: bool = Depends(verify_session)
+):
+    """Get GeoIP cache entries (latest first)"""
+    entries = _build_geoip_entries()
+    entries = _filter_geoip_entries(entries, q=q, api_id=api_id, status=status, max_age=max_age)
+    if sort == 'oldest':
+        entries.sort(key=lambda x: x.get('timestamp', 0))
+    elif sort == 'age_desc':
+        entries.sort(key=lambda x: x.get('age') or 0, reverse=True)
+    else:
+        entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+    entries = entries[:limit]
+    return {"entries": entries, "count": len(entries), "total": len(entries)}
+
+
+@router.get("/cache/export")
+@handle_api_errors
+def export_geoip_cache_entries(
+    format: str = Query('csv', pattern='^(csv|json)$'),
+    q: str | None = None,
+    api_id: str | None = None,
+    status: str | None = None,
+    max_age: int | None = None,
+    sort: str | None = Query('newest', pattern='^(newest|oldest|age_desc)$'),
+    _: bool = Depends(verify_session)
+):
+    """Export GeoIP cache entries"""
+    entries = _build_geoip_entries()
+    entries = _filter_geoip_entries(entries, q=q, api_id=api_id, status=status, max_age=max_age)
+    if sort == 'oldest':
+        entries.sort(key=lambda x: x.get('timestamp', 0))
+    elif sort == 'age_desc':
+        entries.sort(key=lambda x: x.get('age') or 0, reverse=True)
+    else:
+        entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+    if format == 'json':
+        return JSONResponse(content={"entries": entries, "count": len(entries)})
+
+    # CSV
+    lines = ["ip,api_id,country,city,iso_code,flag,age,negative,timestamp"]
+    for e in entries:
+        line = ",".join([
+            e.get('ip', ''),
+            e.get('api_id', ''),
+            (e.get('country') or '').replace(',', ' '),
+            (e.get('city') or '').replace(',', ' '),
+            e.get('iso_code') or '',
+            e.get('flag') or '',
+            str(e.get('age') or ''),
+            '1' if e.get('negative') else '0',
+            str(e.get('timestamp') or '')
+        ])
+        lines.append(line)
+    csv_data = "\n".join(lines)
+    headers = {
+        "Content-Disposition": "attachment; filename=geoip-cache.csv"
+    }
+    return PlainTextResponse(content=csv_data, media_type="text/csv", headers=headers)
 
 
 # ==================== Online GeoIP Config ====================

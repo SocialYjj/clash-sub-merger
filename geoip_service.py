@@ -641,6 +641,8 @@ COUNTRY_NAME_NORMALIZE = {
 
 # Online GeoIP lookup cache (to avoid repeated requests)
 _online_geoip_cache: Dict[str, Dict] = {}
+_online_geoip_inflight: Dict[str, asyncio.Task] = {}
+_online_geoip_semaphore = asyncio.Semaphore(int(os.environ.get('GEOIP_MAX_CONCURRENCY', '8')))
 
 def load_geoip_cache_from_disk():
     """Load GeoIP cache from disk on startup"""
@@ -656,6 +658,9 @@ def load_geoip_cache_from_disk():
             expired_count = 0
             
             for key, entry in cache_data.items():
+                if not isinstance(entry, dict):
+                    expired_count += 1
+                    continue
                 if 'timestamp' in entry:
                     age = current_time - entry['timestamp']
                     if age < GEOIP_CACHE_TTL:
@@ -1074,95 +1079,124 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
     """
     Lookup IP location using online API (ASYNC)
     Default: ip-api.com (45/min), alternatives: ipwhois (10k/month), ipinfo (needs token), or custom APIs
-    
+
     Args:
         ip: IP address to lookup
         timeout: Request timeout in seconds
         api_id: Specific API to use (optional, uses preferred_api from config if not specified)
-    
+
     Returns: {"iso_code": "KR", "country_name": "韩国", "city": "首尔", "flag": "🇰🇷"} or None
     """
-    global _online_geoip_cache
-    
-    # Check cache first
+    global _online_geoip_cache, _online_geoip_inflight
+
     cache_key = f"{ip}:{api_id or 'default'}"
-    if cache_key in _online_geoip_cache:
-        return _online_geoip_cache[cache_key]
-    
-    # Determine which API to use
-    target_api = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
-    
-    # Builtin API functions
-    builtin_api_map = {
-        "ip-api.com": _lookup_ip_api_com,
-        "ipwhois": _lookup_ipwhois,
-        "ipinfo": _lookup_ipinfo,
-    }
-    
-    raw_data = None
-    
-    # Check if it's a builtin API
-    if target_api in builtin_api_map:
-        raw_data = await builtin_api_map[target_api](ip, timeout)
-    else:
-        # Check if it's a custom API
-        custom_apis = _online_geoip_config.get("custom_apis", [])
-        custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
-        if custom_api and custom_api.get("enabled", True):
-            raw_data = await _lookup_custom_api(ip, custom_api, timeout)
-    
-    # If target API failed, try fallback to other enabled APIs
-    if not raw_data and not api_id:  # Only fallback if no specific API was requested
-        for api_name, api_func in builtin_api_map.items():
-            if api_name != target_api:
-                api_settings = _online_geoip_config.get("api_settings", {})
-                if api_settings.get(api_name, {}).get("enabled", True):
-                    raw_data = await api_func(ip, timeout)
-                    if raw_data:
-                        break
-    
-    if not raw_data:
+
+    entry = _online_geoip_cache.get(cache_key)
+    if isinstance(entry, dict):
+        ts = entry.get('timestamp')
+        if ts and (time.time() - ts) < GEOIP_CACHE_TTL:
+            if entry.get('_negative'):
+                return None
+            return entry
+        _online_geoip_cache.pop(cache_key, None)
+
+    inflight = _online_geoip_inflight.get(cache_key)
+    if inflight:
+        try:
+            return await inflight
+        except Exception:
+            return None
+
+    async def _do_lookup():
+        # Determine which API to use
+        target_api = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
+
+        # Builtin API functions
+        builtin_api_map = {
+            "ip-api.com": _lookup_ip_api_com,
+            "ipwhois": _lookup_ipwhois,
+            "ipinfo": _lookup_ipinfo,
+        }
+
+        raw_data = None
+
+        async with _online_geoip_semaphore:
+            # Check if it's a builtin API
+            if target_api in builtin_api_map:
+                raw_data = await builtin_api_map[target_api](ip, timeout)
+            else:
+                # Check if it's a custom API
+                custom_apis = _online_geoip_config.get("custom_apis", [])
+                custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
+                if custom_api and custom_api.get("enabled", True):
+                    raw_data = await _lookup_custom_api(ip, custom_api, timeout)
+
+            # If target API failed, try fallback to other enabled APIs
+            if not raw_data and not api_id:  # Only fallback if no specific API was requested
+                for api_name, api_func in builtin_api_map.items():
+                    if api_name != target_api:
+                        api_settings = _online_geoip_config.get("api_settings", {})
+                        if api_settings.get(api_name, {}).get("enabled", True):
+                            raw_data = await api_func(ip, timeout)
+                            if raw_data:
+                                break
+
+        if not raw_data:
+            return None
+
+        iso_code = raw_data.get("countryCode", "")
+        country_name = raw_data.get("country", "")
+        city = raw_data.get("city", "")
+
+        # Convert Traditional Chinese to Simplified Chinese
+        country_name = convert_to_simplified(country_name)
+        city = convert_to_simplified(city)
+
+        # Normalize country name
+        country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
+        # Use special display name for HK/MO/TW/SG
+        display_country = REGION_DISPLAY_NAMES.get(iso_code, country_name)
+
+        # Translate city name (English -> Chinese)
+        if city:
+            city = translate_city_name(city)
+
+        result = {
+            "iso_code": iso_code,
+            "country_name": display_country,
+            "city": city if city and city not in display_country else None,
+            "flag": GeoIPService.iso_to_flag(iso_code),
+            "source": "online",
+            "timestamp": time.time()  # Add timestamp for TTL
+        }
+
+        return result
+
+    task = asyncio.create_task(_do_lookup())
+    _online_geoip_inflight[cache_key] = task
+    try:
+        result = await task
+    finally:
+        _online_geoip_inflight.pop(cache_key, None)
+
+    if not result:
+        _online_geoip_cache[cache_key] = {"timestamp": time.time(), "_negative": True}
         return None
-    
-    iso_code = raw_data.get("countryCode", "")
-    country_name = raw_data.get("country", "")
-    city = raw_data.get("city", "")
-    
-    # Convert Traditional Chinese to Simplified Chinese
-    country_name = convert_to_simplified(country_name)
-    city = convert_to_simplified(city)
-    
-    # Normalize country name
-    country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
-    # Use special display name for HK/MO/TW/SG
-    display_country = REGION_DISPLAY_NAMES.get(iso_code, country_name)
-    
-    # Translate city name (English -> Chinese)
-    if city:
-        city = translate_city_name(city)
-    
-    result = {
-        "iso_code": iso_code,
-        "country_name": display_country,
-        "city": city if city and city not in display_country else None,
-        "flag": GeoIPService.iso_to_flag(iso_code),
-        "source": "online",
-        "timestamp": time.time()  # Add timestamp for TTL
-    }
-    
+
     # Cache the result in memory
     _online_geoip_cache[cache_key] = result
-    
+
     # Periodically save to disk (every 10 new entries)
     if len(_online_geoip_cache) % 10 == 0:
         save_geoip_cache_to_disk()
-    
+
     return result
 
 def clear_online_geoip_cache():
     """Clear the online GeoIP lookup cache (both memory and disk)"""
-    global _online_geoip_cache
+    global _online_geoip_cache, _online_geoip_inflight
     _online_geoip_cache = {}
+    _online_geoip_inflight = {}
     try:
         if os.path.exists(GEOIP_CACHE_FILE):
             os.remove(GEOIP_CACHE_FILE)

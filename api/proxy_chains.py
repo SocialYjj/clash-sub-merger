@@ -33,6 +33,7 @@ class ProxyChainNode(BaseModel):
     node_index: int | None = None
     node_name: str | None = None
     # group fields (used when type == 'group')
+    group_id: str | None = None
     group_name: str | None = None
     group_strategy: str | None = None
     lb_strategy: str | None = None

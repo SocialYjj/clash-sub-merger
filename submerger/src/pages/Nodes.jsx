@@ -143,6 +143,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [chainRows, setChainRows] = useState([[null, null]]);
   const [groupDrafts, setGroupDrafts] = useState({});
   const [groupEditing, setGroupEditing] = useState({});
+  const [groupSearch, setGroupSearch] = useState({});
   const [deleteChainConfirm, setDeleteChainConfirm] = useState({ open: false, chainId: null });
   const [showAddDropdown, setShowAddDropdown] = useState(false);
 
@@ -255,22 +256,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const data = {};
     const serverList = Array.from(servers).slice(0, 100);
 
-    const batchSize = 10;
+    const batchSize = 100;
     for (let i = 0; i < serverList.length; i += batchSize) {
       const batch = serverList.slice(i, i + batchSize);
-      const results = await Promise.all(
-        batch.map(async (server) => {
-          try {
-            const res = await request.get(`${API_BASE}/geoip/lookup/${encodeURIComponent(server)}`);
-            return { server, data: res.data.found ? res.data : null };
-          } catch {
-            return { server, data: null };
-          }
-        })
-      );
-      results.forEach(({ server, data: geoData }) => {
-        if (geoData) data[server] = geoData;
-      });
+      try {
+        const res = await request.post(`${API_BASE}/geoip/batch`, { ips: batch });
+        const results = res.data.results || {};
+        Object.entries(results).forEach(([server, geoData]) => {
+          if (geoData) data[server] = geoData;
+        });
+      } catch (err) {
+        console.error('Failed to fetch GeoIP batch', err);
+      }
     }
     setGeoipData(data);
   };
@@ -410,8 +407,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
       // Build chain path for display
       const firstRow = chain.rows?.[0];
-      const chainPath = firstRow?.nodes?.map(n => {
-        if (n?.type === 'group') return `组:${n.group_name || '落地池'}`;
+      const chainPath = firstRow?.nodes?.map((n, idx) => {
+        if (n?.type === 'group') {
+          const isLast = idx === (firstRow?.nodes?.length || 0) - 1;
+          return `组:${n.group_name || (isLast ? '落地池' : '中转池')}`;
+        }
         return n.node_name;
       }).join(' → ') || '';
 
@@ -528,26 +528,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const nodes = [...availableChainNodes];
     if (!nodes.length) return nodes;
 
-    // Build order map from current node management ordering (excluding chain nodes)
-    const sortable = allNodes.filter(n => n.sourceType !== 'chain');
-    sortable.sort(compareNodes);
-    const orderMap = new Map();
-    sortable.forEach((n, idx) => {
-      const key = `${n.sourceId}|${n.idx}`;
-      orderMap.set(key, idx);
+    // Order by subscription list order, then by node_index
+    const subOrder = new Map();
+    (subscriptions || []).forEach((sub, idx) => {
+      subOrder.set(sub.id, idx);
     });
 
     nodes.sort((a, b) => {
-      const ka = `${a.sub_id}|${a.node_index}`;
-      const kb = `${b.sub_id}|${b.node_index}`;
-      const ia = orderMap.has(ka) ? orderMap.get(ka) : Number.POSITIVE_INFINITY;
-      const ib = orderMap.has(kb) ? orderMap.get(kb) : Number.POSITIVE_INFINITY;
+      const sa = a.sub_id === 'custom' ? -1 : (subOrder.get(a.sub_id) ?? Number.POSITIVE_INFINITY);
+      const sb = b.sub_id === 'custom' ? -1 : (subOrder.get(b.sub_id) ?? Number.POSITIVE_INFINITY);
+      if (sa !== sb) return sa - sb;
+      const ia = Number.isFinite(a.node_index) ? a.node_index : Number.POSITIVE_INFINITY;
+      const ib = Number.isFinite(b.node_index) ? b.node_index : Number.POSITIVE_INFINITY;
       if (ia === ib) return 0;
       return ia - ib;
     });
 
     return nodes;
-  }, [availableChainNodes, allNodes, compareNodes]);
+  }, [availableChainNodes, subscriptions]);
 
   // Filter and sort
   const filteredNodes = useMemo(() => {
@@ -1060,19 +1058,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const openChainModal = (chain = null) => {
     if (chain) {
       setChainName(chain.name);
-      const rows = chain.rows.map(row =>
-        row.nodes.map(node => {
+      const resolveNodeName = (subId, nodeName, nodeIndex) => {
+        if (nodeName) return nodeName;
+        const found = availableChainNodes.find(n => n.sub_id === subId && n.node_index === nodeIndex);
+        return found?.node_name ?? found?.display_name ?? found?.name;
+      };
+      const resolveGroupId = (groupId, rowIndex, colIndex) => groupId || `${chain.id || 'chain'}_${rowIndex}_${colIndex}`;
+      const rows = chain.rows.map((row, rowIndex) =>
+        row.nodes.map((node, colIndex) => {
           if (node?.type === 'group') {
+            const isLast = colIndex === row.nodes.length - 1;
+            const defaultLabel = isLast ? '落地池' : '中转池';
             return {
               type: 'group',
-              group_name: node.group_name || '落地池',
+              group_id: resolveGroupId(node.group_id, rowIndex, colIndex),
+              group_name: node.group_name || defaultLabel,
               group_strategy: node.group_strategy || 'load-balance',
               lb_strategy: node.lb_strategy || 'round-robin',
               group_nodes: (node.group_nodes || []).map(n => ({
                 type: 'node',
                 sub_id: n.sub_id,
                 node_index: n.node_index,
-                node_name: n.node_name
+                node_name: resolveNodeName(n.sub_id, n.node_name, n.node_index)
               }))
             };
           }
@@ -1080,7 +1087,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             type: 'node',
             sub_id: node.sub_id,
             node_index: node.node_index,
-            node_name: node.node_name
+            node_name: resolveNodeName(node.sub_id, node.node_name, node.node_index)
           };
         })
       );
@@ -1093,6 +1100,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
     setGroupEditing({});
     setGroupDrafts({});
+    setGroupSearch({});
     setShowChainModal(true);
   };
 
@@ -1101,19 +1109,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setEditingChain(null);
     setChainName('');
     setChainRows([[null, null]]);
+    setGroupSearch({});
   };
 
   const addChainColumn = (rowIndex) => {
     setChainRows(prev => {
       const newRows = [...prev];
       newRows[rowIndex] = [...newRows[rowIndex], null];
-      // If last was a group, keep it at the end
-      const lastIdx = newRows[rowIndex].length - 2;
-      if (newRows[rowIndex][lastIdx]?.type === 'group') {
-        const groupCell = newRows[rowIndex][lastIdx];
-        newRows[rowIndex][lastIdx] = null;
-        newRows[rowIndex][lastIdx + 1] = groupCell;
-      }
       return newRows;
     });
   };
@@ -1123,13 +1125,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const newRows = [...prev];
       if (newRows[rowIndex].length > 2) {
         newRows[rowIndex] = newRows[rowIndex].filter((_, i) => i !== colIndex);
-        // Ensure group stays at the end
-        const groupIdx = newRows[rowIndex].findIndex(n => n?.type === 'group');
-        if (groupIdx !== -1 && groupIdx !== newRows[rowIndex].length - 1) {
-          const groupCell = newRows[rowIndex][groupIdx];
-          newRows[rowIndex].splice(groupIdx, 1);
-          newRows[rowIndex].push(groupCell);
-        }
       }
       return newRows;
     });
@@ -1145,6 +1140,49 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
   };
 
+  const generateGroupId = () => `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const makeChainNodeKey = (subId, nodeName, nodeIndex) => {
+    if (!subId) return '';
+    if (nodeName) return `${subId}|${encodeURIComponent(nodeName)}`;
+    if (nodeIndex !== undefined && nodeIndex !== null && !Number.isNaN(nodeIndex)) {
+      return `${subId}|#${nodeIndex}`;
+    }
+    return '';
+  };
+
+  const parseChainNodeKey = (key) => {
+    if (!key) return { subId: '', nodeName: '', nodeIndex: null };
+    const sep = key.indexOf('|');
+    if (sep === -1) return { subId: '', nodeName: '', nodeIndex: null };
+    const subId = key.slice(0, sep);
+    const rest = key.slice(sep + 1);
+    if (rest.startsWith('#')) {
+      const idx = parseInt(rest.slice(1), 10);
+      return { subId, nodeName: '', nodeIndex: Number.isNaN(idx) ? null : idx };
+    }
+    return { subId, nodeName: decodeURIComponent(rest), nodeIndex: null };
+  };
+
+  const resolveChainNode = (nodes, subId, nodeName, nodeIndex) => {
+    if (!nodes?.length || !subId) return null;
+    if (nodeName) {
+      const match = nodes.find(n =>
+        n.sub_id === subId && (n.node_name ?? n.display_name ?? n.name) === nodeName
+      );
+      if (match) return match;
+    }
+    if (nodeIndex !== null && nodeIndex !== undefined && !Number.isNaN(nodeIndex)) {
+      return nodes.find(n => n.sub_id === subId && n.node_index === nodeIndex) || null;
+    }
+    return null;
+  };
+
+  const resolveChainNodeFromKey = (nodes, key) => {
+    const { subId, nodeName, nodeIndex } = parseChainNodeKey(key);
+    return resolveChainNode(nodes, subId, nodeName, nodeIndex);
+  };
+
   const updateChainNode = (rowIndex, colIndex, nodeKey) => {
     if (!nodeKey) {
       setChainRows(prev => {
@@ -1155,8 +1193,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return;
     }
 
-    const [subId, nodeIndex] = nodeKey.split('|');
-    const node = availableChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+    const node = resolveChainNodeFromKey(availableChainNodes, nodeKey);
     const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
 
     setChainRows(prev => {
@@ -1175,9 +1212,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setChainRows(prev => {
       const newRows = [...prev];
       if (cellType === 'group') {
-        const defaultName = chainName.trim() ? `${chainName.trim()} 落地池` : '落地池';
+        const isLast = colIndex === newRows[rowIndex].length - 1;
+        const defaultName = chainName.trim()
+          ? `${chainName.trim()} ${isLast ? '落地池' : '中转池'}`
+          : (isLast ? '落地池' : '中转池');
         newRows[rowIndex][colIndex] = {
           type: 'group',
+          group_id: generateGroupId(),
           group_name: defaultName,
           group_strategy: 'load-balance',
           lb_strategy: 'round-robin',
@@ -1210,8 +1251,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const updateChainGroupMembers = (rowIndex, colIndex, selectedKeys) => {
     const nodes = selectedKeys.map(key => {
-      const [subId, nodeIndex] = key.split('|');
-      const node = orderedChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+      const node = resolveChainNodeFromKey(orderedChainNodes, key);
       const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
       return node ? {
         type: 'node',
@@ -1228,7 +1268,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const beginGroupEdit = (rowIndex, colIndex) => {
     const key = getGroupCellKey(rowIndex, colIndex);
     const current = chainRows[rowIndex]?.[colIndex];
-    const keys = (current?.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+    const keys = (current?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
     setGroupDrafts(prev => ({ ...prev, [key]: keys }));
     setGroupEditing(prev => ({ ...prev, [key]: true }));
   };
@@ -1259,13 +1299,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const newRows = [...prev];
       const current = newRows[rowIndex]?.[colIndex];
       if (!current || current.type !== 'group') return newRows;
-      const selectedKeys = (current.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+      const selectedKeys = (current.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
       const nextKeys = selectedKeys.includes(nodeKey)
         ? selectedKeys.filter(k => k !== nodeKey)
         : [...selectedKeys, nodeKey];
       const nodes = nextKeys.map(key => {
-        const [subId, nodeIndex] = key.split('|');
-        const node = orderedChainNodes.find(n => n.sub_id === subId && n.node_index === parseInt(nodeIndex));
+        const node = resolveChainNodeFromKey(orderedChainNodes, key);
         const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
         return node ? {
           type: 'node',
@@ -1287,7 +1326,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const getChainNodeKey = (node) => {
     if (!node || node.type === 'group') return '';
-    return `${node.sub_id}|${node.node_index}`;
+    return makeChainNodeKey(node.sub_id, node.node_name, node.node_index);
   };
 
   const saveChain = async () => {
@@ -1304,10 +1343,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       for (let i = 0; i < row.length; i++) {
         const node = row[i];
         if (node?.type === 'group') {
-          if (i !== row.length - 1) {
-            showToast?.('组只能放在最后一跳', 'error');
-            return;
-          }
           if (!node.group_name || !node.group_name.trim()) {
             showToast?.('请填写组名称', 'error');
             return;
@@ -1327,6 +1362,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           if (node.type === 'group') {
             return {
               type: 'group',
+              group_id: node.group_id,
               group_name: node.group_name,
               group_strategy: node.group_strategy,
               lb_strategy: node.lb_strategy,
@@ -2450,26 +2486,25 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         {row.map((node, colIndex) => {
                           const isLast = colIndex === row.length - 1;
                           const cellType = node?.type || 'node';
-                          const selectedKeys = (node?.group_nodes || []).map(n => `${n.sub_id}|${n.node_index}`);
+                          const groupLabel = isLast ? '组(落地池)' : '组(中转池)';
+                                          const selectedKeys = (node?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
                           return (
                             <React.Fragment key={colIndex}>
                               <div className="flex justify-center">
                                 <ArrowRight size={16} className="text-gray-600 rotate-90" />
                               </div>
                               <div className="relative space-y-2">
-                                {isLast && (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-gray-500">类型</span>
-                                    <select
-                                      value={cellType}
-                                      onChange={(e) => updateChainCellType(rowIndex, colIndex, e.target.value)}
-                                      className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
-                                    >
-                                      <option value="node">节点</option>
-                                      <option value="group">组(落地池)</option>
-                                    </select>
-                                  </div>
-                                )}
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-gray-500">类型</span>
+                                  <select
+                                    value={cellType}
+                                    onChange={(e) => updateChainCellType(rowIndex, colIndex, e.target.value)}
+                                    className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                                  >
+                                    <option value="node">节点</option>
+                                    <option value="group">{groupLabel}</option>
+                                  </select>
+                                </div>
 
                                 {cellType === 'group' ? (
                                   <div className="space-y-2">
@@ -2477,7 +2512,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                       type="text"
                                       value={node?.group_name || ''}
                                       onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_name: e.target.value })}
-                                      placeholder="组名称"
+                                      placeholder={isLast ? '落地池名称' : '中转池名称'}
                                       className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
                                     />
                                     <select
@@ -2506,6 +2541,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                       const cellKey = getGroupCellKey(rowIndex, colIndex);
                                       const isEditing = groupEditing[cellKey];
                                       const draftKeys = groupDrafts[cellKey] || [];
+                                      const searchValue = groupSearch[cellKey] || '';
+                                      const filteredNodes = orderedChainNodes.filter((n) => {
+                                        if (!searchValue) return true;
+                                        const label = getChainNodeLabel(n).toLowerCase();
+                                        const source = (n.sub_name || n.sub_id || '').toLowerCase();
+                                        const q = searchValue.toLowerCase();
+                                        return label.includes(q) || source.includes(q);
+                                      });
                                       const selectedNames = (node?.group_nodes || []).map(n => n.node_name);
 
                                       if (!isEditing) {
@@ -2519,7 +2562,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                                 ))}
                                               </div>
                                             ) : (
-                                              <div className="text-xs text-gray-500">尚未选择落地节点</div>
+                                              <div className="text-xs text-gray-500">尚未选择组内节点</div>
                                             )}
                                             <button
                                               type="button"
@@ -2539,7 +2582,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                             <div className="flex gap-2">
                                               <button
                                                 type="button"
-                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, orderedChainNodes.map(n => `${n.sub_id}|${n.node_index}`))}
+                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, filteredNodes.map(n => makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index)))}
                                                 className="text-blue-400 hover:text-blue-300"
                                               >
                                                 全选
@@ -2553,9 +2596,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                               </button>
                                             </div>
                                           </div>
+                                          <input
+                                            value={searchValue}
+                                            onChange={(e) => setGroupSearch(prev => ({ ...prev, [cellKey]: e.target.value }))}
+                                            placeholder="搜索节点/订阅"
+                                            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                          />
                                           <div className="max-h-40 overflow-y-auto border border-gray-700 rounded-lg bg-gray-800">
-                                            {orderedChainNodes.map(n => {
-                                              const key = `${n.sub_id}|${n.node_index}`;
+                                            {filteredNodes.map(n => {
+                                              const key = makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
                                               const checked = draftKeys.includes(key);
                                               return (
                                                 <div
@@ -2570,7 +2619,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                             })}
                                           </div>
                                           <div className="flex items-center justify-between">
-                                            <span className="text-xs text-gray-500">选择落地节点，系统会自动生成链路组</span>
+                                            <span className="text-xs text-gray-500">选择组内节点，系统会自动生成链路组</span>
                                             <button
                                               type="button"
                                               onClick={() => confirmGroupDraft(rowIndex, colIndex)}
@@ -2591,11 +2640,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                   >
                                     <option value="">选择节点</option>
                                     {/* Use flat list like node management page */}
-                                    {orderedChainNodes.map(n => (
-                                      <option key={`${n.sub_id}|${n.node_index}`} value={`${n.sub_id}|${n.node_index}`}>
-                                        {getChainNodeLabel(n)}
-                                      </option>
-                                    ))}
+                                    {orderedChainNodes.map(n => {
+                                      const key = makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
+                                      return (
+                                        <option key={key} value={key}>
+                                          {getChainNodeLabel(n)}
+                                        </option>
+                                      );
+                                    })}
                                   </select>
                                 )}
 

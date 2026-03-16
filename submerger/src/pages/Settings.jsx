@@ -762,10 +762,23 @@ export default function Settings({
   const [configApiId, setConfigApiId] = useState(null);  // For builtin API config modal (e.g., ipinfo token)
   const [customApiTestResult, setCustomApiTestResult] = useState(null);  // Test result for custom API
   const [testingCustomApi, setTestingCustomApi] = useState(false);  // Testing custom API in progress
+  const [geoipCacheStats, setGeoipCacheStats] = useState(null);
+  const [geoipCacheEntries, setGeoipCacheEntries] = useState([]);
+  const [geoipCacheLoading, setGeoipCacheLoading] = useState(false);
+  const [geoipCacheExpanded, setGeoipCacheExpanded] = useState(false);
+  const [geoipCacheFilters, setGeoipCacheFilters] = useState({
+    q: '',
+    api_id: 'all',
+    status: 'all',
+    max_age: '',
+    sort: 'newest'
+  });
+  const [geoipAutoRefresh, setGeoipAutoRefresh] = useState('off');
 
   useEffect(() => {
     fetchSpeedtestConfig();
     fetchOnlineGeoipConfig();
+    fetchGeoipCacheStats();
   }, []);
 
   const fetchSpeedtestConfig = async () => {
@@ -786,6 +799,86 @@ export default function Settings({
       console.error('Failed to fetch online GeoIP config', err);
     }
   };
+
+  const fetchGeoipCacheStats = async () => {
+    try {
+      const res = await request.get(`${API_BASE}/geoip/cache/stats`);
+      setGeoipCacheStats(res.data);
+    } catch (err) {
+      console.error('Failed to fetch GeoIP cache stats', err);
+    }
+  };
+
+  const fetchGeoipCacheEntries = async () => {
+    setGeoipCacheLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('limit', '200');
+      if (geoipCacheFilters.q) params.set('q', geoipCacheFilters.q);
+      if (geoipCacheFilters.api_id && geoipCacheFilters.api_id !== 'all') params.set('api_id', geoipCacheFilters.api_id);
+      if (geoipCacheFilters.status && geoipCacheFilters.status !== 'all') params.set('status', geoipCacheFilters.status);
+      if (geoipCacheFilters.max_age) params.set('max_age', geoipCacheFilters.max_age);
+      if (geoipCacheFilters.sort) params.set('sort', geoipCacheFilters.sort);
+      const res = await request.get(`${API_BASE}/geoip/cache/entries?${params.toString()}`);
+      setGeoipCacheEntries(res.data.entries || []);
+    } catch (err) {
+      console.error('Failed to fetch GeoIP cache entries', err);
+    } finally {
+      setGeoipCacheLoading(false);
+    }
+  };
+
+  const refreshGeoipCache = async () => {
+    await fetchGeoipCacheStats();
+    if (geoipCacheExpanded) {
+      await fetchGeoipCacheEntries();
+    }
+  };
+
+  const exportGeoipCache = async (format) => {
+    try {
+      const params = new URLSearchParams();
+      params.set('format', format);
+      if (geoipCacheFilters.q) params.set('q', geoipCacheFilters.q);
+      if (geoipCacheFilters.api_id && geoipCacheFilters.api_id !== 'all') params.set('api_id', geoipCacheFilters.api_id);
+      if (geoipCacheFilters.status && geoipCacheFilters.status !== 'all') params.set('status', geoipCacheFilters.status);
+      if (geoipCacheFilters.max_age) params.set('max_age', geoipCacheFilters.max_age);
+      if (geoipCacheFilters.sort) params.set('sort', geoipCacheFilters.sort);
+      const res = await request.get(`${API_BASE}/geoip/cache/export?${params.toString()}`, { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `geoip-cache-${Date.now()}.${format === 'csv' ? 'csv' : 'json'}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast?.('导出失败', 'error');
+    }
+  };
+
+  const clearGeoipCache = async () => {
+    try {
+      await request.post(`${API_BASE}/geoip/cache/clear`);
+      showToast?.('GeoIP 缓存已清空');
+      setGeoipCacheEntries([]);
+      fetchGeoipCacheStats();
+    } catch (err) {
+      showToast?.('清空缓存失败', 'error');
+    }
+  };
+
+  useEffect(() => {
+    if (!geoipCacheExpanded || geoipAutoRefresh === 'off') return;
+    const intervalMs = parseInt(geoipAutoRefresh, 10);
+    if (!intervalMs) return;
+    const timer = setInterval(() => {
+      refreshGeoipCache();
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [geoipCacheExpanded, geoipAutoRefresh, geoipCacheFilters]);
 
   const saveOnlineGeoipConfig = async (preferredApi = null, token = null) => {
     setSavingOnlineConfig(true);
@@ -1044,6 +1137,178 @@ export default function Settings({
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* GeoIP Cache */}
+          <div className="mt-4 p-4 bg-gray-900/40 border border-gray-700 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-gray-300 font-medium">GeoIP 缓存</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => exportGeoipCache('csv')}
+                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                >
+                  导出 CSV
+                </button>
+                <button
+                  onClick={() => exportGeoipCache('json')}
+                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                >
+                  导出 JSON
+                </button>
+                <button
+                  onClick={refreshGeoipCache}
+                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                >
+                  刷新
+                </button>
+                <button
+                  onClick={clearGeoipCache}
+                  className="px-2 py-1 text-xs bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded"
+                >
+                  清空
+                </button>
+                <button
+                  onClick={async () => {
+                    const next = !geoipCacheExpanded;
+                    setGeoipCacheExpanded(next);
+                    if (next) {
+                      await fetchGeoipCacheEntries();
+                    }
+                  }}
+                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                >
+                  {geoipCacheExpanded ? '收起' : '展开'}
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-gray-400 flex flex-wrap gap-4">
+              <span>缓存条数: {geoipCacheStats?.cache_size ?? '-'}</span>
+              <span>有效: {geoipCacheStats?.positive ?? '-'}</span>
+              <span>负缓存: {geoipCacheStats?.negative ?? '-'}</span>
+            </div>
+
+            {geoipCacheExpanded && (
+              <div className="mt-3 max-h-64 overflow-y-auto border border-gray-700 rounded-lg">
+                <div className="p-3 border-b border-gray-700 bg-gray-800/70">
+                  <div className="grid grid-cols-12 gap-2">
+                    <input
+                      value={geoipCacheFilters.q}
+                      onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, q: e.target.value }))}
+                      placeholder="搜索 IP/地区/城市"
+                      className="col-span-12 md:col-span-4 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <select
+                      value={geoipCacheFilters.api_id}
+                      onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, api_id: e.target.value }))}
+                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="all">全部 API</option>
+                      {(onlineGeoipConfig.apis || []).map(api => (
+                        <option key={api.id} value={api.id}>{api.name || api.id}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={geoipCacheFilters.status}
+                      onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, status: e.target.value }))}
+                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="all">全部状态</option>
+                      <option value="positive">命中</option>
+                      <option value="negative">负缓存</option>
+                    </select>
+                    <select
+                      value={geoipCacheFilters.max_age}
+                      onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, max_age: e.target.value }))}
+                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">不限时间</option>
+                      <option value="300">5分钟内</option>
+                      <option value="1800">30分钟内</option>
+                      <option value="3600">1小时内</option>
+                      <option value="21600">6小时内</option>
+                      <option value="86400">24小时内</option>
+                      <option value="604800">7天内</option>
+                    </select>
+                    <select
+                      value={geoipCacheFilters.sort}
+                      onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, sort: e.target.value }))}
+                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="newest">最新优先</option>
+                      <option value="oldest">最旧优先</option>
+                      <option value="age_desc">年龄最长</option>
+                    </select>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={fetchGeoipCacheEntries}
+                      className="px-2 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30"
+                    >
+                      筛选
+                    </button>
+                    <button
+                      onClick={() => {
+                        setGeoipCacheFilters({ q: '', api_id: 'all', status: 'all', max_age: '', sort: 'newest' });
+                        setTimeout(fetchGeoipCacheEntries, 0);
+                      }}
+                      className="px-2 py-1 text-xs bg-gray-700 text-gray-200 rounded hover:bg-gray-600"
+                    >
+                      重置
+                    </button>
+                    <select
+                      value={geoipAutoRefresh}
+                      onChange={(e) => setGeoipAutoRefresh(e.target.value)}
+                      className="ml-auto px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="off">自动刷新: 关闭</option>
+                      <option value="10000">自动刷新: 10秒</option>
+                      <option value="30000">自动刷新: 30秒</option>
+                      <option value="60000">自动刷新: 60秒</option>
+                    </select>
+                  </div>
+                </div>
+                {geoipCacheLoading ? (
+                  <div className="p-3 text-xs text-gray-400">加载中...</div>
+                ) : (
+                  <table className="w-full text-xs text-gray-300">
+                    <thead className="sticky top-0 bg-gray-800 text-gray-400">
+                      <tr>
+                        <th className="text-left px-3 py-2">IP</th>
+                        <th className="text-left px-3 py-2">地区</th>
+                        <th className="text-left px-3 py-2">API</th>
+                        <th className="text-left px-3 py-2">年龄</th>
+                        <th className="text-left px-3 py-2">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(geoipCacheEntries || []).map((entry, idx) => (
+                        <tr key={`${entry.ip}-${entry.api_id}-${idx}`} className="border-t border-gray-700">
+                          <td className="px-3 py-2 truncate max-w-[200px]">{entry.ip}</td>
+                          <td className="px-3 py-2">
+                            {entry.negative ? '-' : `${entry.flag || ''} ${entry.country || ''} ${entry.city || ''}`}
+                          </td>
+                          <td className="px-3 py-2">{entry.api_id}</td>
+                          <td className="px-3 py-2">{entry.age != null ? `${entry.age}s` : '-'}</td>
+                          <td className="px-3 py-2">
+                            {entry.negative ? (
+                              <span className="text-gray-500">负缓存</span>
+                            ) : (
+                              <span className="text-green-400">命中</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {(!geoipCacheEntries || geoipCacheEntries.length === 0) && (
+                        <tr>
+                          <td className="px-3 py-3 text-gray-500" colSpan={5}>暂无缓存记录</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
           </div>
           
           {/* Add custom API button */}
