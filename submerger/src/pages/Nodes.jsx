@@ -7,14 +7,18 @@ import { COUNTRY_CHINESE_NAMES } from './countryData';
 
 const API_BASE = '/api';
 
-// Keywords to filter out info nodes (not real proxy nodes)
-const INFO_NODE_KEYWORDS = [
-  '剩余流量', '套餐到期', '距离下次重置', '建议', '未到期',
-  '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
-  '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-  '使用说明', '教程', '更新', '通知', '邀请', '返利',
-  '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
-  '官网:', '官网：', '免注册'  // Website + colon, free registration ads
+const INFO_PREFIX_RE = /^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?/i;
+
+const HARD_INVALID_KEYWORDS = [
+  '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
+  '使用说明', '教程', '更新订阅', '公告', '通知', '客服',
+  '续费', '购买', '工单', '咨询', '合作', '邀请', '返利',
+  '免注册', '免费节点', '变动较大'
+];
+
+const SOFT_INVALID_KEYWORDS = [
+  '建议', '剩余', '到期', '重置', '流量', '过期', '订阅',
+  '网址', '群组', 'Telegram', 'TG', '会员', '商城', '账号'
 ];
 
 // Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
@@ -31,27 +35,45 @@ const REGION_KEYWORDS = [
   '香港', '台湾', '澳门'
 ];
 
-// Check if a node is an info node (not a real proxy)
+const STRONG_NODE_HINTS = [
+  '节点', '备用', '家宽', '专线', '中转', '落地', '倍率',
+  '游戏', '住宅', '原生'
+];
+
+const LINE_INDEX_RE = /--\s*\d+\b|\(\s*\d+\s*\)$/;
+
+const hasRegionHint = (name) => {
+  return REGION_KEYWORDS.some(region => {
+    if (region.length <= 3 && /^[A-Z]+$/.test(region)) {
+      const escaped = region.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?<![A-Za-z])${escaped}(?:\\d+)?(?![A-Za-z])`).test(name);
+    }
+    return name.includes(region);
+  });
+};
+
+const hasNodeIdentity = (name) => {
+  if (hasRegionHint(name)) return true;
+  if (LINE_INDEX_RE.test(name)) return true;
+  return STRONG_NODE_HINTS.some(hint => name.includes(hint));
+};
+
 const isInfoNode = (node) => {
   if (!node || !node.name) return true;
-  const name = node.name;
-  
-  // Check basic keywords
-  if (INFO_NODE_KEYWORDS.some(keyword => name.includes(keyword))) {
-    return true;
-  }
-  
-  // Check if starts with "Website" but has no region name
+  const name = String(node.name).trim();
+  if (!name) return true;
+
+  if (INFO_PREFIX_RE.test(name)) return true;
+
   if (name.startsWith('官网')) {
-    // If it contains a region name, it's a valid node
-    if (REGION_KEYWORDS.some(region => name.includes(region))) {
-      return false;
-    }
-    // Otherwise it's an info node
+    return !hasRegionHint(name);
+  }
+
+  if (HARD_INVALID_KEYWORDS.some(keyword => name.includes(keyword))) {
     return true;
   }
-  
-  return false;
+
+  return SOFT_INVALID_KEYWORDS.some(keyword => name.includes(keyword)) && !hasNodeIdentity(name);
 };
 
 // Latency color helper

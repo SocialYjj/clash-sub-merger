@@ -2,7 +2,8 @@
 Proxy Filter Service
 Filter out invalid info nodes from proxy lists
 """
-from typing import List
+import re
+from typing import List, Optional
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -10,14 +11,25 @@ logger = get_logger(__name__)
 
 class ProxyFilter:
     """Proxy node filter - filter out invalid info nodes"""
-    
-    INVALID_KEYWORDS = [
-        '剩余流量', '套餐到期', '距离下次重置', '建议', '未到期',
-        '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
-        '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-        '使用说明', '教程', '更新', '通知', '邀请', '返利',
-        '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
-        '官网:', '官网：', '免注册'
+
+    INFO_PREFIX_RE = re.compile(
+        r'^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?',
+        re.IGNORECASE
+    )
+
+    # Always treat these as info nodes.
+    HARD_INVALID_KEYWORDS = [
+        '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
+        '使用说明', '教程', '更新订阅', '公告', '通知', '客服',
+        '续费', '购买', '工单', '咨询', '合作', '邀请', '返利',
+        '免注册', '免费节点', '变动较大'
+    ]
+
+    # These keywords are common in info nodes, but some providers also put them
+    # in real node names such as "节点商城xx美国 --01". Those need extra checks.
+    SOFT_INVALID_KEYWORDS = [
+        '建议', '剩余', '到期', '重置', '流量', '过期', '订阅',
+        '网址', '群组', 'Telegram', 'TG', '会员', '商城', '账号'
     ]
     
     # Region keywords for valid nodes starting with "Website"
@@ -61,25 +73,68 @@ class ProxyFilter:
         '海外'
     ]
     
+    STRONG_NODE_HINTS = [
+        '节点', '备用', '家宽', '专线', '中转', '落地', '倍率',
+        '游戏', '住宅', '原生'
+    ]
+
+    LINE_INDEX_RE = re.compile(r'--\s*\d+\b|\(\s*\d+\s*\)$')
+
+    @staticmethod
+    def _has_region_hint(name: str) -> bool:
+        """Check whether a proxy name contains an actual region marker."""
+        for region in ProxyFilter.REGION_KEYWORDS:
+            # Short all-caps codes like US/JP need boundary checks, otherwise
+            # they match random substrings in domains.
+            if len(region) <= 3 and region.isupper():
+                if re.search(rf'(?<![A-Za-z]){re.escape(region)}(?:\d+)?(?![A-Za-z])', name):
+                    return True
+                continue
+            if region in name:
+                return True
+        return False
+
+    @staticmethod
+    def _has_node_identity(name: str) -> bool:
+        """Detect strong signs that a name refers to a real line, not an info banner."""
+        if ProxyFilter._has_region_hint(name):
+            return True
+        if ProxyFilter.LINE_INDEX_RE.search(name):
+            return True
+        if any(hint in name for hint in ProxyFilter.STRONG_NODE_HINTS):
+            return True
+        return False
+
+    @staticmethod
+    def get_invalid_reason(proxy: dict) -> Optional[str]:
+        """Return invalid reason when a proxy is considered an info node."""
+        if not proxy or 'name' not in proxy:
+            return 'missing-name'
+
+        name = str(proxy['name']).strip()
+        if not name:
+            return 'empty-name'
+
+        if ProxyFilter.INFO_PREFIX_RE.match(name):
+            return 'info-prefix'
+
+        if name.startswith('官网'):
+            return None if ProxyFilter._has_region_hint(name) else 'official-website'
+
+        for keyword in ProxyFilter.HARD_INVALID_KEYWORDS:
+            if keyword in name:
+                return f'hard-keyword:{keyword}'
+
+        for keyword in ProxyFilter.SOFT_INVALID_KEYWORDS:
+            if keyword in name and not ProxyFilter._has_node_identity(name):
+                return f'soft-keyword:{keyword}'
+
+        return None
+
     @staticmethod
     def is_valid_proxy(proxy: dict) -> bool:
-        """Check if proxy node is valid (not an info node)"""
-        if not proxy or 'name' not in proxy:
-            return False
-        name = proxy['name']
-        
-        # Check basic keywords
-        for keyword in ProxyFilter.INVALID_KEYWORDS:
-            if keyword in name:
-                return False
-        
-        # Check if starts with "Website" but has no region name
-        if name.startswith('官网'):
-            if any(region in name for region in ProxyFilter.REGION_KEYWORDS):
-                return True
-            return False
-        
-        return True
+        """Check if proxy node is valid (not an info node)."""
+        return ProxyFilter.get_invalid_reason(proxy) is None
     
     @staticmethod
     def sanitize_proxy(proxy: dict) -> dict:
