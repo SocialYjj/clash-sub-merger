@@ -42,6 +42,7 @@ const STRONG_NODE_HINTS = [
 ];
 
 const LINE_INDEX_RE = /--\s*\d+\b|\(\s*\d+\s*\)$/;
+const LEADING_FLAG_ICON_RE = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|🔰|🌏|🌍|🌎|🏳️)\s*/u;
 
 const hasRegionHint = (name) => {
   return REGION_KEYWORDS.some(region => {
@@ -58,6 +59,8 @@ const hasNodeIdentity = (name) => {
   if (LINE_INDEX_RE.test(name)) return true;
   return STRONG_NODE_HINTS.some(hint => name.includes(hint));
 };
+
+const stripLeadingFlagIcon = (value) => String(value || '').replace(LEADING_FLAG_ICON_RE, '').trim();
 
 const isInfoNode = (node) => {
   if (!node || !node.name) return true;
@@ -1881,6 +1884,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     const latencyBadge = getLatencyBadge(displayedLatency, displayedError);
                     // Use local cache for port mapping (updates instantly without page refresh)
                     const currentMappedPort = localPortMappings[node.final_name] ?? node.mapped_port;
+                    const rawDisplayName = node.display_name || node.name || '未命名';
+                    const visibleDisplayName = stripLeadingFlagIcon(rawDisplayName);
+                    const nodeFlag = node.flag || (rawDisplayName.match(LEADING_FLAG_ICON_RE)?.[0]?.trim() ?? '');
 
                     return (
                       <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''}`}>
@@ -1925,8 +1931,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            <span className={`text-white truncate max-w-[200px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={node.display_name || node.name || '未命名'}>
-                              {node.display_name || node.name || '未命名'}
+                            {nodeFlag && (
+                              <span className="text-base leading-none shrink-0" title={node.region || node.country || ''}>
+                                {nodeFlag}
+                              </span>
+                            )}
+                            <span className={`text-white truncate max-w-[200px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={rawDisplayName}>
+                              {visibleDisplayName || rawDisplayName}
                             </span>
                             {node.sourceType === 'chain' && (
                               <button

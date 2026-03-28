@@ -51,6 +51,7 @@ from services.country_grouper import CountryGrouper
 from services.proxy_filter import ProxyFilter
 from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP, detect_country
 from services.node_parser import parse_node_link
+from services.region_history import apply_region_history_to_yaml_content
 from geoip_service import GeoIPService, lookup_ip_online
 from scheduler_service import get_scheduler, init_scheduler, CRON_PRESETS, get_cron_description
 from speedtest_service import (
@@ -706,9 +707,19 @@ def refresh_subscription_job(sub_id: str):
         try:
             proxy_node = get_configured_proxy_node()
             force_proxy = sub.get('force_proxy', False)
+            try:
+                existing_cfg = load_subscription_yaml(sub_id, Constants.YAML_SOURCE_DIR, use_cache=False)
+                existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
+            except Exception:
+                existing_nodes = []
             
             content, sub_info, node_count = loop.run_until_complete(
                 fetch_subscription_async(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+            )
+            content, remembered, inherited = apply_region_history_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f'sub:scheduled-refresh:{sub_id}',
             )
             
             sub.update({
@@ -720,6 +731,14 @@ def refresh_subscription_job(sub_id: str):
                 'last_update': int(time.time()),
                 'update_status': 'success'
             })
+
+            if remembered or inherited:
+                logger.info(
+                    "Scheduled refresh %s region history: remembered=%s inherited=%s",
+                    sub_id,
+                    remembered,
+                    inherited,
+                )
             
             save_subscription_content(sub_id, content, Constants.YAML_SOURCE_DIR)
             save_config(config)
@@ -2154,7 +2173,17 @@ async def get_merged_subscription(
         for sub in missing_subs:
             try:
                 force_proxy = sub.get('force_proxy', False)
+                try:
+                    existing_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=False)
+                    existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
+                except Exception:
+                    existing_nodes = []
                 content, sub_info, node_count = fetch_subscription(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+                content, remembered, inherited = apply_region_history_to_yaml_content(
+                    content,
+                    existing_nodes=existing_nodes,
+                    source=f"sub:auto-refresh-missing:{sub['id']}",
+                )
                 sub.update({
                     'upload': sub_info.get('upload', 0),
                     'download': sub_info.get('download', 0),
@@ -2164,6 +2193,13 @@ async def get_merged_subscription(
                     'last_update': int(time.time()),
                     'update_status': 'success'
                 })
+                if remembered or inherited:
+                    logger.info(
+                        "Missing subscription %s region history: remembered=%s inherited=%s",
+                        sub['id'],
+                        remembered,
+                        inherited,
+                    )
                 save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
                 logger.info(f"  ✓ Refreshed: {sub['name']}")
             except Exception as e:

@@ -13,6 +13,7 @@ from core.database import load_config, save_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
+from services.region_history import inherit_regions_for_nodes, remember_nodes_region
 from geoip_service import GeoIPService, normalize_country_name, translate_city_name
 from logger_config import get_logger
 
@@ -160,6 +161,8 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     
     if data.name:
         node['name'] = data.name
+
+    inherit_regions_for_nodes([node], source='custom:add')
     
     if 'custom_nodes' not in config:
         config['custom_nodes'] = []
@@ -206,6 +209,8 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
 
     if not added_nodes:
         raise HTTPException(status_code=400, detail="No valid nodes parsed")
+
+    inherit_regions_for_nodes(added_nodes, source='custom:batch-add')
 
     if 'custom_nodes' not in config:
         config['custom_nodes'] = []
@@ -291,12 +296,16 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
     nodes = config.get('custom_nodes', [])
     
     updated_count = 0
+    existing_nodes = [dict(node) for node in nodes]
     for node in nodes:
         if 'link' in node:
             parsed = parse_node_link(node['link'])
             if parsed:
                 node.update(parsed)
                 updated_count += 1
+
+    remember_nodes_region(existing_nodes, source='custom:reparse-existing')
+    inherit_regions_for_nodes(nodes, source='custom:reparse')
     
     save_config(config)
     srv.update_custom_nodes_yaml()
@@ -312,9 +321,12 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
     
     for node in config.get('custom_nodes', []):
         if node['id'] == node_id and 'link' in node:
+            previous = dict(node)
             parsed = parse_node_link(node['link'])
             if parsed:
+                remember_nodes_region([previous], source='custom:reparse-one-existing')
                 node.update(parsed)
+                inherit_regions_for_nodes([node], source='custom:reparse-one')
                 save_config(config)
                 srv.update_custom_nodes_yaml()
                 return {"status": "success", "node": node}
@@ -475,6 +487,7 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
         if source_id == "custom":
             # 保存自定义节点
             config = load_config()
+            updated_region_nodes = []
             for node_index_str, result in nodes_data.items():
                 node_index = int(node_index_str)
                 if 0 <= node_index < len(config.get('custom_nodes', [])):
@@ -491,12 +504,17 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                         node['region'] = result['region']
                     if 'city' in result:
                         node['city'] = result['city']
+                    if 'region' in result:
+                        updated_region_nodes.append(node)
                     saved_count += 1
+            if updated_region_nodes:
+                remember_nodes_region(updated_region_nodes, source='speedtest:custom-batch')
             save_config(config)
         else:
             # 保存订阅节点
             sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=False)
             if sub_data:
+                updated_region_nodes = []
                 for node_index_str, result in nodes_data.items():
                     node_index = int(node_index_str)
                     nodes = sub_data.get('proxies', [])
@@ -514,7 +532,11 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                             node['region'] = result['region']
                         if 'city' in result:
                             node['city'] = result['city']
+                        if 'region' in result:
+                            updated_region_nodes.append(node)
                         saved_count += 1
+                if updated_region_nodes:
+                    remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
                 save_subscription_yaml(source_id, sub_data, YAML_SOURCE_DIR)
     
     return {"status": "success", "saved_count": saved_count}
@@ -618,6 +640,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
                                     'flag': geo_result.get('flag')
                                 }
                                 node['city'] = geo_result.get('city')
+                                remember_nodes_region([node], source=f'speedtest:single:{source_id}')
                                 need_save = True
                     else:
                         result['error'] = ip_result.get('error', 'IP lookup failed')

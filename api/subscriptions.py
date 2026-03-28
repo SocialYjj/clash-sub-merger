@@ -4,6 +4,7 @@ Subscription management endpoints
 """
 import time
 from typing import Optional, List
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, HttpUrl, Field, validator
 from slowapi import Limiter
@@ -12,7 +13,8 @@ from slowapi.util import get_remote_address
 from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, save_config
-from helpers import handle_api_errors, generate_timestamp_id, save_subscription_content
+from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_content
+from services.region_history import apply_region_history_to_yaml_content
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -30,6 +32,19 @@ def _get_server():
         import server as srv
         _server_module = srv
     return _server_module
+
+
+def _load_existing_subscription_nodes(sub_id: str, yaml_source_dir: str) -> list:
+    """Load existing subscription nodes for historical region seeding."""
+    try:
+        cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=False)
+        if isinstance(cfg, dict):
+            proxies = cfg.get('proxies', [])
+            if isinstance(proxies, list):
+                return proxies
+    except Exception:
+        return []
+    return []
 
 
 # ==================== Data Models ====================
@@ -97,6 +112,11 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
     try:
         proxy_node = srv.get_configured_proxy_node()
         content, sub_info, node_count = srv.fetch_subscription(str(data.url), proxy_node=proxy_node)
+        content, _, inherited = apply_region_history_to_yaml_content(
+            content,
+            existing_nodes=[],
+            source=f'sub:add:{sub_id}',
+        )
         new_sub = {
             'id': sub_id, 'name': data.name, 'url': str(data.url), 'enabled': True,
             'type': 'url',
@@ -105,6 +125,9 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
             'node_count': node_count, 'last_update': int(time.time()),
             'cron_expr': None, 'next_update': None
         }
+
+        if inherited:
+            logger.info("Inherited saved region for %s node(s) while adding subscription %s", inherited, sub_id)
         
         save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
         config['subscriptions'].append(new_sub)
@@ -125,12 +148,20 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
     
     try:
         yaml_content, proxies, node_count = srv.parse_local_subscription(data.content)
+        yaml_content, _, inherited = apply_region_history_to_yaml_content(
+            yaml_content,
+            existing_nodes=[],
+            source=f'sub:add-local:{sub_id}',
+        )
         new_sub = {
             'id': sub_id, 'name': data.name, 'enabled': True,
             'type': 'local', 'node_count': node_count,
             'last_update': int(time.time()),
             'cron_expr': None, 'next_update': None
         }
+
+        if inherited:
+            logger.info("Inherited saved region for %s node(s) while adding local subscription %s", inherited, sub_id)
         
         save_subscription_content(sub_id, yaml_content, srv.YAML_SOURCE_DIR)
         config['subscriptions'].append(new_sub)
@@ -161,7 +192,20 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
     if data.content:
         try:
             yaml_content, proxies, node_count = srv.parse_local_subscription(data.content)
+            existing_nodes = _load_existing_subscription_nodes(sub_id, srv.YAML_SOURCE_DIR)
+            yaml_content, remembered, inherited = apply_region_history_to_yaml_content(
+                yaml_content,
+                existing_nodes=existing_nodes,
+                source=f'sub:update-local:{sub_id}',
+            )
             sub['node_count'] = node_count
+            if remembered or inherited:
+                logger.info(
+                    "Local subscription %s region history: remembered=%s inherited=%s",
+                    sub_id,
+                    remembered,
+                    inherited,
+                )
             save_subscription_content(sub_id, yaml_content, srv.YAML_SOURCE_DIR)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -283,8 +327,14 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
         proxy_node = srv.get_configured_proxy_node()
         force_proxy = sub.get('force_proxy', False)
         logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
+        existing_nodes = _load_existing_subscription_nodes(sub_id, srv.YAML_SOURCE_DIR)
         content, sub_info, node_count = await srv.fetch_subscription_async(
             sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
+        )
+        content, remembered, inherited = apply_region_history_to_yaml_content(
+            content,
+            existing_nodes=existing_nodes,
+            source=f'sub:refresh:{sub_id}',
         )
         
         sub.update({
@@ -296,6 +346,14 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
             'last_update': int(time.time()),
             'update_status': 'success'
         })
+
+        if remembered or inherited:
+            logger.info(
+                "Subscription %s region history after refresh: remembered=%s inherited=%s",
+                sub_id,
+                remembered,
+                inherited,
+            )
         
         save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
         save_config(config)
@@ -329,8 +387,14 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
     for sub in url_subs:
         try:
             force_proxy = sub.get('force_proxy', False)
+            existing_nodes = _load_existing_subscription_nodes(sub['id'], srv.YAML_SOURCE_DIR)
             content, sub_info, node_count = await srv.fetch_subscription_async(
                 sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
+            )
+            content, remembered, inherited = apply_region_history_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f"sub:refresh-all:{sub['id']}",
             )
             
             sub.update({
@@ -342,6 +406,14 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                 'last_update': int(time.time()),
                 'update_status': 'success'
             })
+
+            if remembered or inherited:
+                logger.info(
+                    "Subscription %s region history in refresh-all: remembered=%s inherited=%s",
+                    sub['id'],
+                    remembered,
+                    inherited,
+                )
             
             save_subscription_content(sub['id'], content, srv.YAML_SOURCE_DIR)
             results.append({"id": sub['id'], "name": sub['name'], "status": "success"})

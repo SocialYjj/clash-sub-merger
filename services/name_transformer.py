@@ -108,6 +108,7 @@ class NameTransformer:
     
     # Flag emoji set for fast lookup
     _FLAG_SET = None
+    _ISO_TO_FLAG = None
     
     @staticmethod
     def _get_flag_set():
@@ -115,6 +116,47 @@ class NameTransformer:
         if NameTransformer._FLAG_SET is None:
             NameTransformer._FLAG_SET = set(NameTransformer.FLAG_EMOJIS) - {'🔰', '🌏', '🌍', '🌎', '🏳️'}
         return NameTransformer._FLAG_SET
+
+    @staticmethod
+    def _get_iso_to_flag():
+        """Lazy create ISO -> flag mapping."""
+        if NameTransformer._ISO_TO_FLAG is None:
+            NameTransformer._ISO_TO_FLAG = {
+                iso: flag for flag, iso in NameTransformer.FLAG_TO_ISO.items()
+                if iso and iso != 'XX'
+            }
+        return NameTransformer._ISO_TO_FLAG
+
+    @staticmethod
+    def _resolve_saved_country(proxy: dict) -> Optional[dict]:
+        """Prefer saved/tested country info when region metadata exists."""
+        if not isinstance(proxy, dict):
+            return None
+
+        region = proxy.get('region', {})
+        if not isinstance(region, dict):
+            return None
+
+        country_code = str(region.get('country_code') or '').upper()
+        country = str(region.get('country') or '').strip()
+        flag = str(region.get('flag') or '').strip()
+
+        if country_code and country_code != 'XX':
+            flag = flag or NameTransformer._get_iso_to_flag().get(country_code, '')
+            country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or country_code)
+        elif flag:
+            country_code = NameTransformer.FLAG_TO_ISO.get(flag, '')
+            if country_code and country_code != 'XX':
+                country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or country_code)
+
+        if not country_code and not flag:
+            return None
+
+        return {
+            'country_code': country_code or 'XX',
+            'country': country or NameTransformer.ISO_TO_COUNTRY.get(country_code or 'XX', '未知'),
+            'flag': flag or '🔰'
+        }
     
     @staticmethod
     @lru_cache(maxsize=2048)
@@ -224,7 +266,8 @@ class NameTransformer:
         original_name = proxy['name']
         server = proxy.get('server', '')
         
-        flag = NameTransformer.identify_flag(original_name, server)
+        saved_country = NameTransformer._resolve_saved_country(proxy)
+        flag = (saved_country or {}).get('flag') or NameTransformer.identify_flag(original_name, server)
         clean_name = NameTransformer.remove_flags(original_name)
         
         if '[ipv6]' in clean_name:
@@ -245,8 +288,8 @@ class NameTransformer:
         new_proxy['name'] = new_name
         
         # Add country information
-        country_code = NameTransformer.FLAG_TO_ISO.get(flag, 'XX')
-        country_name = NameTransformer.ISO_TO_COUNTRY.get(country_code, 'Unknown')
+        country_code = (saved_country or {}).get('country_code') or NameTransformer.FLAG_TO_ISO.get(flag, 'XX')
+        country_name = (saved_country or {}).get('country') or NameTransformer.ISO_TO_COUNTRY.get(country_code, 'Unknown')
         new_proxy['_country'] = {
             'country_code': country_code,
             'country': country_name,

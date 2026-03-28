@@ -15,6 +15,7 @@ class CountryGrouper:
     # Pre-compiled patterns cache
     _compiled_patterns = None
     _flag_to_country = None
+    _code_to_country = None
     
     # Country identification patterns: Group name -> keyword list
     COUNTRY_PATTERNS = {
@@ -79,10 +80,15 @@ class CountryGrouper:
         
         CountryGrouper._compiled_patterns = {}
         CountryGrouper._flag_to_country = {}
+        CountryGrouper._code_to_country = {}
         
         for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
             flag = patterns[0]
             CountryGrouper._flag_to_country[flag] = country
+            from services.name_transformer import NameTransformer
+            code = NameTransformer.FLAG_TO_ISO.get(flag)
+            if code and code != 'XX':
+                CountryGrouper._code_to_country[code] = country
             
             compiled_list = []
             for pattern in patterns[1:]:
@@ -96,6 +102,20 @@ class CountryGrouper:
                     compiled_list.append(('english', pattern.upper(), len(pattern)))
             
             CountryGrouper._compiled_patterns[country] = compiled_list
+
+    @staticmethod
+    def _country_from_region(region: dict) -> Optional[str]:
+        """Resolve country group directly from saved/tested region info."""
+        if not isinstance(region, dict):
+            return None
+        CountryGrouper._init_patterns()
+        code = str(region.get('country_code') or '').upper()
+        if code:
+            return CountryGrouper._code_to_country.get(code)
+        flag = str(region.get('flag') or '').strip()
+        if flag:
+            return CountryGrouper._flag_to_country.get(flag)
+        return None
     
     @staticmethod
     def identify_country(proxy_name: str, proxy_server: str = None) -> str:
@@ -157,7 +177,7 @@ class CountryGrouper:
         for proxy in proxies:
             name = proxy.get('name', '')
             server = proxy.get('server', '')
-            country = CountryGrouper.identify_country(name, server)
+            country = CountryGrouper._country_from_region(proxy.get('region')) or CountryGrouper.identify_country(name, server)
             
             if country not in groups:
                 groups[country] = []
