@@ -13,6 +13,7 @@ from core.database import load_config, save_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
+from geoip_service import GeoIPService
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +34,30 @@ def _get_server():
         import server as srv
         _server_module = srv
     return _server_module
+
+
+def _resolve_region_info(node: dict, transformed: dict) -> dict:
+    """Prefer tested/saved region info and fall back to name-derived country info."""
+    derived = transformed.get('_country', {}) if isinstance(transformed, dict) else {}
+    saved = node.get('region', {}) if isinstance(node, dict) else {}
+    if not isinstance(saved, dict):
+        saved = {}
+
+    country_code = str(saved.get('country_code') or derived.get('country_code') or 'XX').upper()
+    country = saved.get('country') or derived.get('country') or 'Unknown'
+    flag = saved.get('flag') or derived.get('flag')
+
+    if not flag:
+        flag = GeoIPService.iso_to_flag(country_code) if country_code != 'XX' else '🏳️'
+
+    if (not country or country == 'Unknown') and country_code:
+        country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or 'Unknown')
+
+    return {
+        'country_code': country_code or 'XX',
+        'country': country or 'Unknown',
+        'flag': flag or '🏳️'
+    }
 
 
 # ==================== Data Models ====================
@@ -97,14 +122,7 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
         enhanced = dict(node)
         transformed = NameTransformer.transform_name(node, 'Custom')
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
-        
-        # Add region info (frontend expects 'region' field)
-        country_info = transformed.get('_country', {})
-        enhanced['region'] = {
-            'country_code': country_info.get('country_code', 'XX'),
-            'country': country_info.get('country', 'Unknown'),
-            'flag': country_info.get('flag', '🏳️')
-        }
+        enhanced['region'] = _resolve_region_info(node, transformed)
         
         enhanced_nodes.append(enhanced)
     
@@ -357,14 +375,7 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
         enhanced['index'] = i
         transformed = NameTransformer.transform_name(node, sub['name'])
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
-        
-        # Add region info (frontend expects 'region' field)
-        country_info = transformed.get('_country', {})
-        enhanced['region'] = {
-            'country_code': country_info.get('country_code', 'XX'),
-            'country': country_info.get('country', 'Unknown'),
-            'flag': country_info.get('flag', '🏳️')
-        }
+        enhanced['region'] = _resolve_region_info(node, transformed)
         
         enhanced_nodes.append(enhanced)
     
