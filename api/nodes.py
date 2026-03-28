@@ -13,7 +13,7 @@ from core.database import load_config, save_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
-from geoip_service import GeoIPService
+from geoip_service import GeoIPService, normalize_country_name, translate_city_name
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -52,12 +52,22 @@ def _resolve_region_info(node: dict, transformed: dict) -> dict:
 
     if (not country or country == 'Unknown') and country_code:
         country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or 'Unknown')
+    else:
+        country = normalize_country_name(country, country_code) or country
 
     return {
         'country_code': country_code or 'XX',
         'country': country or 'Unknown',
         'flag': flag or '🏳️'
     }
+
+
+def _resolve_city_name(node: dict) -> str:
+    """Normalize saved city names so old English values also display in Chinese."""
+    if not isinstance(node, dict):
+        return ''
+    city = str(node.get('city') or '').strip()
+    return translate_city_name(city) if city else ''
 
 
 # ==================== Data Models ====================
@@ -123,6 +133,7 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
         transformed = NameTransformer.transform_name(node, 'Custom')
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
+        enhanced['city'] = _resolve_city_name(node)
         
         enhanced_nodes.append(enhanced)
     
@@ -376,6 +387,7 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
         transformed = NameTransformer.transform_name(node, sub['name'])
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
+        enhanced['city'] = _resolve_city_name(node)
         
         enhanced_nodes.append(enhanced)
     

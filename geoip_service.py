@@ -622,14 +622,21 @@ CITY_TRANSLATIONS = {
 }
 
 CITY_TRANSLATIONS.update({
+    'Hacienda Heights': '哈仙达岗',
     'Nürnberg': '纽伦堡',
     'Nurnberg': '纽伦堡',
     'Gangseo-gu': '江西区',
     'Gangseo Gu': '江西区',
     'Montréal': '蒙特利尔',
     'Montreal': '蒙特利尔',
+    'Budapest': '布达佩斯',
+    'Bexley': '贝克斯利',
+    'Stockholm': '斯德哥尔摩',
     'Kwai Chung': '葵涌',
     'Tung Chung': '东涌',
+    'Genève': '日内瓦',
+    'Geneve': '日内瓦',
+    'Geneva': '日内瓦',
     'Kanda-jinbōchō': '神田神保町',
     'Kanda-jinbocho': '神田神保町',
     'Yuanlin': '员林',
