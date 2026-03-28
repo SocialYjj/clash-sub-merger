@@ -2,6 +2,7 @@
 Country Data Service
 Contains country keywords, names, and detection utilities
 """
+import re
 from typing import Dict, List, Optional
 from geoip_service import GeoIPService
 
@@ -268,10 +269,15 @@ def detect_country(name: str) -> Optional[Dict[str, str]]:
     
     for code, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in name_lower:
-                if len(keyword) > max_len:
-                    max_len = len(keyword)
-                    best_match_code = code
+            keyword_lower = keyword.lower()
+            is_short_latin = len(keyword_lower) <= 3 and keyword_lower.isascii() and keyword_lower.isalpha()
+            if is_short_latin:
+                matched = re.search(r'(?<![a-z])' + re.escape(keyword_lower) + r'(?![a-z])', name_lower)
+            else:
+                matched = keyword_lower in name_lower
+            if matched and len(keyword_lower) > max_len:
+                max_len = len(keyword_lower)
+                best_match_code = code
     
     if best_match_code:
         return {

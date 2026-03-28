@@ -16,6 +16,11 @@ class ProxyFilter:
         r'^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?',
         re.IGNORECASE
     )
+    INFO_DOMAIN_HINT_RE = re.compile(
+        r'^\s*(?:最强备用|备用网址|备用地址|官网地址?)\s*[:：]?\s*'
+        r'(?:https?://)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:/\S*)?\s*$',
+        re.IGNORECASE
+    )
 
     # Always treat these as info nodes.
     HARD_INVALID_KEYWORDS = [
@@ -117,6 +122,8 @@ class ProxyFilter:
 
         if ProxyFilter.INFO_PREFIX_RE.match(name):
             return 'info-prefix'
+        if ProxyFilter.INFO_DOMAIN_HINT_RE.match(name):
+            return 'info-domain'
 
         if name.startswith('官网'):
             return None if ProxyFilter._has_region_hint(name) else 'official-website'

@@ -151,6 +151,16 @@ class NameTransformer:
                 else:
                     if pattern.upper() in name_upper:
                         return flag
+
+        # Priority 4: Fall back to shared country detection for broader ISO/city coverage.
+        try:
+            from services.country_data import detect_country
+
+            detected = detect_country(name)
+            if detected and detected.get('flag'):
+                return detected['flag']
+        except Exception as e:
+            logger.debug("Fallback country detection failed for %s: %s", name, e)
         
         return '🔰'
     

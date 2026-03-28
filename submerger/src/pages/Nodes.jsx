@@ -8,6 +8,7 @@ import { COUNTRY_CHINESE_NAMES } from './countryData';
 const API_BASE = '/api';
 
 const INFO_PREFIX_RE = /^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?/i;
+const INFO_DOMAIN_HINT_RE = /^\s*(?:最强备用|备用网址|备用地址|官网地址?)\s*[:：]?\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
 
 const HARD_INVALID_KEYWORDS = [
   '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
@@ -64,6 +65,7 @@ const isInfoNode = (node) => {
   if (!name) return true;
 
   if (INFO_PREFIX_RE.test(name)) return true;
+  if (INFO_DOMAIN_HINT_RE.test(name)) return true;
 
   if (name.startsWith('官网')) {
     return !hasRegionHint(name);

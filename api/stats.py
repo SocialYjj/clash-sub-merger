@@ -10,6 +10,7 @@ from core.database import load_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.country_data import detect_country, COUNTRY_NAMES
+from services.proxy_filter import ProxyFilter
 from geoip_service import GeoIPService
 from logger_config import get_logger
 
@@ -26,41 +27,7 @@ YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 
 def _is_info_node(name: str) -> bool:
     """Check if node is an info/advertisement node"""
-    info_keywords = [
-        '剩余流量', '套餐到期', '距离下次重置', '建议', '未到期',
-        '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
-        '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-        '使用说明', '教程', '更新', '通知', '邀请', '返利',
-        '问题', '工单', '咨询', '合作', '会员', '商城', '账号',
-        '官网:', '官网：', '免注册'
-    ]
-    name_lower = name.lower()
-    
-    # Check basic keywords
-    if any(keyword in name or keyword in name_lower for keyword in info_keywords):
-        return True
-    
-    # Check if starts with "官网" but has no region name
-    if name.startswith('官网'):
-        # Import ISO_TO_COUNTRY from name_transformer
-        from services.name_transformer import NameTransformer
-        
-        # Define region keywords (country names + common abbreviations)
-        region_keywords = list(NameTransformer.ISO_TO_COUNTRY.values()) + [
-            'HK', 'TW', 'MO', 'JP', 'KR', 'SG', 'US', 'UK', 
-            'DE', 'FR', 'CA', 'AU', 'RU', 'IN', 'TH', 'VN', 'MY', 'PH', 'ID',
-            'CN', 'GB', 'IT', 'ES', 'PT', 'NL', 'BE', 'CH', 'AT', 'CZ', 'PL',
-            'SE', 'NO', 'FI', 'DK', 'IE', 'NZ', 'BR', 'AR', 'CL', 'MX', 'TR',
-            'SA', 'AE', 'IL', 'EG', 'ZA', 'NG', 'KE', 'UA', 'BY', 'KZ', 'UZ',
-            '海外'
-        ]
-        # If it contains a region name, it's a valid node
-        if any(region in name for region in region_keywords):
-            return False
-        # Otherwise it's an info node
-        return True
-    
-    return False
+    return not ProxyFilter.is_valid_proxy({'name': name})
 
 
 def _get_all_nodes_with_country():

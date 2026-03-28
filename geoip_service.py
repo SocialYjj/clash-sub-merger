@@ -7,6 +7,7 @@ import os
 import re
 import time
 import json
+import unicodedata
 import aiohttp
 import asyncio
 from typing import Optional, Dict
@@ -620,6 +621,31 @@ CITY_TRANSLATIONS = {
     '塔克維拉': '塔克维拉',
 }
 
+CITY_TRANSLATIONS.update({
+    'Nürnberg': '纽伦堡',
+    'Nurnberg': '纽伦堡',
+    'Gangseo-gu': '江西区',
+    'Gangseo Gu': '江西区',
+    'Montréal': '蒙特利尔',
+    'Montreal': '蒙特利尔',
+    'Kwai Chung': '葵涌',
+    'Tung Chung': '东涌',
+    'Kanda-jinbōchō': '神田神保町',
+    'Kanda-jinbocho': '神田神保町',
+    'Yuanlin': '员林',
+    'Orem': '奥勒姆',
+    'Beauharnois': '博阿努瓦',
+    'Ebara': '荏原',
+    'Lauterbourg': '劳特堡',
+    'Bursa': '布尔萨',
+    'Calais': '加来',
+    'Meppel': '梅珀尔',
+    'Riga': '里加',
+    'Warsaw': '华沙',
+    'Brussels': '布鲁塞尔',
+    'Vienna': '维也纳',
+})
+
 # Country/Region display names (for avoiding "Hong Kong Hong Kong" style duplicates and normalizing names)
 REGION_DISPLAY_NAMES = {
     'HK': '中国香港',
@@ -638,6 +664,20 @@ COUNTRY_NAME_NORMALIZE = {
     '大不列颠及北爱尔兰联合王国': '英国',
     '荷兰王国': '荷兰',
 }
+
+COUNTRY_NAME_NORMALIZE.update({
+    'Russian Federation': '俄罗斯',
+    'Republic of Korea': '韩国',
+    'Korea, Republic of': '韩国',
+    'United States': '美国',
+    'United States of America': '美国',
+    'United Kingdom': '英国',
+    'Kingdom of the Netherlands': '荷兰',
+    'Türkiye': '土耳其',
+    'Latvia': '拉脱维亚',
+    'Lithuania': '立陶宛',
+    'Estonia': '爱沙尼亚',
+})
 
 # Online GeoIP lookup cache (to avoid repeated requests)
 _online_geoip_cache: Dict[str, Dict] = {}
@@ -1073,7 +1113,82 @@ COUNTRY_NAMES_FROM_CODE = {
     'CH': '瑞士', 'SE': '瑞典', 'NO': '挪威', 'FI': '芬兰', 'DK': '丹麦',
     'IE': '爱尔兰', 'BE': '比利时', 'NZ': '新西兰', 'IL': '以色列', 'UA': '乌克兰',
     'BY': '白俄罗斯', 'MD': '摩尔多瓦', 'NG': '尼日利亚', 'AQ': '南极洲',
+    'LV': '拉脱维亚', 'LT': '立陶宛', 'EE': '爱沙尼亚', 'HR': '克罗地亚',
+    'SI': '斯洛文尼亚', 'SK': '斯洛伐克', 'RO': '罗马尼亚', 'BG': '保加利亚',
+    'RS': '塞尔维亚', 'HU': '匈牙利',
 }
+
+
+@lru_cache(maxsize=4096)
+def normalize_location_name(value: str) -> str:
+    """Normalize accents, punctuation and spaces for robust location matching."""
+    if not value:
+        return ""
+
+    text = convert_to_simplified(str(value)).strip()
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace('’', "'").replace('`', "'").replace('ʻ', "'")
+    text = re.sub(r"(?<=\w)'(?=\w)", "", text)
+    text = re.sub(r"[-_/·,()]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.casefold().strip()
+
+
+@lru_cache(maxsize=1)
+def _get_city_translation_index() -> Dict[str, str]:
+    return {normalize_location_name(src): dst for src, dst in CITY_TRANSLATIONS.items()}
+
+
+@lru_cache(maxsize=1)
+def _get_country_normalize_index() -> Dict[str, str]:
+    return {normalize_location_name(src): dst for src, dst in COUNTRY_NAME_NORMALIZE.items()}
+
+
+def normalize_country_name(country_name: str, iso_code: str = "") -> str:
+    """Normalize country names to preferred Simplified Chinese display names."""
+    code = (iso_code or "").upper()
+    if code and code in COUNTRY_NAMES_FROM_CODE:
+        return REGION_DISPLAY_NAMES.get(code, COUNTRY_NAMES_FROM_CODE[code])
+
+    text = convert_to_simplified(country_name or "").strip()
+    if not text:
+        return code or ""
+
+    direct = COUNTRY_NAME_NORMALIZE.get(text)
+    if direct:
+        return direct
+
+    normalized = _get_country_normalize_index().get(normalize_location_name(text))
+    return normalized or text
+
+
+def _normalize_geo_result_fields(iso_code: str, country_name: str, city_name: str) -> Dict[str, Optional[str]]:
+    """Apply unified country and city normalization to GeoIP results."""
+    code = (iso_code or "").upper()
+    display_country = normalize_country_name(country_name, code)
+    translated_city = translate_city_name(city_name) if city_name else ""
+
+    if translated_city and translated_city in display_country:
+        translated_city = None
+
+    return {
+        "iso_code": code,
+        "country_name": display_country,
+        "city": translated_city or None,
+        "flag": GeoIPService.iso_to_flag(code),
+    }
+
+
+def _normalize_cached_geo_entry(entry: Dict) -> Dict:
+    """Re-normalize cached entries so new mappings apply without clearing cache."""
+    normalized = dict(entry)
+    normalized.update(_normalize_geo_result_fields(
+        entry.get("iso_code", ""),
+        entry.get("country_name") or entry.get("country", ""),
+        entry.get("city", "")
+    ))
+    return normalized
 
 async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:
     """
@@ -1097,7 +1212,10 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         if ts and (time.time() - ts) < GEOIP_CACHE_TTL:
             if entry.get('_negative'):
                 return None
-            return entry
+            normalized_entry = _normalize_cached_geo_entry(entry)
+            if normalized_entry != entry:
+                _online_geoip_cache[cache_key] = normalized_entry
+            return normalized_entry
         _online_geoip_cache.pop(cache_key, None)
 
     inflight = _online_geoip_inflight.get(cache_key)
@@ -1144,28 +1262,14 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         if not raw_data:
             return None
 
-        iso_code = raw_data.get("countryCode", "")
-        country_name = raw_data.get("country", "")
-        city = raw_data.get("city", "")
-
-        # Convert Traditional Chinese to Simplified Chinese
-        country_name = convert_to_simplified(country_name)
-        city = convert_to_simplified(city)
-
-        # Normalize country name
-        country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
-        # Use special display name for HK/MO/TW/SG
-        display_country = REGION_DISPLAY_NAMES.get(iso_code, country_name)
-
-        # Translate city name (English -> Chinese)
-        if city:
-            city = translate_city_name(city)
+        normalized = _normalize_geo_result_fields(
+            raw_data.get("countryCode", ""),
+            raw_data.get("country", ""),
+            raw_data.get("city", "")
+        )
 
         result = {
-            "iso_code": iso_code,
-            "country_name": display_country,
-            "city": city if city and city not in display_country else None,
-            "flag": GeoIPService.iso_to_flag(iso_code),
+            **normalized,
             "source": "online",
             "timestamp": time.time()  # Add timestamp for TTL
         }
@@ -1208,27 +1312,28 @@ def translate_city_name(city_name: str) -> str:
     """Translate city name to Simplified Chinese if available"""
     if not city_name:
         return city_name
-    
+
+    text = str(city_name).strip()
+
     # Direct translation lookup (exact match)
-    if city_name in CITY_TRANSLATIONS:
-        return CITY_TRANSLATIONS[city_name]
-    
-    # Try case-insensitive lookup (for robustness)
-    # GeoIP APIs usually return Title Case, but this handles edge cases
-    for key, value in CITY_TRANSLATIONS.items():
-        if key.lower() == city_name.lower():
-            return value
-    
+    if text in CITY_TRANSLATIONS:
+        return CITY_TRANSLATIONS[text]
+
+    # Normalized lookup handles accents, case and punctuation variants.
+    normalized = _get_city_translation_index().get(normalize_location_name(text))
+    if normalized:
+        return normalized
+
     # Try character-by-character Traditional -> Simplified conversion for remaining chars
-    result = city_name
+    result = text
     for trad, simp in CITY_TRANSLATIONS.items():
         if len(trad) == 1 and trad in result:
             result = result.replace(trad, simp)
-    
+
     # Convert any remaining Traditional Chinese to Simplified
     result = convert_to_simplified(result)
-    
-    return result
+
+    return result.strip()
 
 def format_location_display(country_code: str, country_name: str, city_name: str) -> str:
     """
