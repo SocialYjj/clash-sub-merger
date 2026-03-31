@@ -236,7 +236,6 @@ async def startup_event():
     # Restore scheduled jobs from config
     try:
         from core.database import load_config
-        from apscheduler.triggers.cron import CronTrigger
         
         config = load_config()
         scheduler = get_scheduler()
@@ -249,23 +248,22 @@ async def startup_event():
             cron_expr = sub.get('cron_expr')
             if cron_expr:
                 try:
-                    trigger = CronTrigger.from_crontab(cron_expr)
-                    job_id = f"sub_refresh_{sub['id']}"
-                    
-                    scheduler.scheduler.add_job(
+                    task_id = f"sub_refresh_{sub['id']}"
+                    job_id = scheduler.add_job(
+                        task_id,
+                        cron_expr,
                         refresh_subscription_job,
-                        trigger=trigger,
-                        args=[sub['id']],
-                        id=job_id,
-                        replace_existing=True
+                        sub['id']
                     )
                     
                     # Update next_update timestamp
-                    job = scheduler.scheduler.get_job(job_id)
-                    if job and job.next_run_time:
-                        sub['next_update'] = int(job.next_run_time.timestamp())
+                    job_info = scheduler.get_job_info(task_id)
+                    if job_id and job_info and job_info.get("next_run"):
+                        sub['next_update'] = int(job_info["next_run"].timestamp())
                         restored_count += 1
-                        logger.info(f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job.next_run_time}")
+                        logger.info(f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job_info['next_run']}")
+                    else:
+                        sub['next_update'] = None
                 except Exception as e:
                     logger.error(f"Failed to restore schedule for subscription '{sub.get('name')}': {e}")
                     sub['next_update'] = None
@@ -708,7 +706,7 @@ def refresh_subscription_job(sub_id: str):
             proxy_node = get_configured_proxy_node()
             force_proxy = sub.get('force_proxy', False)
             try:
-                existing_cfg = load_subscription_yaml(sub_id, Constants.YAML_SOURCE_DIR, use_cache=False)
+                existing_cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
                 existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
             except Exception:
                 existing_nodes = []
@@ -732,6 +730,18 @@ def refresh_subscription_job(sub_id: str):
                 'update_status': 'success'
             })
 
+            try:
+                task_id = f"sub_refresh_{sub_id}"
+                scheduler = get_scheduler()
+                job_info = scheduler.get_job_info(task_id)
+                if job_info and job_info.get('next_run'):
+                    sub['next_update'] = int(job_info['next_run'].timestamp())
+                else:
+                    job = scheduler.scheduler.get_job(f"task_{task_id}") or scheduler.scheduler.get_job(task_id)
+                    sub['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
+            except Exception as e:
+                logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
+
             if remembered or inherited:
                 logger.info(
                     "Scheduled refresh %s region history: remembered=%s inherited=%s",
@@ -740,7 +750,7 @@ def refresh_subscription_job(sub_id: str):
                     inherited,
                 )
             
-            save_subscription_content(sub_id, content, Constants.YAML_SOURCE_DIR)
+            save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
             save_config(config)
             invalidate_stats_cache()
             
