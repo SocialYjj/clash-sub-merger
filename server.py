@@ -683,7 +683,7 @@ def refresh_subscription_job(sub_id: str):
     This is called by the scheduler and runs in a background thread.
     """
     try:
-        from core.database import load_config, save_config
+        from core.database import load_config, update_subscription_fields
         import asyncio
         
         logger.info(f"Scheduled refresh triggered for subscription {sub_id}")
@@ -719,8 +719,8 @@ def refresh_subscription_job(sub_id: str):
                 existing_nodes=existing_nodes,
                 source=f'sub:scheduled-refresh:{sub_id}',
             )
-            
-            sub.update({
+
+            success_updates = {
                 'upload': sub_info.get('upload', 0),
                 'download': sub_info.get('download', 0),
                 'total': sub_info.get('total', 0),
@@ -728,19 +728,20 @@ def refresh_subscription_job(sub_id: str):
                 'node_count': node_count,
                 'last_update': int(time.time()),
                 'update_status': 'success'
-            })
+            }
 
             try:
                 task_id = f"sub_refresh_{sub_id}"
                 scheduler = get_scheduler()
                 job_info = scheduler.get_job_info(task_id)
                 if job_info and job_info.get('next_run'):
-                    sub['next_update'] = int(job_info['next_run'].timestamp())
+                    success_updates['next_update'] = int(job_info['next_run'].timestamp())
                 else:
                     job = scheduler.scheduler.get_job(f"task_{task_id}") or scheduler.scheduler.get_job(task_id)
-                    sub['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
+                    success_updates['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
             except Exception as e:
                 logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
+                success_updates['next_update'] = None
 
             if remembered or inherited:
                 logger.info(
@@ -751,15 +752,14 @@ def refresh_subscription_job(sub_id: str):
                 )
             
             save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
-            save_config(config)
+            update_subscription_fields(sub_id, success_updates)
             invalidate_stats_cache()
             
             logger.info(f"Scheduled refresh completed for subscription {sub_id}, got {node_count} nodes")
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
-            sub['update_status'] = f'error: {error_msg}'
-            save_config(config)
+            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
         finally:
             loop.close()
     except Exception as e:

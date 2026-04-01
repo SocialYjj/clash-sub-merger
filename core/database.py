@@ -33,6 +33,42 @@ def get_default_config() -> dict:
     }
 
 
+def _load_config_from_disk() -> dict:
+    """Load config directly from disk without using cache."""
+    default = get_default_config()
+
+    if not os.path.exists(CONFIG_FILE):
+        return default
+
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    for key in default:
+        if key not in config:
+            config[key] = default[key]
+
+    return config
+
+
+def _write_config_locked(config: dict):
+    """Write config to disk. Caller must already hold the file lock."""
+    global _config_cache, _config_mtime
+
+    temp_file = f"{CONFIG_FILE}.tmp"
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    if os.path.exists(CONFIG_FILE):
+        backup_file = f"{CONFIG_FILE}.backup"
+        import shutil
+        shutil.copy(CONFIG_FILE, backup_file)
+
+    os.replace(temp_file, CONFIG_FILE)
+
+    _config_cache = None
+    _config_mtime = None
+
+
 def load_config() -> dict:
     """Load unified config with caching"""
     global _config_cache, _config_mtime
@@ -49,12 +85,7 @@ def load_config() -> dict:
         if _config_cache is not None and _config_mtime == current_mtime:
             return _config_cache.copy()
         
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        for key in default:
-            if key not in config:
-                config[key] = default[key]
+        config = _load_config_from_disk()
         
         _config_cache = config
         _config_mtime = current_mtime
@@ -85,19 +116,7 @@ def save_config(config: dict):
     
     try:
         with lock:
-            temp_file = f"{CONFIG_FILE}.tmp"
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-            
-            if os.path.exists(CONFIG_FILE):
-                backup_file = f"{CONFIG_FILE}.backup"
-                import shutil
-                shutil.copy(CONFIG_FILE, backup_file)
-            
-            os.replace(temp_file, CONFIG_FILE)
-            
-            _config_cache = None
-            _config_mtime = None
+            _write_config_locked(config)
             
             logger.debug("Config saved successfully to %s", CONFIG_FILE)
     except Timeout:
@@ -113,6 +132,39 @@ def invalidate_config_cache():
     global _config_cache, _config_mtime
     _config_cache = None
     _config_mtime = None
+
+
+def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:
+    """
+    Atomically merge updates into one subscription record.
+
+    This avoids concurrent refresh jobs overwriting each other's changes by
+    always reloading the latest config while holding the file lock.
+    """
+    lock_file = f"{CONFIG_FILE}.lock"
+    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
+
+    try:
+        with lock:
+            config = _load_config_from_disk()
+            sub = find_subscription_by_id(config, sub_id)
+            if not sub:
+                logger.warning("Subscription %s not found while applying atomic update", sub_id)
+                return None
+
+            sub.update(updates or {})
+            _write_config_locked(config)
+            logger.debug("Atomically updated subscription %s", sub_id)
+            return dict(sub)
+    except Timeout:
+        logger.error("Timeout waiting for config file lock while updating subscription %s", sub_id)
+        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
+    except json.JSONDecodeError as e:
+        logger.error("Config file is corrupted while updating subscription %s: %s", sub_id, e)
+        raise HTTPException(status_code=500, detail="Configuration file is corrupted")
+    except Exception as e:
+        logger.error("Failed to atomically update subscription %s: %s", sub_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update subscription: {str(e)}")
 
 
 # Helper functions for finding items
