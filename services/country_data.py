@@ -272,7 +272,8 @@ def detect_country(name: str) -> Optional[Dict[str, str]]:
             keyword_lower = keyword.lower()
             is_short_latin = len(keyword_lower) <= 3 and keyword_lower.isascii() and keyword_lower.isalpha()
             if is_short_latin:
-                matched = re.search(r'(?<![a-z])' + re.escape(keyword_lower) + r'(?![a-z])', name_lower)
+                # Avoid matching ccTLD/domain fragments such as ".me", ".us", ".sg".
+                matched = re.search(r'(?<![a-z0-9.])' + re.escape(keyword_lower) + r'(?![a-z0-9.])', name_lower)
             else:
                 matched = keyword_lower in name_lower
             if matched and len(keyword_lower) > max_len:

@@ -5,6 +5,9 @@ Group proxy nodes by country/region
 import re
 from typing import List, Dict, Optional
 from logger_config import get_logger
+from geoip_service import GeoIPService
+from services.country_data import detect_country, COUNTRY_NAMES
+from services.name_transformer import NameTransformer
 
 logger = get_logger(__name__)
 
@@ -85,7 +88,6 @@ class CountryGrouper:
         for country, patterns in CountryGrouper.COUNTRY_PATTERNS.items():
             flag = patterns[0]
             CountryGrouper._flag_to_country[flag] = country
-            from services.name_transformer import NameTransformer
             code = NameTransformer.FLAG_TO_ISO.get(flag)
             if code and code != 'XX':
                 CountryGrouper._code_to_country[code] = country
@@ -104,39 +106,59 @@ class CountryGrouper:
             CountryGrouper._compiled_patterns[country] = compiled_list
 
     @staticmethod
+    def _format_group_name(country_code: str = '', country_name: str = '', flag: str = '') -> str:
+        """Format a standard country group name."""
+        code = str(country_code or '').upper().strip()
+        if code and code != 'XX':
+            flag = flag or GeoIPService.iso_to_flag(code)
+            country_name = country_name or COUNTRY_NAMES.get(code) or NameTransformer.ISO_TO_COUNTRY.get(code, code)
+
+        if flag and country_name:
+            return f"{flag} {country_name}"
+
+        return '🔰 未知'
+
+    @staticmethod
+    def _country_from_detection_result(result: Optional[dict]) -> Optional[str]:
+        """Convert a detect_country-style result to a standard group name."""
+        if not isinstance(result, dict):
+            return None
+
+        country_code = str(result.get('country_code') or '').upper().strip()
+        if not country_code or country_code == 'XX':
+            return None
+
+        return CountryGrouper._format_group_name(
+            country_code=country_code,
+            country_name=str(result.get('country') or '').strip(),
+            flag=str(result.get('flag') or '').strip(),
+        )
+
+    @staticmethod
     def _country_from_region(region: dict) -> Optional[str]:
         """Resolve country group directly from saved/tested region info."""
         if not isinstance(region, dict):
             return None
-        CountryGrouper._init_patterns()
         code = str(region.get('country_code') or '').upper()
-        if code:
-            return CountryGrouper._code_to_country.get(code)
         flag = str(region.get('flag') or '').strip()
+        country = str(region.get('country') or '').strip()
+        if code and code != 'XX':
+            return CountryGrouper._format_group_name(code, country, flag)
         if flag:
-            return CountryGrouper._flag_to_country.get(flag)
+            code = NameTransformer.FLAG_TO_ISO.get(flag, '')
+            if code and code != 'XX':
+                return CountryGrouper._format_group_name(code, country, flag)
+        if country:
+            detected = detect_country(country)
+            if detected:
+                return CountryGrouper._country_from_detection_result(detected)
         return None
-    
+
     @staticmethod
-    def identify_country(proxy_name: str, proxy_server: str = None) -> str:
-        """Identify country/region of proxy node (optimized with pre-compiled patterns)"""
+    def _identify_by_patterns(proxy_name: str) -> str:
+        """Legacy keyword matcher as a final fallback."""
         CountryGrouper._init_patterns()
         
-        # Priority 1: Check if name STARTS with a flag emoji
-        if len(proxy_name) >= 2:
-            first_char = proxy_name[0]
-            if first_char in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[first_char]
-            first_two = proxy_name[:2]
-            if first_two in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[first_two]
-        
-        # Priority 2: Check for any flag emoji in name
-        for char in proxy_name:
-            if char in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[char]
-        
-        # Priority 3: Try keyword matching with LONGEST MATCH principle
         best_match_country = None
         best_match_len = 0
         name_upper = proxy_name.upper()
@@ -166,7 +188,22 @@ class CountryGrouper:
         
         if best_match_country:
             return best_match_country
-        
+
+        return '🔰 未知'
+
+    @staticmethod
+    def identify_country(proxy_name: str, proxy_server: str = None) -> str:
+        """Identify country/region of proxy node."""
+        detected = detect_country(proxy_name)
+        detected_group = CountryGrouper._country_from_detection_result(detected)
+        if detected_group:
+            return detected_group
+
+        # Keep legacy pattern matcher as a final synchronous fallback.
+        legacy_group = CountryGrouper._identify_by_patterns(proxy_name)
+        if legacy_group != '🔰 未知':
+            return legacy_group
+
         return '🔰 未知'
     
     @staticmethod
@@ -188,63 +225,26 @@ class CountryGrouper:
     @staticmethod
     async def identify_country_async(proxy_name: str, proxy_server: str = None) -> str:
         """Async version: Identify country with GeoIP lookup support"""
-        CountryGrouper._init_patterns()
-        
-        # First try synchronous methods (fast)
-        if len(proxy_name) >= 2:
-            first_char = proxy_name[0]
-            if first_char in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[first_char]
-            first_two = proxy_name[:2]
-            if first_two in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[first_two]
-        
-        for char in proxy_name:
-            if char in CountryGrouper._flag_to_country:
-                return CountryGrouper._flag_to_country[char]
-        
-        # Keyword matching
-        best_match_country = None
-        best_match_len = 0
-        name_upper = proxy_name.upper()
-        
-        for country, compiled_list in CountryGrouper._compiled_patterns.items():
-            for item in compiled_list:
-                matched = False
-                pattern_len = 0
-                
-                if item[0] == 'chinese':
-                    pattern = item[1]
-                    if pattern in proxy_name:
-                        matched = True
-                        pattern_len = len(pattern)
-                elif item[0] == 'regex':
-                    regex, pattern_len = item[1], item[2]
-                    if regex.search(proxy_name):
-                        matched = True
-                else:
-                    pattern, pattern_len = item[1], item[2]
-                    if pattern in name_upper:
-                        matched = True
-                
-                if matched and pattern_len > best_match_len:
-                    best_match_len = pattern_len
-                    best_match_country = country
-        
-        if best_match_country:
-            return best_match_country
+        detected = detect_country(proxy_name)
+        detected_group = CountryGrouper._country_from_detection_result(detected)
+        if detected_group:
+            return detected_group
+
+        legacy_group = CountryGrouper._identify_by_patterns(proxy_name)
+        if legacy_group != '🔰 未知':
+            return legacy_group
         
         # Try GeoIP lookup (async)
         if proxy_server:
             try:
-                from geoip_service import GeoIPService
                 geoip = GeoIPService.get_instance()
                 country_info = await geoip.lookup_country_async(proxy_server)
                 if country_info and country_info.get('country_code'):
-                    code = country_info['country_code']
-                    for country_group in CountryGrouper.COUNTRY_PATTERNS.keys():
-                        if code in country_group or country_info.get('country_name', '') in country_group:
-                            return country_group
+                    return CountryGrouper._format_group_name(
+                        country_code=country_info['country_code'],
+                        country_name=country_info.get('country_name', ''),
+                        flag=country_info.get('flag', ''),
+                    )
             except Exception:
                 pass
         
