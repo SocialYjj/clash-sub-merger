@@ -140,15 +140,76 @@ class ProxyFilter:
 
     @staticmethod
     def is_valid_proxy(proxy: dict) -> bool:
-        """Check if proxy node is valid (not an info node)."""
-        return ProxyFilter.get_invalid_reason(proxy) is None
+        """Check if proxy node is valid after info-node and structural checks."""
+        if ProxyFilter.get_invalid_reason(proxy) is not None:
+            return False
+        return ProxyFilter.get_structural_invalid_reason(proxy) is None
+
+    @staticmethod
+    def _is_valid_server(server) -> bool:
+        """Basic host validation for exported proxy nodes."""
+        if server is None:
+            return False
+
+        server_text = str(server).strip()
+        if not server_text:
+            return False
+
+        # Malformed nodes occasionally leak an auth separator into the host field,
+        # such as "@1.2.3.4". Mihomo rejects these directly.
+        if server_text.startswith('@'):
+            return False
+
+        return True
+
+    @staticmethod
+    def _is_numeric_rate(value) -> bool:
+        """Check whether a Hysteria rate field is present and numeric."""
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return False
+            try:
+                float(text)
+                return True
+            except ValueError:
+                return False
+        return False
+
+    @staticmethod
+    def get_structural_invalid_reason(proxy: dict) -> Optional[str]:
+        """Return invalid reason for malformed protocol fields."""
+        if not isinstance(proxy, dict):
+            return 'invalid-proxy-object'
+
+        proxy_type = str(proxy.get('type', '') or '').strip().lower()
+
+        if proxy_type and not ProxyFilter._is_valid_server(proxy.get('server')):
+            return 'invalid-server'
+
+        # Hysteria v1 requires explicit upload/download rates.
+        # Hysteria2 does not require these fields, so do not enforce them there.
+        if proxy_type == 'hysteria':
+            if not ProxyFilter._is_numeric_rate(proxy.get('up')):
+                return 'invalid-hysteria-up'
+            if not ProxyFilter._is_numeric_rate(proxy.get('down')):
+                return 'invalid-hysteria-down'
+
+        return None
     
     @staticmethod
     def sanitize_proxy(proxy: dict) -> dict:
         """Sanitize proxy node to fix common issues"""
         if not proxy:
             return proxy
-        
+        if not isinstance(proxy, dict):
+            return proxy
+
+        proxy = dict(proxy)
         proxy_type = proxy.get('type', '')
         
         # Fix hysteria2 obfs issues
@@ -172,6 +233,29 @@ class ProxyFilter:
         """Filter invalid proxy nodes, keep only valid ones"""
         if not proxies:
             return []
-        # First filter out info nodes, then sanitize each proxy
-        valid = [p for p in proxies if ProxyFilter.is_valid_proxy(p)]
-        return [ProxyFilter.sanitize_proxy(p) for p in valid]
+
+        valid_proxies = []
+        for proxy in proxies:
+            info_reason = ProxyFilter.get_invalid_reason(proxy)
+            if info_reason:
+                logger.info(
+                    "Dropping info proxy '%s': %s",
+                    proxy.get('name', '<unknown>') if isinstance(proxy, dict) else '<invalid>',
+                    info_reason,
+                )
+                continue
+
+            sanitized = ProxyFilter.sanitize_proxy(proxy)
+            structural_reason = ProxyFilter.get_structural_invalid_reason(sanitized)
+            if structural_reason:
+                logger.warning(
+                    "Dropping malformed proxy '%s' (type=%s): %s",
+                    sanitized.get('name', '<unknown>') if isinstance(sanitized, dict) else '<invalid>',
+                    sanitized.get('type', '<unknown>') if isinstance(sanitized, dict) else '<invalid>',
+                    structural_reason,
+                )
+                continue
+
+            valid_proxies.append(sanitized)
+
+        return valid_proxies
