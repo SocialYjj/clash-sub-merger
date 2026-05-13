@@ -37,6 +37,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
             const grpcOpts = node['grpc-opts'] || {};
             const realityOpts = node['reality-opts'] || {};
             const h2Opts = node['h2-opts'] || {};
+            const xhttpOpts = node['xhttp-opts'] || {};
 
             setFormData({
                 // Basic
@@ -54,11 +55,11 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                 // Transport
                 network: node.network || 'tcp',
                 headerType: node['header-type'] || '',
-                host: wsOpts.headers?.Host || (Array.isArray(h2Opts.host) ? h2Opts.host[0] : h2Opts.host) || node.host || '',
-                path: wsOpts.path || h2Opts.path || node.path || '',
+                host: wsOpts.headers?.Host || (Array.isArray(h2Opts.host) ? h2Opts.host[0] : h2Opts.host) || xhttpOpts.host || node.host || '',
+                path: wsOpts.path || h2Opts.path || xhttpOpts.path || node.path || '',
                 grpcServiceName: grpcOpts['grpc-service-name'] || '',
                 grpcMode: grpcOpts.mode || 'gun',
-                xhttpMode: node['xhttp-mode'] || 'auto',
+                xhttpMode: xhttpOpts.mode || node['xhttp-mode'] || 'auto',
                 // TLS
                 security: node['reality-opts'] ? 'reality' : (node.tls ? 'tls' : ''),
                 sni: node.sni || node.servername || '',
@@ -145,9 +146,13 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
             if (formData.path) nodeObj['h2-opts'].path = formData.path;
         }
         if (formData.network === 'xhttp') {
-            if (formData.xhttpMode) nodeObj['xhttp-mode'] = formData.xhttpMode;
-            if (formData.path) nodeObj.path = formData.path;
-            if (formData.host) nodeObj.host = formData.host;
+            nodeObj['xhttp-opts'] = {};
+            if (formData.xhttpMode) nodeObj['xhttp-opts'].mode = formData.xhttpMode;
+            if (formData.path) nodeObj['xhttp-opts'].path = formData.path;
+            if (formData.host) nodeObj['xhttp-opts'].host = formData.host;
+            if (Object.keys(nodeObj['xhttp-opts']).length === 0) {
+                delete nodeObj['xhttp-opts'];
+            }
         }
 
         // TLS

@@ -1613,6 +1613,7 @@ def update_custom_nodes_yaml():
         # Use stored node config instead of re-parsing to avoid performance issues
         # Exclude metadata fields which are not part of proxy config
         proxy = {k: v for k, v in node.items() if k not in exclude_fields}
+        proxy = ProxyFilter.sanitize_proxy(proxy)
         if proxy and 'type' in proxy:  # Ensure it's a valid proxy config
             proxies.append(proxy)
     
@@ -1965,12 +1966,18 @@ def proxy_to_link(proxy: dict) -> str:
                 if host_val:
                     params.append(f"host={host_val}")
             elif network == 'xhttp':
-                if proxy.get('xhttp-mode'):
-                    params.append(f"mode={quote(str(proxy['xhttp-mode']))}")
-                if proxy.get('host'):
-                    params.append(f"host={quote(str(proxy['host']))}")
-                if proxy.get('path'):
-                    params.append(f"path={quote(str(proxy['path']))}")
+                xhttp_opts = proxy.get('xhttp-opts', {})
+                if not isinstance(xhttp_opts, dict):
+                    xhttp_opts = {}
+                xhttp_mode = xhttp_opts.get('mode') or proxy.get('xhttp-mode')
+                xhttp_host = xhttp_opts.get('host') or proxy.get('host')
+                xhttp_path = xhttp_opts.get('path') or proxy.get('path')
+                if xhttp_mode:
+                    params.append(f"mode={quote(str(xhttp_mode))}")
+                if xhttp_host:
+                    params.append(f"host={quote(str(xhttp_host))}")
+                if xhttp_path:
+                    params.append(f"path={quote(str(xhttp_path))}")
             query = '&'.join(params) if params else ''
             return f"vless://{proxy.get('uuid', '')}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
         

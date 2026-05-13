@@ -63,6 +63,19 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in ['1', 'true', 'yes', 'y', 'on']
 
 
+def _set_xhttp_opts(proxy: dict, mode=None, path=None, host=None):
+    """Set mihomo-compatible xhttp options on a parsed proxy."""
+    xhttp_opts = {}
+    if mode not in (None, ''):
+        xhttp_opts['mode'] = mode
+    if path not in (None, ''):
+        xhttp_opts['path'] = path
+    if host not in (None, ''):
+        xhttp_opts['host'] = host
+    if xhttp_opts:
+        proxy['xhttp-opts'] = xhttp_opts
+
+
 def parse_vless_link(link: str) -> Optional[dict]:
     """Parse vless:// link to Clash format"""
     link = link.strip()
@@ -171,14 +184,9 @@ def parse_vless_link(link: str) -> Optional[dict]:
         elif transport == 'xhttp':
             proxy['network'] = 'xhttp'
             xhttp_mode = get_param('mode', 'xhttp-mode', 'xhttpMode')
-            if xhttp_mode:
-                proxy['xhttp-mode'] = xhttp_mode
             path = get_param('path')
-            if path:
-                proxy['path'] = path
             host = get_param('host')
-            if host:
-                proxy['host'] = host
+            _set_xhttp_opts(proxy, mode=xhttp_mode, path=path, host=host)
         elif transport in ['kcp', 'quic', 'tcp']:
             if transport != 'tcp':
                 proxy['network'] = transport
@@ -288,12 +296,12 @@ def parse_vmess_link(link: str) -> Optional[dict]:
                         proxy['h2-opts'] = h2_opts
                 elif net == 'xhttp':
                     proxy['network'] = 'xhttp'
-                    if config.get('mode'):
-                        proxy['xhttp-mode'] = config['mode']
-                    if config.get('path'):
-                        proxy['path'] = config['path']
-                    if config.get('host'):
-                        proxy['host'] = config['host']
+                    _set_xhttp_opts(
+                        proxy,
+                        mode=config.get('mode'),
+                        path=config.get('path'),
+                        host=config.get('host'),
+                    )
                 elif net in ['kcp', 'quic', 'tcp']:
                     if net != 'tcp':
                         proxy['network'] = net
@@ -392,14 +400,9 @@ def parse_vmess_link(link: str) -> Optional[dict]:
         elif transport == 'xhttp':
             proxy['network'] = 'xhttp'
             xhttp_mode = get_param('mode', 'xhttp-mode', 'xhttpMode')
-            if xhttp_mode:
-                proxy['xhttp-mode'] = xhttp_mode
             path = get_param('path')
-            if path:
-                proxy['path'] = path
             host = get_param('host')
-            if host:
-                proxy['host'] = host
+            _set_xhttp_opts(proxy, mode=xhttp_mode, path=path, host=host)
         elif transport in ['kcp', 'quic', 'tcp']:
             if transport != 'tcp':
                 proxy['network'] = transport
@@ -635,14 +638,9 @@ def parse_trojan_link(link: str) -> Optional[dict]:
         elif transport == 'xhttp':
             proxy['network'] = 'xhttp'
             xhttp_mode = get_param('mode', 'xhttp-mode', 'xhttpMode')
-            if xhttp_mode:
-                proxy['xhttp-mode'] = xhttp_mode
             path = get_param('path')
-            if path:
-                proxy['path'] = path
             host = get_param('host')
-            if host:
-                proxy['host'] = host
+            _set_xhttp_opts(proxy, mode=xhttp_mode, path=path, host=host)
         elif transport in ['kcp', 'quic', 'tcp']:
             if transport != 'tcp':
                 proxy['network'] = transport
@@ -884,14 +882,9 @@ def parse_anytls_link(link: str) -> Optional[dict]:
         elif transport == 'xhttp':
             proxy['network'] = 'xhttp'
             xhttp_mode = get_param('mode', 'xhttp-mode', 'xhttpMode')
-            if xhttp_mode:
-                proxy['xhttp-mode'] = xhttp_mode
             path = get_param('path')
-            if path:
-                proxy['path'] = path
             host = get_param('host')
-            if host:
-                proxy['host'] = host
+            _set_xhttp_opts(proxy, mode=xhttp_mode, path=path, host=host)
         elif transport in ['kcp', 'quic', 'tcp']:
             if transport != 'tcp':
                 proxy['network'] = transport

@@ -211,6 +211,34 @@ class ProxyFilter:
 
         proxy = dict(proxy)
         proxy_type = proxy.get('type', '')
+        network = str(proxy.get('network', '') or '').strip().lower()
+
+        # Mihomo expects xhttp transport settings under "xhttp-opts".
+        # Older parser/UI code stored them as top-level "xhttp-mode", "path",
+        # and "host", which produces valid YAML/JSON but an invalid xhttp node.
+        if network == 'xhttp':
+            xhttp_opts = proxy.get('xhttp-opts')
+            if isinstance(xhttp_opts, dict):
+                xhttp_opts = dict(xhttp_opts)
+            else:
+                xhttp_opts = {}
+
+            legacy_mode = proxy.pop('xhttp-mode', None)
+            legacy_path = proxy.pop('path', None)
+            legacy_host = proxy.pop('host', None)
+
+            if legacy_mode not in (None, '') and 'mode' not in xhttp_opts:
+                xhttp_opts['mode'] = legacy_mode
+            if legacy_path not in (None, '') and 'path' not in xhttp_opts:
+                xhttp_opts['path'] = legacy_path
+            if legacy_host not in (None, '') and 'host' not in xhttp_opts:
+                xhttp_opts['host'] = legacy_host
+
+            xhttp_opts = {k: v for k, v in xhttp_opts.items() if v not in (None, '')}
+            if xhttp_opts:
+                proxy['xhttp-opts'] = xhttp_opts
+            else:
+                proxy.pop('xhttp-opts', None)
         
         # Fix hysteria2 obfs issues
         if proxy_type == 'hysteria2':
