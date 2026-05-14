@@ -69,11 +69,52 @@ func testSpeed(link string, testURL string, timeout time.Duration, mode string, 
 
 // getProxyAdapterFromNode creates a mihomo proxy adapter from a node config map
 func getProxyAdapterFromNode(node map[string]interface{}) (constant.Proxy, error) {
+	node = normalizeXHTTPNode(node)
 	proxyAdapter, err := adapter.ParseProxy(node)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy error: %v", err)
 	}
 	return proxyAdapter, nil
+}
+
+func normalizeXHTTPNode(node map[string]interface{}) map[string]interface{} {
+	if node == nil || strings.ToLower(fmt.Sprint(node["network"])) != "xhttp" {
+		return node
+	}
+
+	xhttpOpts := map[string]interface{}{}
+	if existing, ok := node["xhttp-opts"].(map[string]interface{}); ok {
+		for k, v := range existing {
+			if v != nil && fmt.Sprint(v) != "" {
+				xhttpOpts[k] = v
+			}
+		}
+	}
+
+	if mode, ok := node["xhttp-mode"]; ok && mode != nil && fmt.Sprint(mode) != "" {
+		if _, exists := xhttpOpts["mode"]; !exists {
+			xhttpOpts["mode"] = mode
+		}
+	}
+	if path, ok := node["path"]; ok && path != nil && fmt.Sprint(path) != "" {
+		if _, exists := xhttpOpts["path"]; !exists {
+			xhttpOpts["path"] = path
+		}
+	}
+	if host, ok := node["host"]; ok && host != nil && fmt.Sprint(host) != "" {
+		if _, exists := xhttpOpts["host"]; !exists {
+			xhttpOpts["host"] = host
+		}
+	}
+
+	delete(node, "xhttp-mode")
+	delete(node, "path")
+	delete(node, "host")
+	if len(xhttpOpts) > 0 {
+		node["xhttp-opts"] = xhttpOpts
+	}
+
+	return node
 }
 
 // testDelayWithNode tests latency using direct node config

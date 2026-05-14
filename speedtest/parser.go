@@ -31,10 +31,26 @@ func linkToProxyMap(link string) (map[string]interface{}, error) {
 	return nil, fmt.Errorf("unsupported protocol: %s", link[:min(20, len(link))])
 }
 
+func setXHTTPOpts(proxy map[string]interface{}, mode, path, host string) {
+	xhttpOpts := map[string]interface{}{}
+	if mode != "" {
+		xhttpOpts["mode"] = mode
+	}
+	if path != "" {
+		xhttpOpts["path"] = path
+	}
+	if host != "" {
+		xhttpOpts["host"] = host
+	}
+	if len(xhttpOpts) > 0 {
+		proxy["xhttp-opts"] = xhttpOpts
+	}
+}
+
 func parseVmess(link string) (map[string]interface{}, error) {
 	// vmess://base64encoded
 	encoded := strings.TrimPrefix(link, "vmess://")
-	
+
 	// Handle URL fragment (name)
 	if idx := strings.Index(encoded, "#"); idx != -1 {
 		encoded = encoded[:idx]
@@ -100,6 +116,15 @@ func parseVmess(link string) (map[string]interface{}, error) {
 			grpcOpts["grpc-service-name"] = path
 		}
 		proxy["grpc-opts"] = grpcOpts
+	}
+
+	if net == "xhttp" {
+		setXHTTPOpts(
+			proxy,
+			toString(vmessConfig["mode"]),
+			toString(vmessConfig["path"]),
+			toString(vmessConfig["host"]),
+		)
 	}
 
 	return proxy, nil
@@ -189,6 +214,10 @@ func parseVless(link string) (map[string]interface{}, error) {
 		proxy["grpc-opts"] = grpcOpts
 	}
 
+	if netType == "xhttp" {
+		setXHTTPOpts(proxy, params.Get("mode"), params.Get("path"), params.Get("host"))
+	}
+
 	return proxy, nil
 }
 
@@ -238,6 +267,9 @@ func parseTrojan(link string) (map[string]interface{}, error) {
 			grpcOpts["grpc-service-name"] = sn
 		}
 		proxy["grpc-opts"] = grpcOpts
+	} else if netType == "xhttp" {
+		proxy["network"] = "xhttp"
+		setXHTTPOpts(proxy, params.Get("mode"), params.Get("path"), params.Get("host"))
 	}
 
 	return proxy, nil

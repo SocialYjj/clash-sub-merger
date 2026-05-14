@@ -13,6 +13,7 @@ from core.database import load_config, save_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
+from services.proxy_filter import ProxyFilter
 from services.region_history import inherit_regions_for_nodes, remember_nodes_region
 from geoip_service import GeoIPService, normalize_country_name, translate_city_name
 from logger_config import get_logger
@@ -492,6 +493,10 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                 node_index = int(node_index_str)
                 if 0 <= node_index < len(config.get('custom_nodes', [])):
                     node = config['custom_nodes'][node_index]
+                    normalized_node = ProxyFilter.sanitize_proxy(node)
+                    if normalized_node != node:
+                        config['custom_nodes'][node_index] = normalized_node
+                        node = normalized_node
                     if 'latency' in result:
                         node['last_latency'] = result['latency']
                         node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -520,6 +525,10 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                     nodes = sub_data.get('proxies', [])
                     if 0 <= node_index < len(nodes):
                         node = nodes[node_index]
+                        normalized_node = ProxyFilter.sanitize_proxy(node)
+                        if normalized_node != node:
+                            nodes[node_index] = normalized_node
+                            node = normalized_node
                         if 'latency' in result:
                             node['last_latency'] = result['latency']
                             node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -570,6 +579,15 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
         
         node = nodes[node_index]
         is_custom = False
+
+    normalized_node = ProxyFilter.sanitize_proxy(node)
+    normalization_changed = normalized_node != node
+    if normalization_changed:
+        node = normalized_node
+        if is_custom:
+            config['custom_nodes'][node_index] = node
+        else:
+            sub_data['proxies'][node_index] = node
     
     # Call Go speedtest service
     go_port = os.environ.get('GO_SPEEDTEST_PORT', '9876')
@@ -578,7 +596,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
         "name": node.get('name', 'Unknown')
     }
     
-    need_save = False
+    need_save = normalization_changed
     
     try:
         async with aiohttp.ClientSession() as session:
