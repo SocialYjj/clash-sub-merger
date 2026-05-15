@@ -5,7 +5,8 @@ Handles loading, saving, and caching of config.json
 import json
 import os
 import time
-from typing import Optional
+import copy
+from typing import Callable, Optional, TypeVar
 from filelock import FileLock, Timeout
 from fastapi import HTTPException
 
@@ -17,6 +18,7 @@ logger = get_logger(__name__)
 # Config cache for performance
 _config_cache: Optional[dict] = None
 _config_mtime: Optional[float] = None
+T = TypeVar("T")
 
 
 def get_default_config() -> dict:
@@ -83,7 +85,7 @@ def load_config() -> dict:
         current_mtime = os.path.getmtime(CONFIG_FILE)
         
         if _config_cache is not None and _config_mtime == current_mtime:
-            return _config_cache.copy()
+            return copy.deepcopy(_config_cache)
         
         config = _load_config_from_disk()
         
@@ -91,7 +93,7 @@ def load_config() -> dict:
         _config_mtime = current_mtime
         
         logger.debug("Config loaded successfully from %s", CONFIG_FILE)
-        return config.copy()
+        return copy.deepcopy(config)
     except json.JSONDecodeError as e:
         logger.error("Config file is corrupted (invalid JSON): %s, error: %s", CONFIG_FILE, e)
         backup_file = f"{CONFIG_FILE}.corrupted.{int(time.time())}"
@@ -132,6 +134,37 @@ def invalidate_config_cache():
     global _config_cache, _config_mtime
     _config_cache = None
     _config_mtime = None
+
+
+def update_config(mutator: Callable[[dict], T]) -> T:
+    """
+    Atomically update config.json.
+
+    The mutator is called while holding the file lock with the latest on-disk
+    config. It may mutate the config in place and return any response value.
+    This avoids read-modify-write races between concurrent API requests.
+    """
+    lock_file = f"{CONFIG_FILE}.lock"
+    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
+
+    try:
+        with lock:
+            config = _load_config_from_disk()
+            result = mutator(config)
+            _write_config_locked(config)
+            logger.debug("Atomically updated config")
+            return result
+    except Timeout:
+        logger.error("Timeout waiting for config file lock while updating config")
+        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error("Config file is corrupted while updating config: %s", e)
+        raise HTTPException(status_code=500, detail="Configuration file is corrupted")
+    except Exception as e:
+        logger.error("Failed to atomically update config: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
 
 
 def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:

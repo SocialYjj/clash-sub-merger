@@ -6,7 +6,7 @@ import time
 from typing import Optional
 from fastapi import Header, HTTPException
 
-from .database import load_config, save_config
+from .database import load_config, update_config
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -33,10 +33,15 @@ def verify_session(authorization: Optional[str] = Header(None)) -> bool:
     if authorization in sessions:
         if sessions[authorization] > time.time():
             return True
-        # Session expired, clean up
-        del sessions[authorization]
-        config['auth']['sessions'] = sessions
-        save_config(config)
+        # Session expired, clean it atomically without overwriting concurrent
+        # config changes made by other requests.
+        def remove_expired_session(latest_config: dict):
+            latest_sessions = latest_config.get('auth', {}).get('sessions', {})
+            if latest_sessions.get(authorization, 0) <= time.time():
+                latest_sessions.pop(authorization, None)
+                latest_config.setdefault('auth', {})['sessions'] = latest_sessions
+
+        update_config(remove_expired_session)
     
     raise HTTPException(status_code=401, detail="Session expired")
 

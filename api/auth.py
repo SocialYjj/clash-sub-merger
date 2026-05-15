@@ -4,17 +4,16 @@ Login, logout, password management
 """
 import re
 import time
-import secrets
-import hashlib
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field, validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from core.config import AppConfig
-from core.database import load_config, save_config
-from helpers import handle_api_errors, generate_timestamp_id
+from core.database import load_config, update_config
+from core.dependencies import verify_session
+from core.security import generate_token, hash_password, needs_password_rehash, verify_password
+from helpers import handle_api_errors
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -57,40 +56,6 @@ class UpdateSubName(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
-# ==================== Helper Functions ====================
-
-def hash_password(password: str) -> str:
-    """Hash password using SHA256"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def generate_token() -> str:
-    """Generate secure token"""
-    return secrets.token_urlsafe(24)
-
-
-def verify_session(authorization: Optional[str] = Header(None)) -> bool:
-    """Verify user session"""
-    config = load_config()
-    auth = config.get('auth', {})
-    
-    if not auth.get('password_hash'):
-        return True
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Not logged in")
-    
-    sessions = auth.get('sessions', {})
-    if authorization in sessions:
-        if sessions[authorization] > time.time():
-            return True
-        del sessions[authorization]
-        config['auth']['sessions'] = sessions
-        save_config(config)
-    
-    raise HTTPException(status_code=401, detail="Session expired")
-
-
 # ==================== API Endpoints ====================
 
 @router.get("/status")
@@ -111,42 +76,50 @@ def get_auth_status():
 @handle_api_errors
 def setup_password(data: SetPassword):
     """Initial password setup"""
-    config = load_config()
-    if config['auth'].get('password_hash'):
-        raise HTTPException(status_code=400, detail="Password already set, use change password")
-    
-    session_token = generate_token()
-    config['auth'] = {
-        'password_hash': hash_password(data.password),
-        'sub_token': generate_token(),
-        'sessions': {session_token: time.time() + 86400}
-    }
-    save_config(config)
+    def setup_auth(config: dict):
+        auth = config.setdefault('auth', {})
+        if auth.get('password_hash'):
+            raise HTTPException(status_code=400, detail="Password already set, use change password")
+
+        session_token = generate_token()
+        sub_token = generate_token()
+        config['auth'] = {
+            'password_hash': hash_password(data.password),
+            'sub_token': sub_token,
+            'sessions': {session_token: time.time() + 86400}
+        }
+        return session_token, sub_token
+
+    session_token, sub_token = update_config(setup_auth)
     logger.info("Password setup completed")
-    return {"status": "success", "session": session_token, "sub_token": config['auth']['sub_token']}
+    return {"status": "success", "session": session_token, "sub_token": sub_token}
 
 
 @router.post("/login")
 @handle_api_errors
 def login(data: Login, request: Request):
     """User login"""
-    config = load_config()
-    auth = config.get('auth', {})
-    
-    if not auth.get('password_hash'):
-        raise HTTPException(status_code=400, detail="Please set password first")
-    
-    if hash_password(data.password) != auth['password_hash']:
-        logger.warning("Failed login attempt from %s", request.client.host)
-        raise HTTPException(status_code=401, detail="Wrong password")
-    
-    session_token = generate_token()
-    if 'sessions' not in config['auth']:
-        config['auth']['sessions'] = {}
-    config['auth']['sessions'][session_token] = time.time() + 86400
-    save_config(config)
-    
-    logger.info("User logged in from %s", request.client.host)
+    client_host = request.client.host if request.client else "unknown"
+
+    def create_session(config: dict) -> str:
+        auth = config.setdefault('auth', {})
+
+        if not auth.get('password_hash'):
+            raise HTTPException(status_code=400, detail="Please set password first")
+
+        if not verify_password(data.password, auth['password_hash']):
+            logger.warning("Failed login attempt from %s", client_host)
+            raise HTTPException(status_code=401, detail="Wrong password")
+
+        session_token = generate_token()
+        if needs_password_rehash(auth['password_hash']):
+            auth['password_hash'] = hash_password(data.password)
+        auth.setdefault('sessions', {})[session_token] = time.time() + 86400
+        return session_token
+
+    session_token = update_config(create_session)
+
+    logger.info("User logged in from %s", client_host)
     return {"status": "success", "session": session_token}
 
 
@@ -156,15 +129,14 @@ def logout(authorization: Optional[str] = Header(None)):
     """User logout"""
     if not authorization:
         return {"status": "success"}
-    
-    config = load_config()
-    sessions = config.get('auth', {}).get('sessions', {})
-    
-    if authorization in sessions:
-        del sessions[authorization]
-        config['auth']['sessions'] = sessions
-        save_config(config)
-    
+
+    def remove_session(config: dict):
+        sessions = config.get('auth', {}).get('sessions', {})
+        if authorization in sessions:
+            sessions.pop(authorization, None)
+            config.setdefault('auth', {})['sessions'] = sessions
+
+    update_config(remove_session)
     return {"status": "success"}
 
 
@@ -172,13 +144,15 @@ def logout(authorization: Optional[str] = Header(None)):
 @handle_api_errors
 def change_password(data: SetPassword, _: bool = Depends(verify_session)):
     """Change password"""
-    config = load_config()
-    
-    session_token = generate_token()
-    config['auth']['password_hash'] = hash_password(data.password)
-    config['auth']['sessions'] = {session_token: time.time() + 86400}
-    save_config(config)
-    
+    def change_auth_password(config: dict) -> str:
+        auth = config.setdefault('auth', {})
+        session_token = generate_token()
+        auth['password_hash'] = hash_password(data.password)
+        auth['sessions'] = {session_token: time.time() + 86400}
+        return session_token
+
+    session_token = update_config(change_auth_password)
+
     logger.info("Password changed")
     return {"status": "success", "session": session_token}
 
@@ -187,12 +161,13 @@ def change_password(data: SetPassword, _: bool = Depends(verify_session)):
 @handle_api_errors
 def regenerate_sub_token(_: bool = Depends(verify_session)):
     """Regenerate subscription token"""
-    config = load_config()
-    
-    new_token = generate_token()
-    config['auth']['sub_token'] = new_token
-    save_config(config)
-    
+    def regenerate_token(config: dict) -> str:
+        new_token = generate_token()
+        config.setdefault('auth', {})['sub_token'] = new_token
+        return new_token
+
+    new_token = update_config(regenerate_token)
+
     logger.info("Subscription token regenerated")
     return {"sub_token": new_token}
 
@@ -201,15 +176,15 @@ def regenerate_sub_token(_: bool = Depends(verify_session)):
 @handle_api_errors
 def update_sub_filename(data: UpdateSubFilename, _: bool = Depends(verify_session)):
     """Update subscription filename"""
-    config = load_config()
-    
     filename = data.filename
     if not filename.endswith('.yaml') and not filename.endswith('.yml'):
         filename += '.yaml'
-    
-    config['auth']['sub_filename'] = filename
-    save_config(config)
-    
+
+    def set_sub_filename(config: dict):
+        config.setdefault('auth', {})['sub_filename'] = filename
+
+    update_config(set_sub_filename)
+
     return {"status": "success", "sub_filename": filename}
 
 
@@ -217,12 +192,13 @@ def update_sub_filename(data: UpdateSubFilename, _: bool = Depends(verify_sessio
 @handle_api_errors
 def update_sub_name(data: UpdateSubName, _: bool = Depends(verify_session)):
     """Update subscription name"""
-    config = load_config()
-    
     name = data.name.strip()
-    config['auth']['sub_name'] = name
-    save_config(config)
-    
+
+    def set_sub_name(config: dict):
+        config.setdefault('auth', {})['sub_name'] = name
+
+    update_config(set_sub_name)
+
     return {"status": "success", "sub_name": name}
 
 

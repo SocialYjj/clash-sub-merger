@@ -2,7 +2,6 @@ import os
 import yaml
 import json
 import time
-import secrets
 import re
 import hashlib
 import httpx
@@ -73,7 +72,7 @@ from helpers import (
 
 # Import refactored modules
 from core.config import AppConfig as CoreAppConfig
-from core.dependencies import verify_session as core_verify_session
+from core.dependencies import verify_session
 from services.backup import (
     create_backup, list_backups, restore_backup, delete_backup,
     export_config, import_config
@@ -156,7 +155,7 @@ class AppConfig:
     HTTP_MAX_CONNECTIONS = int(os.environ.get('HTTP_MAX_CONNECTIONS', '50'))
     
     # Version
-    VERSION = "2.8.0"
+    VERSION = CoreAppConfig.VERSION
 
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
@@ -1160,34 +1159,6 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
         }
     
     return None
-
-# ==================== Authentication ====================
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def generate_token() -> str:
-    return secrets.token_urlsafe(24)
-
-def verify_session(authorization: Optional[str] = Header(None)) -> bool:
-    config = load_config()
-    auth = config.get('auth', {})
-    
-    if not auth.get('password_hash'):
-        return True
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Not logged in")
-    
-    sessions = auth.get('sessions', {})
-    if authorization in sessions:
-        if sessions[authorization] > time.time():
-            return True
-        del sessions[authorization]
-        config['auth']['sessions'] = sessions
-        save_config(config)
-    
-    raise HTTPException(status_code=401, detail="Session expired")
 
 # Data Models moved to core/models.py
 
@@ -3523,7 +3494,9 @@ def download_result(_: bool = Depends(verify_session)):
 
 # ==================== Static Files ====================
 
-frontend_dist = os.path.join(BASE_DIR, 'submerger', 'dist')
+frontend_dist = os.environ.get('FRONTEND_DIST_DIR') or os.path.join(BASE_DIR, 'submerger', 'dist')
+if not os.path.isabs(frontend_dist):
+    frontend_dist = os.path.join(BASE_DIR, frontend_dist)
 if os.path.exists(frontend_dist):
     # 1. Mount assets with cache headers for performance
     assets_path = os.path.join(frontend_dist, 'assets')
