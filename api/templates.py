@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
 
@@ -184,22 +184,20 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def create_template(data: CreateTemplate, _: bool = Depends(verify_session)):
     """Create a new template"""
-    config = load_config()
-    
-    template_id = generate_timestamp_id('tpl_')
-    template = {
-        'id': template_id,
-        'name': data.name,
-        'header': data.header,
-        'suffix': data.suffix,
-        'proxy_groups': data.proxy_groups or [],
-        'created_at': int(time.time())
-    }
-    
-    if 'templates' not in config:
-        config['templates'] = []
-    config['templates'].append(template)
-    save_config(config)
+    def add_template(config: dict) -> dict:
+        template_id = generate_timestamp_id('tpl_')
+        template = {
+            'id': template_id,
+            'name': data.name,
+            'header': data.header,
+            'suffix': data.suffix,
+            'proxy_groups': data.proxy_groups or [],
+            'created_at': int(time.time())
+        }
+        config.setdefault('templates', []).append(template)
+        return dict(template)
+
+    template = update_config(add_template)
     
     return {"status": "success", "template": template}
 
@@ -208,8 +206,6 @@ def create_template(data: CreateTemplate, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_template(template_id: str, data: UpdateTemplate, _: bool = Depends(verify_session)):
     """Update a template"""
-    config = load_config()
-    
     # Handle legacy content format
     if data.content is not None:
         # Split content into header, proxy_groups, and suffix
@@ -263,33 +259,35 @@ def update_template(template_id: str, data: UpdateTemplate, _: bool = Depends(ve
             data.suffix = ''
             data.proxy_groups = []
     
-    if template_id == 'builtin':
-        # Update builtin template override
-        override = config.get('builtin_template_override', {})
-        if data.header is not None:
-            override['header'] = data.header
-        if data.suffix is not None:
-            override['suffix'] = data.suffix
-        if data.proxy_groups is not None:
-            override['proxy_groups'] = data.proxy_groups
-        config['builtin_template_override'] = override
-        save_config(config)
-        return {"status": "success", "template": override}
-    
-    for template in config.get('templates', []):
-        if template['id'] == template_id:
-            if data.name is not None:
-                template['name'] = data.name
+    def apply_template_update(config: dict) -> dict:
+        if template_id == 'builtin':
+            # Update builtin template override
+            override = config.get('builtin_template_override', {})
             if data.header is not None:
-                template['header'] = data.header
+                override['header'] = data.header
             if data.suffix is not None:
-                template['suffix'] = data.suffix
+                override['suffix'] = data.suffix
             if data.proxy_groups is not None:
-                template['proxy_groups'] = data.proxy_groups
-            save_config(config)
-            return {"status": "success", "template": template}
-    
-    raise HTTPException(status_code=404, detail="Template not found")
+                override['proxy_groups'] = data.proxy_groups
+            config['builtin_template_override'] = override
+            return dict(override)
+
+        for template in config.get('templates', []):
+            if template['id'] == template_id:
+                if data.name is not None:
+                    template['name'] = data.name
+                if data.header is not None:
+                    template['header'] = data.header
+                if data.suffix is not None:
+                    template['suffix'] = data.suffix
+                if data.proxy_groups is not None:
+                    template['proxy_groups'] = data.proxy_groups
+                return dict(template)
+
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    template = update_config(apply_template_update)
+    return {"status": "success", "template": template}
 
 
 @router.delete("/{template_id}")
@@ -298,11 +296,12 @@ def delete_template(template_id: str, _: bool = Depends(verify_session)):
     """Delete a template"""
     if template_id == 'builtin':
         raise HTTPException(status_code=400, detail="Cannot delete builtin template")
-    
-    config = load_config()
-    templates = config.get('templates', [])
-    config['templates'] = [t for t in templates if t['id'] != template_id]
-    save_config(config)
+
+    def remove_template(config: dict):
+        templates = config.get('templates', [])
+        config['templates'] = [t for t in templates if t['id'] != template_id]
+
+    update_config(remove_template)
     
     return {"status": "success"}
 
@@ -311,12 +310,11 @@ def delete_template(template_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def reset_builtin_template(_: bool = Depends(verify_session)):
     """Reset builtin template to default"""
-    config = load_config()
-    
-    # Remove builtin template override
-    if 'builtin_template_override' in config:
-        del config['builtin_template_override']
-        save_config(config)
+    def reset_builtin_override(config: dict):
+        # Remove builtin template override
+        config.pop('builtin_template_override', None)
+
+    update_config(reset_builtin_override)
     
     return {"status": "success", "message": "Builtin template reset to default"}
 
@@ -325,38 +323,36 @@ def reset_builtin_template(_: bool = Depends(verify_session)):
 @handle_api_errors
 def duplicate_template(template_id: str, _: bool = Depends(verify_session)):
     """Duplicate a template"""
-    config = load_config()
-    
-    if template_id == 'builtin':
-        source = get_builtin_template()
-        # Apply override if exists
-        override = config.get('builtin_template_override', {})
-        if override:
-            if 'header' in override:
-                source['header'] = override['header']
-            if 'suffix' in override:
-                source['suffix'] = override['suffix']
-            if 'proxy_groups' in override:
-                source['proxy_groups'] = override['proxy_groups']
-    else:
-        source = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
-        if not source:
-            raise HTTPException(status_code=404, detail="Template not found")
-    
-    new_id = generate_timestamp_id('tpl_')
-    new_template = {
-        'id': new_id,
-        'name': f"{source.get('name', 'Template')} (Copy)",
-        'header': source.get('header', ''),
-        'suffix': source.get('suffix', ''),
-        'proxy_groups': source.get('proxy_groups', []),
-        'created_at': int(time.time())
-    }
-    
-    if 'templates' not in config:
-        config['templates'] = []
-    config['templates'].append(new_template)
-    save_config(config)
+    def duplicate_existing_template(config: dict) -> dict:
+        if template_id == 'builtin':
+            source = get_builtin_template()
+            # Apply override if exists
+            override = config.get('builtin_template_override', {})
+            if override:
+                if 'header' in override:
+                    source['header'] = override['header']
+                if 'suffix' in override:
+                    source['suffix'] = override['suffix']
+                if 'proxy_groups' in override:
+                    source['proxy_groups'] = override['proxy_groups']
+        else:
+            source = next((t for t in config.get('templates', []) if t['id'] == template_id), None)
+            if not source:
+                raise HTTPException(status_code=404, detail="Template not found")
+
+        new_id = generate_timestamp_id('tpl_')
+        new_template = {
+            'id': new_id,
+            'name': f"{source.get('name', 'Template')} (Copy)",
+            'header': source.get('header', ''),
+            'suffix': source.get('suffix', ''),
+            'proxy_groups': source.get('proxy_groups', []),
+            'created_at': int(time.time())
+        }
+        config.setdefault('templates', []).append(new_template)
+        return dict(new_template)
+
+    new_template = update_config(duplicate_existing_template)
     
     return {"status": "success", "template": new_template}
 

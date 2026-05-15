@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
 from logger_config import get_logger
@@ -59,14 +59,12 @@ def get_proxy_node_setting(_: bool = Depends(verify_session)):
 @handle_api_errors
 def update_proxy_node_setting(data: ProxyNodeSetting, _: bool = Depends(verify_session)):
     """Update proxy node setting"""
-    config = load_config()
-    if 'settings' not in config:
-        config['settings'] = {}
-    
-    config['settings']['proxy_node_id'] = data.proxy_node_id
-    config['settings']['proxy_node_name'] = data.proxy_node_name
-    
-    save_config(config)
+    def set_proxy_node(config: dict):
+        settings = config.setdefault('settings', {})
+        settings['proxy_node_id'] = data.proxy_node_id
+        settings['proxy_node_name'] = data.proxy_node_name
+
+    update_config(set_proxy_node)
     return {"status": "success"}
 
 
@@ -134,9 +132,10 @@ def get_source_order(_: bool = Depends(verify_session)):
 @handle_api_errors
 def update_source_order(data: dict, _: bool = Depends(verify_session)):
     """Update source order"""
-    config = load_config()
-    config['source_order'] = data.get('order', [])
-    save_config(config)
+    def set_source_order(config: dict):
+        config['source_order'] = data.get('order', [])
+
+    update_config(set_source_order)
     return {"status": "success"}
 
 
@@ -237,18 +236,17 @@ def get_port_mappings(_: bool = Depends(verify_session)):
 @handle_api_errors
 def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_session)):
     """Create a port mapping"""
-    config = load_config()
-    
-    if 'port_mappings' not in config:
-        config['port_mappings'] = {}
-    
-    # Check if port is already used
-    for name, port in config['port_mappings'].items():
-        if port == data.port and name != data.final_name:
-            raise HTTPException(status_code=400, detail=f"Port {data.port} is already mapped to {name}")
-    
-    config['port_mappings'][data.final_name] = data.port
-    save_config(config)
+    def add_port_mapping(config: dict):
+        mappings = config.setdefault('port_mappings', {})
+
+        # Check if port is already used against latest config while locked.
+        for name, port in mappings.items():
+            if port == data.port and name != data.final_name:
+                raise HTTPException(status_code=400, detail=f"Port {data.port} is already mapped to {name}")
+
+        mappings[data.final_name] = data.port
+
+    update_config(add_port_mapping)
     
     return {"status": "success", "mapping": {"final_name": data.final_name, "port": data.port}}
 
@@ -257,19 +255,20 @@ def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_sessio
 @handle_api_errors
 def delete_port_mapping(port: int, _: bool = Depends(verify_session)):
     """Delete a port mapping by port number"""
-    config = load_config()
-    mappings = config.get('port_mappings', {})
-    
-    # Find and remove the mapping with this port
-    to_remove = None
-    for name, p in mappings.items():
-        if p == port:
-            to_remove = name
-            break
-    
-    if to_remove:
-        del config['port_mappings'][to_remove]
-        save_config(config)
-        return {"status": "success"}
-    
-    raise HTTPException(status_code=404, detail="Port mapping not found")
+    def remove_port_mapping(config: dict):
+        mappings = config.get('port_mappings', {})
+
+        # Find and remove the mapping with this port
+        to_remove = None
+        for name, p in mappings.items():
+            if p == port:
+                to_remove = name
+                break
+
+        if not to_remove:
+            raise HTTPException(status_code=404, detail="Port mapping not found")
+
+        del mappings[to_remove]
+
+    update_config(remove_port_mapping)
+    return {"status": "success"}

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.proxy_filter import ProxyFilter
@@ -128,21 +128,19 @@ def get_available_nodes_for_chain(_: bool = Depends(verify_session)):
 @handle_api_errors
 def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)):
     """Create a new proxy chain"""
-    config = load_config()
-    
-    chain_id = generate_timestamp_id('chain_')
-    chain = {
-        'id': chain_id,
-        'name': data.name,
-        'rows': [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows],
-        'enabled': True,
-        'created_at': int(time.time())
-    }
-    
-    if 'proxy_chains' not in config:
-        config['proxy_chains'] = []
-    config['proxy_chains'].append(chain)
-    save_config(config)
+    def add_proxy_chain(config: dict) -> dict:
+        chain_id = generate_timestamp_id('chain_')
+        chain = {
+            'id': chain_id,
+            'name': data.name,
+            'rows': [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows],
+            'enabled': True,
+            'created_at': int(time.time())
+        }
+        config.setdefault('proxy_chains', []).append(chain)
+        return dict(chain)
+
+    chain = update_config(add_proxy_chain)
     
     return {"status": "success", "chain": chain}
 
@@ -164,51 +162,53 @@ def get_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_proxy_chain(chain_id: str, data: UpdateProxyChain, _: bool = Depends(verify_session)):
     """Update proxy chain"""
-    config = load_config()
-    
-    for chain in config.get('proxy_chains', []):
-        if chain['id'] == chain_id:
-            if data.name is not None:
-                chain['name'] = data.name
-            if data.rows is not None:
-                chain['rows'] = [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows]
-            if data.enabled is not None:
-                chain['enabled'] = data.enabled
-            save_config(config)
-            return {"status": "success", "chain": chain}
-    
-    raise HTTPException(status_code=404, detail="Proxy chain not found")
+    def apply_proxy_chain_update(config: dict) -> dict:
+        for chain in config.get('proxy_chains', []):
+            if chain['id'] == chain_id:
+                if data.name is not None:
+                    chain['name'] = data.name
+                if data.rows is not None:
+                    chain['rows'] = [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows]
+                if data.enabled is not None:
+                    chain['enabled'] = data.enabled
+                return dict(chain)
+
+        raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+    chain = update_config(apply_proxy_chain_update)
+    return {"status": "success", "chain": chain}
 
 
 @router.put("/{chain_id}/toggle")
 @handle_api_errors
 def toggle_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     """Toggle proxy chain enabled status"""
-    config = load_config()
-    
-    for chain in config.get('proxy_chains', []):
-        if chain['id'] == chain_id:
-            chain['enabled'] = not chain.get('enabled', True)
-            save_config(config)
-            return {"status": "success", "enabled": chain['enabled']}
-    
-    raise HTTPException(status_code=404, detail="Proxy chain not found")
+    def toggle_chain(config: dict) -> bool:
+        for chain in config.get('proxy_chains', []):
+            if chain['id'] == chain_id:
+                chain['enabled'] = not chain.get('enabled', True)
+                return chain['enabled']
+
+        raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+    enabled = update_config(toggle_chain)
+    return {"status": "success", "enabled": enabled}
 
 
 @router.delete("/{chain_id}")
 @handle_api_errors
 def delete_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
     """Delete proxy chain"""
-    config = load_config()
-    chains = config.get('proxy_chains', [])
-    
-    original_count = len(chains)
-    config['proxy_chains'] = [c for c in chains if c['id'] != chain_id]
-    
-    if len(config['proxy_chains']) == original_count:
-        raise HTTPException(status_code=404, detail="Proxy chain not found")
-    
-    save_config(config)
+    def remove_proxy_chain(config: dict):
+        chains = config.get('proxy_chains', [])
+
+        original_count = len(chains)
+        config['proxy_chains'] = [c for c in chains if c['id'] != chain_id]
+
+        if len(config['proxy_chains']) == original_count:
+            raise HTTPException(status_code=404, detail="Proxy chain not found")
+
+    update_config(remove_proxy_chain)
     return {"status": "success"}
 
 
@@ -216,16 +216,17 @@ def delete_proxy_chain(chain_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def reorder_proxy_chains(data: ReorderProxyChains, _: bool = Depends(verify_session)):
     """Reorder proxy chains"""
-    config = load_config()
-    chains = config.get('proxy_chains', [])
-    chain_map = {c['id']: c for c in chains}
-    
-    new_chains = []
-    for chain_id in data.order:
-        if chain_id in chain_map:
-            new_chains.append(chain_map.pop(chain_id))
-    new_chains.extend(chain_map.values())
-    
-    config['proxy_chains'] = new_chains
-    save_config(config)
+    def apply_proxy_chain_order(config: dict):
+        chains = config.get('proxy_chains', [])
+        chain_map = {c['id']: c for c in chains}
+
+        new_chains = []
+        for chain_id in data.order:
+            if chain_id in chain_map:
+                new_chains.append(chain_map.pop(chain_id))
+        new_chains.extend(chain_map.values())
+
+        config['proxy_chains'] = new_chains
+
+    update_config(apply_proxy_chain_order)
     return {"status": "success"}
