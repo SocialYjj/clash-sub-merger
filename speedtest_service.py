@@ -6,25 +6,21 @@ Provides node latency and speed testing functionality.
 import asyncio
 import aiohttp
 import time
-import socket
 from datetime import datetime
-from typing import Optional, Dict, List, Callable, Any
-from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from typing import Optional, Dict, List, Callable
+from dataclasses import dataclass
 
 # GeoIP lookup is now done via online API in server.py
 
 
 # Default test URLs
-DEFAULT_LATENCY_URL = "http://www.gstatic.com/generate_204"
+DEFAULT_LATENCY_URL = "https://cp.cloudflare.com/generate_204"
 DEFAULT_SPEED_URL = "http://cachefly.cachefly.net/10mb.test"
 DEFAULT_LANDING_IP_URL = "https://api.ipify.org"
 
 # Alternative test URLs
 ALTERNATIVE_LATENCY_URLS = [
-    "http://www.gstatic.com/generate_204",
-    "http://cp.cloudflare.com/generate_204",
-    "http://www.google.com/generate_204",
+    "https://cp.cloudflare.com/generate_204",
 ]
 
 ALTERNATIVE_SPEED_URLS = [

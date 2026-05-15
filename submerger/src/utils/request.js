@@ -51,7 +51,7 @@ request.interceptors.response.use(
       // Exponential backoff
       const delay = RETRY_CONFIG.retryDelay * Math.pow(2, config.__retryCount - 1);
 
-      console.log(`Retrying request (${config.__retryCount}/${RETRY_CONFIG.maxRetries}) after ${delay}ms`);
+      console.info(`Retrying request (${config.__retryCount}/${RETRY_CONFIG.maxRetries}) after ${delay}ms`);
 
       await new Promise(resolve => setTimeout(resolve, delay));
 

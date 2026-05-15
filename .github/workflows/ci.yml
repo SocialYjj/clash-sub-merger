@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile all Python modules
+        run: |
+          python -m py_compile $(git ls-files '*.py')
+
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests -v
+
+  go-speedtest:
+    name: Go speedtest tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: speedtest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: speedtest/go.mod
+          cache-dependency-path: speedtest/go.sum
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Build Linux speedtest binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/speedtest-ci .
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: submerger
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: submerger/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build

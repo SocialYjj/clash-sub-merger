@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FileCode, Upload, Save, RotateCcw, Plus, Trash2, Edit3, Copy, Check, X, Lock, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import { FileCode, Upload, RotateCcw, Plus, Trash2, Edit3, Copy, X, Info } from 'lucide-react';
 import request from '../utils/request';
 
 const API_BASE = '/api';
@@ -39,7 +39,7 @@ proxy-groups:
 
   - name: 自动选择
     type: url-test
-    url: http://www.gstatic.com/generate_204
+    url: https://cp.cloudflare.com/generate_204
     interval: 300
     proxies:
       - {{ALL_PROXIES}}

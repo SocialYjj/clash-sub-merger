@@ -3,7 +3,6 @@ System API
 System management, backup, import/export, logging endpoints
 """
 import json
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel

@@ -5,12 +5,11 @@ Provides cron-based task scheduling using APScheduler.
 
 import re
 from datetime import datetime
-from typing import Optional, Dict, Callable, Any
+from typing import Optional, Dict, Callable
 from threading import RLock
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.job import Job
 from logger_config import get_logger
 
 # Setup logger

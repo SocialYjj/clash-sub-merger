@@ -9,7 +9,7 @@
 POST /api/delay
 {
   "link": "vmess://...",
-  "url": "http://www.gstatic.com/generate_204",  // 可选
+  "url": "https://cp.cloudflare.com/generate_204",  // 可选
   "timeout": 5000  // 毫秒，可选
 }
 

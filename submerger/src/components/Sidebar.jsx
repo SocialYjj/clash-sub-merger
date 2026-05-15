@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   Plane,
   Server,
-  Map,
   Settings,
   Users,
   ChevronLeft,
@@ -12,8 +11,6 @@ import {
   Menu,
   X,
   Globe,
-  Clock,
-  Database,
   FileCode
 } from 'lucide-react';
 

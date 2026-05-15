@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import request from '../utils/request';
 import * as echarts from 'echarts';
-import { RefreshCw, Server, Globe, ExternalLink, X } from 'lucide-react';
+import { RefreshCw, Globe, ExternalLink, X } from 'lucide-react';
 import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
 
 // Lazy load world.json to reduce initial bundle size (saves ~1.5MB)

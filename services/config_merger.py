@@ -60,7 +60,7 @@ class ProxyGroupGenerator:
             'name': '♻️ 自动选择(测速)',
             'type': 'url-test',
             'proxies': sorted_countries,
-            'url': 'http://www.gstatic.com/generate_204',
+            'url': 'https://cp.cloudflare.com/generate_204',
             'interval': 300,
             'tolerance': 50
         }
@@ -71,7 +71,7 @@ class ProxyGroupGenerator:
             'name': '🔯 故障转移',
             'type': 'fallback',
             'proxies': sorted_countries,
-            'url': 'http://www.gstatic.com/generate_204',
+            'url': 'https://cp.cloudflare.com/generate_204',
             'interval': 300
         }
         groups.append(fallback)

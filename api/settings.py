@@ -3,8 +3,7 @@ Settings API
 Application settings endpoints
 """
 import os
-import re
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -12,6 +11,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.proxy_chain_utils import unique_group_name, unique_name
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -182,29 +182,11 @@ def get_port_mappings(_: bool = Depends(verify_session)):
             logger.warning(f"Failed to load subscription {sub['id']}: {e}")
     
 
-    # Add chain pool groups (group nodes in proxy chains)
+    # Add generated chain node names and chain pool groups.
+    # Keep naming in sync with services.subscription_output so mappings to
+    # generated names such as "🔗 美国家宽" are treated as active.
+    existing_names = available_nodes
     existing_group_names = set()
-    def _group_id_suffix(group_id: str | None) -> str:
-        if not group_id:
-            return ''
-        clean = re.sub(r'[^A-Za-z0-9]', '', group_id)
-        return clean[-4:] if clean else ''
-    def _unique_group_name(base: str, group_id: str | None = None) -> str:
-        if base not in existing_group_names:
-            existing_group_names.add(base)
-            return base
-        suffix = _group_id_suffix(group_id)
-        if suffix:
-            candidate = f"{base} ({suffix})"
-            if candidate not in existing_group_names:
-                existing_group_names.add(candidate)
-                return candidate
-        idx = 2
-        while f"{base} ({idx})" in existing_group_names:
-            idx += 1
-        name = f"{base} ({idx})"
-        existing_group_names.add(name)
-        return name
 
     for chain in config.get('proxy_chains', []):
         if not chain.get('enabled', True):
@@ -212,14 +194,34 @@ def get_port_mappings(_: bool = Depends(verify_session)):
         rows = chain.get('rows', [])
         for row_idx, row in enumerate(rows):
             nodes = row.get('nodes', [])
+            if len(nodes) < 2:
+                continue
+
+            chain_name = chain.get('name', 'Chain')
+            if len(rows) > 1:
+                chain_name = f"{chain_name} #{row_idx + 1}"
+
+            terminal_group = None
+            transit_group_idx = 0
             for node in nodes:
                 if isinstance(node, dict) and node.get('type') == 'group':
-                    chain_name = chain.get('name', 'Chain')
-                    if len(rows) > 1:
-                        chain_name = f"{chain_name} #{row_idx + 1}"
-                    group_base_name = node.get('group_name') or f"{chain_name} 落地池"
-                    group_name = _unique_group_name(f"🔀 {group_base_name}", node.get('group_id'))
+                    is_terminal = node is nodes[-1]
+                    if is_terminal:
+                        terminal_group = node
+                        group_base_name = node.get('group_name') or f"{chain_name} 落地池"
+                    else:
+                        transit_group_idx += 1
+                        group_base_name = node.get('group_name') or f"{chain_name} 中转池{transit_group_idx}"
+
+                    group_name = unique_group_name(
+                        f"🔀 {group_base_name}",
+                        existing_group_names,
+                        node.get('group_id'),
+                    )
                     available_nodes.add(group_name)
+
+            if not terminal_group:
+                unique_name(f"🔗 {chain_name}", existing_names)
     # Convert to list format for frontend with active status
     result = []
     for node_name, port in mappings.items():

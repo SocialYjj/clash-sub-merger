@@ -1,6 +1,6 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Eye, EyeOff, Lock, X, Copy, Check } from 'lucide-react';
+import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
 import request from './utils/request';
 
 // Components (keep these as regular imports since they're small and used frequently)
@@ -446,7 +446,6 @@ export default function App() {
                 onRefreshAll={refreshAllSubscriptions}
                 onRefreshList={fetchSubscriptions}
                 onToggle={toggleSubscription}
-                onOpenDetail={(sub) => {/* TODO: implement detail modal */ }}
                 loading={loading}
                 showToast={showToast}
               />

@@ -4,9 +4,8 @@ Parses various proxy protocol links (vmess, vless, ss, trojan, etc.)
 """
 import base64
 import json
-import re
 from urllib.parse import urlparse, parse_qsl, unquote
-from typing import Optional, Dict
+from typing import Optional
 from logger_config import get_logger
 
 logger = get_logger(__name__)

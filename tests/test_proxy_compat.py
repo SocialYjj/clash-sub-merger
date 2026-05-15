@@ -78,5 +78,49 @@ class ProxyCompatTests(unittest.TestCase):
         self.assertEqual(data["proxies"][0]["xhttp-opts"], {"mode": "auto", "path": "/sub"})
 
 
+class CoreDatabaseCompatibilityTests(unittest.TestCase):
+    def test_load_config_normalizes_xhttp_nodes_and_returns_deepcopy(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import core.database as database
+
+        original_config_file = database.CONFIG_FILE
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_file = Path(tmpdir) / "config.json"
+                config_file.write_text(json.dumps({
+                    "auth": {},
+                    "subscriptions": [],
+                    "custom_nodes": [{
+                        "name": "legacy-xhttp",
+                        "type": "vless",
+                        "network": "xhttp",
+                        "xhttp-mode": "stream-up",
+                        "path": "/xhttp",
+                    }],
+                }), encoding="utf-8")
+
+                database.CONFIG_FILE = str(config_file)
+                database.invalidate_config_cache()
+
+                config = database.load_config()
+                self.assertIn("proxy_chains", config)
+                self.assertEqual(
+                    config["custom_nodes"][0]["xhttp-opts"],
+                    {"mode": "stream-up", "path": "/xhttp"},
+                )
+                self.assertNotIn("xhttp-mode", config["custom_nodes"][0])
+                self.assertNotIn("path", config["custom_nodes"][0])
+
+                config["custom_nodes"][0]["name"] = "mutated"
+                fresh_config = database.load_config()
+                self.assertEqual(fresh_config["custom_nodes"][0]["name"], "legacy-xhttp")
+        finally:
+            database.CONFIG_FILE = original_config_file
+            database.invalidate_config_cache()
+
+
 if __name__ == "__main__":
     unittest.main()

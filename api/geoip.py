@@ -245,7 +245,7 @@ class OnlineGeoIPConfig(BaseModel):
 def get_online_geoip_config(_: bool = Depends(verify_session)):
     """Get online GeoIP configuration"""
     from core.database import load_config
-    from geoip_service import get_all_geoip_apis, get_online_geoip_config as get_geoip_config
+    from geoip_service import get_all_geoip_apis
     
     config = load_config()
     geoip_config = config.get('geoip_config', {})

@@ -9,7 +9,7 @@ from core.dependencies import verify_session
 from core.database import load_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
-from services.country_data import detect_country, COUNTRY_NAMES
+from services.country_data import COUNTRY_NAMES
 from services.proxy_filter import ProxyFilter
 from geoip_service import GeoIPService
 from logger_config import get_logger

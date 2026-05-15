@@ -3,7 +3,6 @@ Nodes API
 Custom nodes and subscription nodes management
 """
 import os
-import time
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, validator
@@ -629,7 +628,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
                     f"http://127.0.0.1:{go_port}/api/delay",
                     json={
                         "node": node,
-                        "url": "http://www.gstatic.com/generate_204",
+                        "url": "https://cp.cloudflare.com/generate_204",
                         "timeout": 5000
                     },
                     timeout=aiohttp.ClientTimeout(total=10)

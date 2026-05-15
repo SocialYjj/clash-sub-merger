@@ -4,8 +4,7 @@ Helper functions and utilities
 import os
 import yaml
 import time
-import aiofiles
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 from fastapi import HTTPException
 from dotenv import load_dotenv
 from logger_config import get_logger
@@ -233,114 +232,6 @@ def save_subscription_yaml(sub_id: str, cfg: dict, yaml_source_dir: str):
         raise HTTPException(status_code=500, detail="Failed to save subscription")
 
 
-def get_subscription_node(sub_id: str, node_index: int, yaml_source_dir: str) -> Tuple[dict, dict, int]:
-    """
-    Get node from subscription by index
-    
-    Args:
-        sub_id: Subscription ID
-        node_index: Node index
-        yaml_source_dir: Directory containing YAML files
-    
-    Returns:
-        Tuple of (config_dict, node_dict, node_index)
-    
-    Raises:
-        HTTPException: If subscription or node not found
-    """
-    cfg = load_subscription_yaml(sub_id, yaml_source_dir)
-    proxies = cfg.get('proxies', [])
-    
-    if node_index < 0 or node_index >= len(proxies):
-        raise HTTPException(status_code=404, detail="Node not found")
-    
-    return cfg, proxies[node_index], node_index
-
-
-def save_custom_nodes_yaml(proxies: list, yaml_source_dir: str):
-    """
-    Save custom nodes YAML file
-    
-    Args:
-        proxies: List of proxy nodes
-        yaml_source_dir: Directory containing YAML files
-    
-    Raises:
-        HTTPException: If save fails
-    """
-    save_subscription_yaml('custom_nodes', {'proxies': proxies}, yaml_source_dir)
-
-
-def load_yaml_file_cached(filepath: str, cache_key: str = None, use_cache: bool = True) -> dict:
-    """
-    Load any YAML file with optional caching
-    
-    Args:
-        filepath: Full path to YAML file
-        cache_key: Optional cache key (defaults to filepath)
-        use_cache: Whether to use cache
-    
-    Returns:
-        Parsed YAML dict
-    
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        HTTPException: If parse error
-    """
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
-    
-    cache_key = cache_key or filepath
-    start_time = time.time()
-    
-    # Check cache first
-    if use_cache:
-        cached = yaml_cache.get(cache_key)
-        if cached is not None:
-            cache_hits_total.labels(cache_type='yaml').inc()
-            return cached
-        cache_misses_total.labels(cache_type='yaml').inc()
-    
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            cfg = yaml.load(f, Loader=YAMLLoader)
-        
-        result = cfg if cfg else {}
-        
-        # Update cache
-        if use_cache:
-            yaml_cache.set(cache_key, result)
-        
-        # Record metrics
-        duration = time.time() - start_time
-        file_operations_total.labels(operation='read', status='success').inc()
-        file_operation_duration_seconds.labels(operation='read').observe(duration)
-        
-        return result
-        
-    except yaml.YAMLError as e:
-        logger.error(f"Failed to parse YAML {filepath}: {e}")
-        file_operations_total.labels(operation='read', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Invalid YAML format")
-    except Exception as e:
-        logger.error(f"Failed to load YAML {filepath}: {e}")
-        file_operations_total.labels(operation='read', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Failed to load file")
-
-
-def save_custom_nodes_yaml(proxies: list, yaml_source_dir: str):
-    """
-    Save custom nodes YAML file
-    
-    Args:
-        proxies: List of proxy nodes
-        yaml_source_dir: Directory containing YAML files
-    
-    Raises:
-        HTTPException: If save fails
-    """
-    save_subscription_yaml('custom_nodes', {'proxies': proxies}, yaml_source_dir)
-
 
 def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
     """
@@ -389,58 +280,6 @@ def generate_timestamp_id(prefix: str = '') -> str:
     timestamp = int(time.time() * 1000)
     return f"{prefix}{timestamp}" if prefix else str(timestamp)
 
-
-def find_item_by_id(items: list, item_id: str) -> Optional[dict]:
-    """
-    Find item in list by ID
-    
-    Args:
-        items: List of dictionaries with 'id' field
-        item_id: ID to search for
-    
-    Returns:
-        Found item or None
-    """
-    return next((item for item in items if item.get('id') == item_id), None)
-
-
-# ==================== Validators ====================
-
-class Validators:
-    """Input validators"""
-    
-    @staticmethod
-    def validate_port(port: int):
-        """Validate port number"""
-        if not (1024 <= port <= 65535):
-            raise ValueError("Port must be between 1024 and 65535")
-    
-    @staticmethod
-    def validate_node_index(index: int, max_index: int):
-        """Validate node index"""
-        if not (0 <= index < max_index):
-            raise ValueError(f"Node index must be between 0 and {max_index-1}")
-    
-    @staticmethod
-    def validate_chain_rows(rows: list):
-        """Validate proxy chain rows"""
-        if not rows:
-            raise ValueError("Chain must have at least one row")
-        for row in rows:
-            if not row.nodes or len(row.nodes) < Constants.MIN_CHAIN_NODES:
-                raise ValueError(f"Each row must have at least {Constants.MIN_CHAIN_NODES} nodes")
-    
-    @staticmethod
-    def validate_name_length(name: str, max_length: int = Constants.MAX_NODE_NAME_LENGTH):
-        """Validate name length"""
-        if len(name) > max_length:
-            raise ValueError(f"Name too long (max {max_length} characters)")
-    
-    @staticmethod
-    def validate_path_traversal(name: str):
-        """Validate no path traversal characters"""
-        if '/' in name or '\\' in name or '..' in name:
-            raise ValueError("Name contains invalid characters")
 
 
 # ==================== Error Handler Decorator ====================

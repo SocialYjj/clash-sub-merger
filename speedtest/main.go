@@ -110,7 +110,7 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.URL == "" {
-		req.URL = "http://www.gstatic.com/generate_204"
+		req.URL = "https://cp.cloudflare.com/generate_204"
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = 5000

@@ -77,7 +77,7 @@ rules:
                 'name': '自动选择',
                 'type': 'url-test',
                 'proxies': ['{{ALL_PROXIES}}'],
-                'url': 'http://www.gstatic.com/generate_204',
+                'url': 'https://cp.cloudflare.com/generate_204',
                 'interval': 300,
                 '_editable': True,
                 '_icon': '⚡',

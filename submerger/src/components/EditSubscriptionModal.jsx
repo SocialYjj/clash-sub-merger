@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, FileText } from 'lucide-react';
 import request from '../utils/request';
 

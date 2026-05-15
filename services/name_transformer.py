@@ -3,7 +3,7 @@ Name Transformer Service
 Unify node name format to: Flag Provider NodeName
 """
 import re
-from typing import List, Dict, Optional
+from typing import List, Optional
 from functools import lru_cache
 from logger_config import get_logger
 

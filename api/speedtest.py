@@ -15,7 +15,6 @@ from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
-from services.name_transformer import NameTransformer
 from logger_config import get_logger
 
 logger = get_logger(__name__)

@@ -6,7 +6,7 @@ import yaml
 import base64
 import json
 from urllib.parse import unquote
-from typing import Optional, List
+from typing import Optional
 from logger_config import get_logger
 
 logger = get_logger(__name__)

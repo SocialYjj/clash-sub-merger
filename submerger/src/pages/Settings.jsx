@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Key, Globe, Clock, Save, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
+import { Key, Globe, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
 import request from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
