@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, validator
 
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
@@ -147,7 +147,6 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
 def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     """Add a custom node from link"""
     srv = _get_server()
-    config = load_config()
     
     parsed = parse_node_link(data.link)
     if not parsed:
@@ -164,11 +163,11 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
         node['name'] = data.name
 
     inherit_regions_for_nodes([node], source='custom:add')
-    
-    if 'custom_nodes' not in config:
-        config['custom_nodes'] = []
-    config['custom_nodes'].append(node)
-    save_config(config)
+
+    def append_custom_node(config: dict):
+        config.setdefault('custom_nodes', []).append(node)
+
+    update_config(append_custom_node)
     srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
     
@@ -180,7 +179,6 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
 def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_session)):
     """Batch add custom nodes from links"""
     srv = _get_server()
-    config = load_config()
 
     links = [link.strip() for link in (data.links or []) if link and link.strip()]
     if not links:
@@ -213,11 +211,10 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
 
     inherit_regions_for_nodes(added_nodes, source='custom:batch-add')
 
-    if 'custom_nodes' not in config:
-        config['custom_nodes'] = []
-    config['custom_nodes'].extend(added_nodes)
+    def extend_custom_nodes(config: dict):
+        config.setdefault('custom_nodes', []).extend(added_nodes)
 
-    save_config(config)
+    update_config(extend_custom_nodes)
     srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
 
@@ -234,10 +231,12 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
 def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     """Delete a custom node"""
     srv = _get_server()
-    config = load_config()
-    nodes = config.get('custom_nodes', [])
-    config['custom_nodes'] = [n for n in nodes if n['id'] != node_id]
-    save_config(config)
+
+    def remove_custom_node(config: dict):
+        nodes = config.get('custom_nodes', [])
+        config['custom_nodes'] = [n for n in nodes if n['id'] != node_id]
+
+    update_config(remove_custom_node)
     srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
     return {"status": "success"}
@@ -248,20 +247,23 @@ def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
 def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_session)):
     """Batch delete custom nodes by IDs"""
     srv = _get_server()
-    config = load_config()
-    nodes = config.get('custom_nodes', [])
     id_set = set(data.ids or [])
 
     if not id_set:
         raise HTTPException(status_code=400, detail="No node IDs provided")
 
-    remaining = [n for n in nodes if n.get('id') not in id_set]
-    deleted_count = len(nodes) - len(remaining)
+    def remove_custom_nodes(config: dict) -> int:
+        nodes = config.get('custom_nodes', [])
+        remaining = [n for n in nodes if n.get('id') not in id_set]
+        deleted_count = len(nodes) - len(remaining)
+        if deleted_count:
+            config['custom_nodes'] = remaining
+        return deleted_count
+
+    deleted_count = update_config(remove_custom_nodes)
     if deleted_count == 0:
         return {"status": "success", "deleted": 0}
 
-    config['custom_nodes'] = remaining
-    save_config(config)
     srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
     return {"status": "success", "deleted": deleted_count}
@@ -272,18 +274,20 @@ def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_s
 def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
     """Reorder custom nodes"""
     srv = _get_server()
-    config = load_config()
-    nodes = config.get('custom_nodes', [])
-    node_map = {n['id']: n for n in nodes}
-    
-    new_nodes = []
-    for node_id in data.order:
-        if node_id in node_map:
-            new_nodes.append(node_map.pop(node_id))
-    new_nodes.extend(node_map.values())
-    
-    config['custom_nodes'] = new_nodes
-    save_config(config)
+
+    def apply_custom_node_order(config: dict):
+        nodes = config.get('custom_nodes', [])
+        node_map = {n['id']: n for n in nodes}
+
+        new_nodes = []
+        for node_id in data.order:
+            if node_id in node_map:
+                new_nodes.append(node_map.pop(node_id))
+        new_nodes.extend(node_map.values())
+
+        config['custom_nodes'] = new_nodes
+
+    update_config(apply_custom_node_order)
     srv.update_custom_nodes_yaml()
     return {"status": "success"}
 
@@ -293,22 +297,24 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
 def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
     """Reparse all custom nodes from their links"""
     srv = _get_server()
-    config = load_config()
-    nodes = config.get('custom_nodes', [])
-    
-    updated_count = 0
-    existing_nodes = [dict(node) for node in nodes]
-    for node in nodes:
-        if 'link' in node:
-            parsed = parse_node_link(node['link'])
-            if parsed:
-                node.update(parsed)
-                updated_count += 1
 
-    remember_nodes_region(existing_nodes, source='custom:reparse-existing')
-    inherit_regions_for_nodes(nodes, source='custom:reparse')
-    
-    save_config(config)
+    def reparse_nodes(config: dict) -> int:
+        nodes = config.get('custom_nodes', [])
+
+        updated_count = 0
+        existing_nodes = [dict(node) for node in nodes]
+        for node in nodes:
+            if 'link' in node:
+                parsed = parse_node_link(node['link'])
+                if parsed:
+                    node.update(parsed)
+                    updated_count += 1
+
+        remember_nodes_region(existing_nodes, source='custom:reparse-existing')
+        inherit_regions_for_nodes(nodes, source='custom:reparse')
+        return updated_count
+
+    updated_count = update_config(reparse_nodes)
     srv.update_custom_nodes_yaml()
     return {"status": "success", "updated": updated_count}
 
@@ -318,22 +324,24 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
 def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
     """Reparse a single custom node"""
     srv = _get_server()
-    config = load_config()
-    
-    for node in config.get('custom_nodes', []):
-        if node['id'] == node_id and 'link' in node:
-            previous = dict(node)
-            parsed = parse_node_link(node['link'])
-            if parsed:
-                remember_nodes_region([previous], source='custom:reparse-one-existing')
-                node.update(parsed)
-                inherit_regions_for_nodes([node], source='custom:reparse-one')
-                save_config(config)
-                srv.update_custom_nodes_yaml()
-                return {"status": "success", "node": node}
-            raise HTTPException(status_code=400, detail="Failed to parse node link")
-    
-    raise HTTPException(status_code=404, detail="Node not found")
+
+    def reparse_node(config: dict) -> dict:
+        for node in config.get('custom_nodes', []):
+            if node['id'] == node_id and 'link' in node:
+                previous = dict(node)
+                parsed = parse_node_link(node['link'])
+                if parsed:
+                    remember_nodes_region([previous], source='custom:reparse-one-existing')
+                    node.update(parsed)
+                    inherit_regions_for_nodes([node], source='custom:reparse-one')
+                    return dict(node)
+                raise HTTPException(status_code=400, detail="Failed to parse node link")
+
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    node = update_config(reparse_node)
+    srv.update_custom_nodes_yaml()
+    return {"status": "success", "node": node}
 
 
 @router.put("/custom-nodes/{node_id}")
@@ -341,16 +349,18 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
 def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(verify_session)):
     """Update custom node name"""
     srv = _get_server()
-    config = load_config()
-    
-    for node in config.get('custom_nodes', []):
-        if node['id'] == node_id:
-            node['name'] = data.name
-            save_config(config)
-            srv.update_custom_nodes_yaml()
-            return {"status": "success", "node": node}
-    
-    raise HTTPException(status_code=404, detail="Node not found")
+
+    def rename_custom_node(config: dict) -> dict:
+        for node in config.get('custom_nodes', []):
+            if node['id'] == node_id:
+                node['name'] = data.name
+                return dict(node)
+
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    node = update_config(rename_custom_node)
+    srv.update_custom_nodes_yaml()
+    return {"status": "success", "node": node}
 
 
 @router.put("/custom-nodes/{node_id}/full")
@@ -358,18 +368,20 @@ def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(ver
 def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depends(verify_session)):
     """Update custom node with full config"""
     srv = _get_server()
-    config = load_config()
-    
-    for i, node in enumerate(config.get('custom_nodes', [])):
-        if node['id'] == node_id:
-            updated = {'id': node_id, 'link': node.get('link', '')}
-            updated.update(data.node)
-            config['custom_nodes'][i] = updated
-            save_config(config)
-            srv.update_custom_nodes_yaml()
-            return {"status": "success", "node": updated}
-    
-    raise HTTPException(status_code=404, detail="Node not found")
+
+    def replace_custom_node(config: dict) -> dict:
+        for i, node in enumerate(config.get('custom_nodes', [])):
+            if node['id'] == node_id:
+                updated = {'id': node_id, 'link': node.get('link', '')}
+                updated.update(data.node)
+                config['custom_nodes'][i] = updated
+                return dict(updated)
+
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    updated = update_config(replace_custom_node)
+    srv.update_custom_nodes_yaml()
+    return {"status": "success", "node": updated}
 
 
 # ==================== Subscription Nodes API ====================
@@ -458,8 +470,12 @@ def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(ver
     del nodes[node_index]
     save_subscription_yaml(sub_id, {'proxies': nodes}, YAML_SOURCE_DIR)
     
-    sub['node_count'] = len(nodes)
-    save_config(config)
+    def update_subscription_node_count(latest_config: dict):
+        latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
+        if latest_sub:
+            latest_sub['node_count'] = len(nodes)
+
+    update_config(update_subscription_node_count)
     
     return {"status": "success"}
 
@@ -487,34 +503,39 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
     for source_id, nodes_data in data.results.items():
         if source_id == "custom":
             # 保存自定义节点
-            config = load_config()
-            updated_region_nodes = []
-            for node_index_str, result in nodes_data.items():
-                node_index = int(node_index_str)
-                if 0 <= node_index < len(config.get('custom_nodes', [])):
-                    node = config['custom_nodes'][node_index]
-                    normalized_node = ProxyFilter.sanitize_proxy(node)
-                    if normalized_node != node:
-                        config['custom_nodes'][node_index] = normalized_node
-                        node = normalized_node
-                    if 'latency' in result:
-                        node['last_latency'] = result['latency']
-                        node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    if 'speed' in result:
-                        node['last_speed'] = result['speed']
-                        node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    if 'exit_ip' in result:
-                        node['exit_ip'] = result['exit_ip']
-                    if 'region' in result:
-                        node['region'] = result['region']
-                    if 'city' in result:
-                        node['city'] = result['city']
-                    if 'region' in result:
-                        updated_region_nodes.append(node)
-                    saved_count += 1
+            def save_custom_results(config: dict):
+                updated_region_nodes = []
+                saved = 0
+                custom_nodes = config.get('custom_nodes', [])
+                for node_index_str, result in nodes_data.items():
+                    node_index = int(node_index_str)
+                    if 0 <= node_index < len(custom_nodes):
+                        node = custom_nodes[node_index]
+                        normalized_node = ProxyFilter.sanitize_proxy(node)
+                        if normalized_node != node:
+                            custom_nodes[node_index] = normalized_node
+                            node = normalized_node
+                        if 'latency' in result:
+                            node['last_latency'] = result['latency']
+                            node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'speed' in result:
+                            node['last_speed'] = result['speed']
+                            node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'exit_ip' in result:
+                            node['exit_ip'] = result['exit_ip']
+                        if 'region' in result:
+                            node['region'] = result['region']
+                        if 'city' in result:
+                            node['city'] = result['city']
+                        if 'region' in result:
+                            updated_region_nodes.append(dict(node))
+                        saved += 1
+                return saved, updated_region_nodes
+
+            custom_saved_count, updated_region_nodes = update_config(save_custom_results)
+            saved_count += custom_saved_count
             if updated_region_nodes:
                 remember_nodes_region(updated_region_nodes, source='speedtest:custom-batch')
-            save_config(config)
         else:
             # 保存订阅节点
             sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=False)
@@ -568,6 +589,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
             raise HTTPException(status_code=404, detail="Node not found")
         
         node = nodes[node_index]
+        custom_node_id = node.get('id')
         is_custom = True
     else:
         # Test subscription node
@@ -578,6 +600,7 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
             raise HTTPException(status_code=404, detail="Node not found")
         
         node = nodes[node_index]
+        custom_node_id = None
         is_custom = False
 
     normalized_node = ProxyFilter.sanitize_proxy(node)
@@ -693,8 +716,32 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
             async def save_in_background():
                 try:
                     if is_custom:
-                        config['custom_nodes'][node_index] = node
-                        save_config(config)
+                        def save_custom_test_result(latest_config: dict):
+                            latest_nodes = latest_config.get('custom_nodes', [])
+                            target_index = None
+
+                            if custom_node_id:
+                                for idx, candidate in enumerate(latest_nodes):
+                                    if candidate.get('id') == custom_node_id:
+                                        target_index = idx
+                                        break
+
+                            if target_index is None and 0 <= node_index < len(latest_nodes):
+                                target_index = node_index
+
+                            if target_index is None:
+                                return
+
+                            latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
+                            for field in (
+                                'xhttp-opts', 'last_latency', 'last_latency_time',
+                                'last_speed', 'last_speed_time', 'exit_ip', 'region', 'city'
+                            ):
+                                if field in node:
+                                    latest_node[field] = node[field]
+                            latest_nodes[target_index] = latest_node
+
+                        update_config(save_custom_test_result)
                     else:
                         sub_data['proxies'][node_index] = node
                         save_subscription_yaml(source_id, sub_data, YAML_SOURCE_DIR)
