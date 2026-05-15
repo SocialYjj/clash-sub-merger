@@ -11,7 +11,6 @@ import atexit
 import base64  # Used for node parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
-import ipaddress  # IPv6 formatting for URI links
 import signal  # Used for signal handling
 from contextlib import asynccontextmanager
 
@@ -78,6 +77,7 @@ from services.backup import (
     export_config, import_config
 )
 from services.key_rotation import check_key_rotation_needed
+from services.link_exporter import proxy_to_link
 
 # Import node parser service
 from services.node_parser import (
@@ -1643,7 +1643,7 @@ def get_all_final_node_names() -> set:
     return names
 
 
-@app.get("/api/available-nodes")
+@app.get("/api/available-nodes", tags=["Legacy User Allocation"])
 async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
     """Get all available nodes grouped by source for user allocation"""
     config = load_config()
@@ -1819,234 +1819,7 @@ async def get_available_nodes_for_users(_: bool = Depends(verify_session)):
     return {"sources": sources}
 
 
-def proxy_to_link(proxy: dict) -> str:
-    """Convert Clash proxy config to node link"""
-    proxy_type = proxy.get('type', '')
-    name = proxy.get('name', '')
-    server = proxy.get('server', '')
-    port = proxy.get('port', '')
-
-    def format_server_for_uri(host: str) -> str:
-        if not host:
-            return host
-        if host.startswith('[') and host.endswith(']'):
-            return host
-        try:
-            ip = ipaddress.ip_address(host)
-            if ip.version == 6:
-                return f'[{host}]'
-        except ValueError:
-            pass
-        return host
-
-    server_uri = format_server_for_uri(server)
-    
-    try:
-        if proxy_type == 'vmess':
-            # vmess://base64(json)
-            vmess_obj = {
-                'v': '2',
-                'ps': name,
-                'add': server,
-                'port': str(port),
-                'id': proxy.get('uuid', ''),
-                'aid': str(proxy.get('alterId', 0)),
-                'scy': proxy.get('cipher', 'auto'),
-                'net': proxy.get('network', 'tcp'),
-                'type': 'none',
-            }
-            if proxy.get('tls'):
-                vmess_obj['tls'] = 'tls'
-                if proxy.get('servername'):
-                    vmess_obj['sni'] = proxy.get('servername')
-            if proxy.get('network') == 'ws':
-                ws_opts = proxy.get('ws-opts', {})
-                vmess_obj['path'] = ws_opts.get('path', '/')
-                if ws_opts.get('headers', {}).get('Host'):
-                    vmess_obj['host'] = ws_opts['headers']['Host']
-            elif proxy.get('network') == 'grpc':
-                grpc_opts = proxy.get('grpc-opts', {})
-                vmess_obj['path'] = grpc_opts.get('grpc-service-name', '')
-            return 'vmess://' + base64.b64encode(json.dumps(vmess_obj).encode()).decode()
-        
-        elif proxy_type == 'vless':
-            # vless://uuid@server:port?params#name
-            params = []
-            network = proxy.get('network')
-            if network:
-                if network == 'h2':
-                    params.append("type=http")
-                else:
-                    params.append(f"type={network}")
-            if proxy.get('encryption') is not None:
-                params.append(f"encryption={quote(str(proxy.get('encryption')))}")
-            if proxy.get('tls'):
-                if proxy.get('reality-opts'):
-                    params.append('security=reality')
-                    if proxy['reality-opts'].get('public-key'):
-                        params.append(f"pbk={proxy['reality-opts']['public-key']}")
-                    if proxy['reality-opts'].get('short-id'):
-                        params.append(f"sid={proxy['reality-opts']['short-id']}")
-                    if proxy['reality-opts'].get('spider-x'):
-                        params.append(f"spx={quote(str(proxy['reality-opts']['spider-x']))}")
-                else:
-                    params.append('security=tls')
-            if proxy.get('servername'):
-                params.append(f"sni={quote(str(proxy['servername']))}")
-            if proxy.get('client-fingerprint'):
-                params.append(f"fp={quote(str(proxy['client-fingerprint']))}")
-            if proxy.get('alpn'):
-                alpn_val = proxy.get('alpn')
-                if isinstance(alpn_val, list):
-                    alpn_val = ','.join(alpn_val)
-                params.append(f"alpn={quote(str(alpn_val))}")
-            if proxy.get('skip-cert-verify'):
-                params.append("allowInsecure=1")
-                params.append("insecure=1")
-            if proxy.get('flow'):
-                params.append(f"flow={quote(str(proxy['flow']))}")
-            if proxy.get('ech'):
-                params.append(f"ech={quote(str(proxy['ech']))}")
-            if proxy.get('pqv'):
-                params.append(f"pqv={quote(str(proxy['pqv']))}")
-            if proxy.get('cert-sha'):
-                params.append(f"pcs={quote(str(proxy['cert-sha']))}")
-            if proxy.get('finalmask'):
-                params.append(f"fm={quote(str(proxy['finalmask']))}")
-            if network in ['ws', 'httpupgrade']:
-                ws_opts = proxy.get('ws-opts', {})
-                if ws_opts.get('path'):
-                    params.append(f"path={quote(ws_opts['path'])}")
-                if ws_opts.get('headers', {}).get('Host'):
-                    params.append(f"host={ws_opts['headers']['Host']}")
-            elif network == 'grpc':
-                grpc_opts = proxy.get('grpc-opts', {})
-                if grpc_opts.get('grpc-service-name'):
-                    params.append(f"serviceName={grpc_opts['grpc-service-name']}")
-                if grpc_opts.get('mode'):
-                    params.append(f"mode={grpc_opts['mode']}")
-                if grpc_opts.get('authority'):
-                    params.append(f"authority={grpc_opts['authority']}")
-            elif network in ['h2', 'http']:
-                h2_opts = proxy.get('h2-opts', {})
-                if h2_opts.get('path'):
-                    params.append(f"path={quote(h2_opts['path'])}")
-                host_val = h2_opts.get('host')
-                if isinstance(host_val, list) and host_val:
-                    host_val = host_val[0]
-                if host_val:
-                    params.append(f"host={host_val}")
-            elif network == 'xhttp':
-                xhttp_opts = proxy.get('xhttp-opts', {})
-                if not isinstance(xhttp_opts, dict):
-                    xhttp_opts = {}
-                xhttp_mode = xhttp_opts.get('mode') or proxy.get('xhttp-mode')
-                xhttp_host = xhttp_opts.get('host') or proxy.get('host')
-                xhttp_path = xhttp_opts.get('path') or proxy.get('path')
-                if xhttp_mode:
-                    params.append(f"mode={quote(str(xhttp_mode))}")
-                if xhttp_host:
-                    params.append(f"host={quote(str(xhttp_host))}")
-                if xhttp_path:
-                    params.append(f"path={quote(str(xhttp_path))}")
-            query = '&'.join(params) if params else ''
-            return f"vless://{proxy.get('uuid', '')}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
-        
-        elif proxy_type == 'ss':
-            # ss://base64(method:password)@server:port#name
-            method = proxy.get('cipher', '')
-            password = proxy.get('password', '')
-            userinfo = base64.b64encode(f"{method}:{password}".encode()).decode()
-            return f"ss://{userinfo}@{server_uri}:{port}#{quote(name)}"
-        
-        elif proxy_type == 'ssr':
-            # ssr://base64(server:port:protocol:method:obfs:base64(password)/?params)
-            password_b64 = base64.b64encode(proxy.get('password', '').encode()).decode()
-            main = f"{server}:{port}:{proxy.get('protocol', 'origin')}:{proxy.get('cipher', '')}:{proxy.get('obfs', 'plain')}:{password_b64}"
-            params = []
-            if name:
-                params.append(f"remarks={base64.b64encode(name.encode()).decode()}")
-            if proxy.get('obfs-param'):
-                params.append(f"obfsparam={base64.b64encode(proxy['obfs-param'].encode()).decode()}")
-            if proxy.get('protocol-param'):
-                params.append(f"protoparam={base64.b64encode(proxy['protocol-param'].encode()).decode()}")
-            full = main + ('/?' + '&'.join(params) if params else '')
-            return 'ssr://' + base64.b64encode(full.encode()).decode()
-        
-        elif proxy_type == 'trojan':
-            # trojan://password@server:port?params#name
-            params = []
-            if proxy.get('sni'):
-                params.append(f"sni={proxy['sni']}")
-            if proxy.get('network') == 'ws':
-                params.append('type=ws')
-                ws_opts = proxy.get('ws-opts', {})
-                if ws_opts.get('path'):
-                    params.append(f"path={quote(ws_opts['path'])}")
-            elif proxy.get('network') == 'grpc':
-                params.append('type=grpc')
-            query = '&'.join(params) if params else ''
-            return f"trojan://{quote(proxy.get('password', ''))}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
-        
-        elif proxy_type == 'hysteria2':
-            # hysteria2://password@server:port?params#name
-            params = []
-            if proxy.get('sni'):
-                params.append(f"sni={proxy['sni']}")
-            if proxy.get('obfs'):
-                params.append(f"obfs={proxy['obfs']}")
-                if proxy.get('obfs-password'):
-                    params.append(f"obfs-password={proxy['obfs-password']}")
-            query = '&'.join(params) if params else ''
-            return f"hysteria2://{quote(proxy.get('password', ''))}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
-        
-        elif proxy_type == 'tuic':
-            # tuic://uuid:password@server:port?params#name
-            params = []
-            if proxy.get('sni'):
-                params.append(f"sni={proxy['sni']}")
-            if proxy.get('congestion-controller'):
-                params.append(f"congestion_control={proxy['congestion-controller']}")
-            query = '&'.join(params) if params else ''
-            return f"tuic://{proxy.get('uuid', '')}:{proxy.get('password', '')}@{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
-        
-        elif proxy_type == 'hysteria':
-            # hysteria://server:port?params#name
-            params = []
-            if proxy.get('auth-str'):
-                params.append(f"auth={proxy['auth-str']}")
-            if proxy.get('sni'):
-                params.append(f"peer={proxy['sni']}")
-            if proxy.get('up'):
-                params.append(f"upmbps={proxy['up']}")
-            if proxy.get('down'):
-                params.append(f"downmbps={proxy['down']}")
-            query = '&'.join(params) if params else ''
-            return f"hysteria://{server_uri}:{port}{'?' + query if query else ''}#{quote(name)}"
-        
-        elif proxy_type == 'socks5':
-            # socks5://user:pass@server:port#name
-            auth = ''
-            if proxy.get('username'):
-                auth = f"{quote(proxy['username'])}:{quote(proxy.get('password', ''))}@"
-            prefix = 'socks5+tls://' if proxy.get('tls') else 'socks5://'
-            return f"{prefix}{auth}{server_uri}:{port}#{quote(name)}"
-        
-        elif proxy_type == 'http':
-            # http://user:pass@server:port#name
-            auth = ''
-            if proxy.get('username'):
-                auth = f"{quote(proxy['username'])}:{quote(proxy.get('password', ''))}@"
-            prefix = 'https://' if proxy.get('tls') else 'http://'
-            return f"{prefix}{auth}{server_uri}:{port}#{quote(name)}"
-        
-        else:
-            # Unsupported type, return empty
-            return ''
-    except Exception:
-        return ''
-
-@app.get("/sub")
+@app.get("/sub", tags=["Subscription Output"])
 async def get_merged_subscription(
     token: Optional[str] = None, 
     format: Optional[str] = None,
@@ -3257,7 +3030,7 @@ def split_template(full_content: str) -> Tuple[str, str]:
     
     return "".join(header_lines).strip(), "".join(suffix_lines).strip()
 
-@app.get("/api/template")
+@app.get("/api/template", tags=["Legacy Template API"])
 def get_saved_template(_: bool = Depends(verify_session)):
     """Get saved template or default if none saved"""
     config = load_config()
@@ -3270,13 +3043,13 @@ def get_saved_template(_: bool = Depends(verify_session)):
         suffix = ConfigMerger.DEFAULT_SUFFIX
     return {"content": header.strip() + "\n\nproxies: []\n\nproxy-groups: []\n\n" + suffix.strip()}
 
-@app.get("/api/template/default")
+@app.get("/api/template/default", tags=["Legacy Template API"])
 def get_default_template(_: bool = Depends(verify_session)):
     header = ConfigMerger.DEFAULT_HEADER
     suffix = ConfigMerger.DEFAULT_SUFFIX
     return {"content": header.strip() + "\n\nproxies: []\n\nproxy-groups: []\n\n" + suffix.strip()}
 
-@app.post("/api/template/parse")
+@app.post("/api/template/parse", tags=["Legacy Template API"])
 async def parse_template_file(file: UploadFile = File(...), current_template: str = Form(default=""), _: bool = Depends(verify_session)):
     """Parse uploaded template file with size validation"""
     try:
@@ -3397,7 +3170,7 @@ async def parse_template_file(file: UploadFile = File(...), current_template: st
 class TemplateSaveRequest(BaseModel):
     content: str
 
-@app.post("/api/template/save")
+@app.post("/api/template/save", tags=["Legacy Template API"])
 def save_template(data: TemplateSaveRequest, _: bool = Depends(verify_session)):
     """Save template content to config"""
     try:
@@ -3431,7 +3204,7 @@ def save_template(data: TemplateSaveRequest, _: bool = Depends(verify_session)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/preview")
+@app.post("/api/preview", tags=["Legacy Template API"])
 def generate_preview(template: TemplateContent, _: bool = Depends(verify_session)):
     header, suffix = split_template(template.content)
     
@@ -3476,7 +3249,7 @@ def generate_preview(template: TemplateContent, _: bool = Depends(verify_session
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/save_content")
+@app.post("/api/save_content", tags=["Legacy Template API"])
 def save_final_content(data: FinalContent, _: bool = Depends(verify_session)):
     target = data.save_path if data.save_path else OUTPUT_FILE
     try:
@@ -3486,7 +3259,7 @@ def save_final_content(data: FinalContent, _: bool = Depends(verify_session)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/download_result")
+@app.get("/api/download_result", tags=["Legacy Template API"])
 def download_result(_: bool = Depends(verify_session)):
     if os.path.exists(OUTPUT_FILE):
         return FileResponse(OUTPUT_FILE, media_type='application/yaml', filename='myconfig.yaml')
@@ -3504,7 +3277,7 @@ if os.path.exists(frontend_dist):
         app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
 
     # 2. Serve root requests
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     async def serve_index():
         response = FileResponse(os.path.join(frontend_dist, "index.html"))
         # No cache for HTML to ensure fresh content
@@ -3512,7 +3285,7 @@ if os.path.exists(frontend_dist):
         return response
 
     # 3. Catch-all for SPA routes (e.g. /settings, /nodes)
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
         # API 404s should return JSON, not HTML
         if full_path.startswith("api/"):
