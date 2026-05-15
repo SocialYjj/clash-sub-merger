@@ -10,9 +10,8 @@ from pydantic import BaseModel, HttpUrl, Field, validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from core.config import AppConfig
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config, update_subscription_fields
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_content
 from services.region_history import apply_region_history_to_yaml_content
 from logger_config import get_logger
@@ -106,7 +105,6 @@ def list_subscriptions(_: bool = Depends(verify_session)):
 def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
     """Add a new URL subscription"""
     srv = _get_server()
-    config = load_config()
     sub_id = generate_timestamp_id('sub_')
     
     try:
@@ -130,8 +128,11 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
             logger.info("Inherited saved region for %s node(s) while adding subscription %s", inherited, sub_id)
         
         save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
-        config['subscriptions'].append(new_sub)
-        save_config(config)
+
+        def append_subscription(config: dict):
+            config.setdefault('subscriptions', []).append(new_sub)
+
+        update_config(append_subscription)
         srv.invalidate_stats_cache()
         return {"status": "success", "subscription": new_sub}
     except Exception as e:
@@ -143,7 +144,6 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
 def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_session)):
     """Add a local subscription by pasting content"""
     srv = _get_server()
-    config = load_config()
     sub_id = generate_timestamp_id('sub_')
     
     try:
@@ -164,8 +164,11 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
             logger.info("Inherited saved region for %s node(s) while adding local subscription %s", inherited, sub_id)
         
         save_subscription_content(sub_id, yaml_content, srv.YAML_SOURCE_DIR)
-        config['subscriptions'].append(new_sub)
-        save_config(config)
+
+        def append_local_subscription(config: dict):
+            config.setdefault('subscriptions', []).append(new_sub)
+
+        update_config(append_local_subscription)
         return {"status": "success", "subscription": new_sub}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -186,8 +189,9 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
     if sub.get('type') != 'local':
         raise HTTPException(status_code=400, detail="Not a local subscription")
     
+    updates = {}
     if data.name:
-        sub['name'] = data.name
+        updates['name'] = data.name
     
     if data.content:
         try:
@@ -198,7 +202,7 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                 existing_nodes=existing_nodes,
                 source=f'sub:update-local:{sub_id}',
             )
-            sub['node_count'] = node_count
+            updates['node_count'] = node_count
             if remembered or inherited:
                 logger.info(
                     "Local subscription %s region history: remembered=%s inherited=%s",
@@ -210,9 +214,19 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     
-    sub['last_update'] = int(time.time())
-    save_config(config)
-    return {"status": "success", "subscription": sub}
+    updates['last_update'] = int(time.time())
+
+    def apply_local_update(latest_config: dict) -> dict:
+        latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
+        if not latest_sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if latest_sub.get('type') != 'local':
+            raise HTTPException(status_code=400, detail="Not a local subscription")
+        latest_sub.update(updates)
+        return dict(latest_sub)
+
+    updated_sub = update_config(apply_local_update)
+    return {"status": "success", "subscription": updated_sub}
 
 
 @router.post("/parse-preview")
@@ -232,10 +246,12 @@ def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(ver
 def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     """Delete a subscription"""
     srv = _get_server()
-    config = load_config()
-    subs = config.get('subscriptions', [])
-    config['subscriptions'] = [s for s in subs if s['id'] != sub_id]
-    save_config(config)
+
+    def remove_subscription(config: dict):
+        subs = config.get('subscriptions', [])
+        config['subscriptions'] = [s for s in subs if s['id'] != sub_id]
+
+    update_config(remove_subscription)
     srv.invalidate_stats_cache()
     
     # Invalidate YAML cache for this subscription
@@ -260,34 +276,37 @@ def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
 def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
     """Toggle subscription enabled status"""
     srv = _get_server()
-    config = load_config()
-    
-    for sub in config.get('subscriptions', []):
-        if sub['id'] == sub_id:
-            sub['enabled'] = not sub.get('enabled', True)
-            save_config(config)
-            srv.invalidate_stats_cache()
-            return {"status": "success", "enabled": sub['enabled']}
-    
-    raise HTTPException(status_code=404, detail="Subscription not found")
+
+    def toggle_enabled(config: dict) -> bool:
+        for sub in config.get('subscriptions', []):
+            if sub['id'] == sub_id:
+                sub['enabled'] = not sub.get('enabled', True)
+                return sub['enabled']
+
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    enabled = update_config(toggle_enabled)
+    srv.invalidate_stats_cache()
+    return {"status": "success", "enabled": enabled}
 
 
 @router.put("/reorder")
 @handle_api_errors
 def reorder_subscriptions(data: ReorderSubscriptions, _: bool = Depends(verify_session)):
     """Reorder subscriptions"""
-    config = load_config()
-    subs = config.get('subscriptions', [])
-    sub_map = {s['id']: s for s in subs}
-    
-    new_subs = []
-    for sub_id in data.order:
-        if sub_id in sub_map:
-            new_subs.append(sub_map.pop(sub_id))
-    new_subs.extend(sub_map.values())
-    
-    config['subscriptions'] = new_subs
-    save_config(config)
+    def apply_subscription_order(config: dict):
+        subs = config.get('subscriptions', [])
+        sub_map = {s['id']: s for s in subs}
+
+        new_subs = []
+        for ordered_sub_id in data.order:
+            if ordered_sub_id in sub_map:
+                new_subs.append(sub_map.pop(ordered_sub_id))
+        new_subs.extend(sub_map.values())
+
+        config['subscriptions'] = new_subs
+
+    update_config(apply_subscription_order)
     return {"status": "success"}
 
 
@@ -295,18 +314,19 @@ def reorder_subscriptions(data: ReorderSubscriptions, _: bool = Depends(verify_s
 @handle_api_errors
 def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends(verify_session)):
     """Update subscription info"""
-    config = load_config()
-    
-    for sub in config.get('subscriptions', []):
-        if sub['id'] == sub_id:
-            if data.name is not None:
-                sub['name'] = data.name
-            if data.url is not None:
-                sub['url'] = str(data.url)
-            save_config(config)
-            return {"status": "success", "subscription": sub}
-    
-    raise HTTPException(status_code=404, detail="Subscription not found")
+    def apply_subscription_update(config: dict) -> dict:
+        for sub in config.get('subscriptions', []):
+            if sub['id'] == sub_id:
+                if data.name is not None:
+                    sub['name'] = data.name
+                if data.url is not None:
+                    sub['url'] = str(data.url)
+                return dict(sub)
+
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    sub = update_config(apply_subscription_update)
+    return {"status": "success", "subscription": sub}
 
 
 @router.post("/{sub_id}/refresh")
@@ -337,7 +357,7 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
             source=f'sub:refresh:{sub_id}',
         )
         
-        sub.update({
+        updates = {
             'upload': sub_info.get('upload', 0),
             'download': sub_info.get('download', 0),
             'total': sub_info.get('total', 0),
@@ -345,7 +365,7 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
             'node_count': node_count,
             'last_update': int(time.time()),
             'update_status': 'success'
-        })
+        }
 
         if remembered or inherited:
             logger.info(
@@ -356,16 +376,17 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
             )
         
         save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
-        save_config(config)
+        updated_sub = update_subscription_fields(sub_id, updates)
+        if not updated_sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
         srv.invalidate_stats_cache()
         
         logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
-        return {"status": "success", "subscription": sub}
+        return {"status": "success", "subscription": updated_sub}
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-        sub['update_status'] = f'error: {error_msg}'
-        save_config(config)
+        update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
         raise HTTPException(status_code=400, detail=error_msg)
 
 
@@ -397,7 +418,7 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                 source=f"sub:refresh-all:{sub['id']}",
             )
             
-            sub.update({
+            updates = {
                 'upload': sub_info.get('upload', 0),
                 'download': sub_info.get('download', 0),
                 'total': sub_info.get('total', 0),
@@ -405,7 +426,7 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                 'node_count': node_count,
                 'last_update': int(time.time()),
                 'update_status': 'success'
-            })
+            }
 
             if remembered or inherited:
                 logger.info(
@@ -416,12 +437,12 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                 )
             
             save_subscription_content(sub['id'], content, srv.YAML_SOURCE_DIR)
+            update_subscription_fields(sub['id'], updates)
             results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
         except Exception as e:
-            sub['update_status'] = f'error: {str(e)}'
+            update_subscription_fields(sub['id'], {'update_status': f'error: {str(e)}'})
             results.append({"id": sub['id'], "name": sub['name'], "status": "error", "error": str(e)})
     
-    save_config(config)
     srv.invalidate_stats_cache()
     
     success_count = len([r for r in results if r['status'] == 'success'])
