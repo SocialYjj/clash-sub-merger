@@ -264,22 +264,22 @@ def get_online_geoip_config(_: bool = Depends(verify_session)):
 @handle_api_errors
 def update_online_geoip_config(data: OnlineGeoIPConfig, _: bool = Depends(verify_session)):
     """Update online GeoIP configuration"""
-    from core.database import load_config, save_config
+    from core.database import update_config
     from geoip_service import set_online_geoip_config
-    
-    config = load_config()
-    
-    if 'geoip_config' not in config:
-        config['geoip_config'] = {}
-    
+
     if data.preferred_api is not None:
-        config['geoip_config']['preferred_api'] = data.preferred_api
         set_online_geoip_config(preferred_api=data.preferred_api)
     if data.ipinfo_token is not None:
-        config['geoip_config']['ipinfo_token'] = data.ipinfo_token
         set_online_geoip_config(ipinfo_token=data.ipinfo_token)
-    
-    save_config(config)
+
+    def set_geoip_config(config: dict):
+        geoip_config = config.setdefault('geoip_config', {})
+        if data.preferred_api is not None:
+            geoip_config['preferred_api'] = data.preferred_api
+        if data.ipinfo_token is not None:
+            geoip_config['ipinfo_token'] = data.ipinfo_token
+
+    update_config(set_geoip_config)
     return {"status": "success"}
 
 
@@ -343,7 +343,7 @@ async def test_geoip_api(api_id: str, _: bool = Depends(verify_session)):
 def toggle_geoip_api(api_id: str, _: bool = Depends(verify_session)):
     """Toggle a GeoIP API enabled/disabled"""
     from geoip_service import set_api_enabled, get_all_geoip_apis
-    from core.database import load_config, save_config
+    from core.database import update_config
     
     apis = get_all_geoip_apis()
     api = next((a for a in apis if a.get("id") == api_id), None)
@@ -353,15 +353,13 @@ def toggle_geoip_api(api_id: str, _: bool = Depends(verify_session)):
     
     new_enabled = not api.get("enabled", True)
     set_api_enabled(api_id, new_enabled)
-    
-    # Save to config
-    config = load_config()
-    if 'geoip_config' not in config:
-        config['geoip_config'] = {}
-    if 'api_settings' not in config['geoip_config']:
-        config['geoip_config']['api_settings'] = {}
-    config['geoip_config']['api_settings'][api_id] = {"enabled": new_enabled}
-    save_config(config)
+
+    def set_api_enabled_config(config: dict):
+        geoip_config = config.setdefault('geoip_config', {})
+        api_settings = geoip_config.setdefault('api_settings', {})
+        api_settings[api_id] = {"enabled": new_enabled}
+
+    update_config(set_api_enabled_config)
     
     return {"status": "success", "enabled": new_enabled}
 
@@ -437,7 +435,7 @@ class CustomApiConfig(BaseModel):
 def create_custom_api(data: CustomApiConfig, _: bool = Depends(verify_session)):
     """Create a new custom GeoIP API"""
     from geoip_service import add_custom_geoip_api
-    from core.database import load_config, save_config
+    from core.database import update_config
     
     api_config = {
         "name": data.name,
@@ -451,15 +449,12 @@ def create_custom_api(data: CustomApiConfig, _: bool = Depends(verify_session)):
     }
     
     new_api = add_custom_geoip_api(api_config)
-    
-    # Save to config
-    config = load_config()
-    if 'geoip_config' not in config:
-        config['geoip_config'] = {}
-    if 'custom_apis' not in config['geoip_config']:
-        config['geoip_config']['custom_apis'] = []
-    config['geoip_config']['custom_apis'].append(new_api)
-    save_config(config)
+
+    def add_custom_api_config(config: dict):
+        geoip_config = config.setdefault('geoip_config', {})
+        geoip_config.setdefault('custom_apis', []).append(new_api)
+
+    update_config(add_custom_api_config)
     
     return {"status": "success", "api": new_api}
 
@@ -469,7 +464,7 @@ def create_custom_api(data: CustomApiConfig, _: bool = Depends(verify_session)):
 def update_custom_api(api_id: str, data: CustomApiConfig, _: bool = Depends(verify_session)):
     """Update an existing custom GeoIP API"""
     from geoip_service import update_custom_geoip_api, get_all_geoip_apis
-    from core.database import load_config, save_config
+    from core.database import update_config
     
     # Check if it's a builtin API (only allow updating ipinfo token)
     apis = get_all_geoip_apis()
@@ -483,12 +478,11 @@ def update_custom_api(api_id: str, data: CustomApiConfig, _: bool = Depends(veri
         if api_id == "ipinfo" and data.token:
             from geoip_service import set_online_geoip_config
             set_online_geoip_config(ipinfo_token=data.token)
-            
-            config = load_config()
-            if 'geoip_config' not in config:
-                config['geoip_config'] = {}
-            config['geoip_config']['ipinfo_token'] = data.token
-            save_config(config)
+
+            def set_ipinfo_token(config: dict):
+                config.setdefault('geoip_config', {})['ipinfo_token'] = data.token
+
+            update_config(set_ipinfo_token)
             
             return {"status": "success", "message": "Token updated"}
         else:
@@ -510,21 +504,18 @@ def update_custom_api(api_id: str, data: CustomApiConfig, _: bool = Depends(veri
         api_config["token"] = data.token
     
     updated_api = update_custom_geoip_api(api_id, api_config)
-    
-    # Save to config
-    config = load_config()
-    if 'geoip_config' not in config:
-        config['geoip_config'] = {}
-    if 'custom_apis' not in config['geoip_config']:
-        config['geoip_config']['custom_apis'] = []
-    
-    # Update in config
-    for i, api in enumerate(config['geoip_config']['custom_apis']):
-        if api.get('id') == api_id:
-            config['geoip_config']['custom_apis'][i] = updated_api
-            break
-    
-    save_config(config)
+
+    def update_custom_api_config(config: dict):
+        geoip_config = config.setdefault('geoip_config', {})
+        custom_apis = geoip_config.setdefault('custom_apis', [])
+
+        # Update in config
+        for i, api in enumerate(custom_apis):
+            if api.get('id') == api_id:
+                custom_apis[i] = updated_api
+                break
+
+    update_config(update_custom_api_config)
     
     return {"status": "success", "api": updated_api}
 
@@ -534,7 +525,7 @@ def update_custom_api(api_id: str, data: CustomApiConfig, _: bool = Depends(veri
 def delete_custom_api(api_id: str, _: bool = Depends(verify_session)):
     """Delete a custom GeoIP API"""
     from geoip_service import delete_custom_geoip_api, get_all_geoip_apis
-    from core.database import load_config, save_config
+    from core.database import update_config
     
     # Check if it's a builtin API
     apis = get_all_geoip_apis()
@@ -550,12 +541,12 @@ def delete_custom_api(api_id: str, _: bool = Depends(verify_session)):
     if not delete_custom_geoip_api(api_id):
         raise HTTPException(status_code=404, detail="API not found")
     
-    # Delete from config
-    config = load_config()
-    if 'geoip_config' in config and 'custom_apis' in config['geoip_config']:
-        config['geoip_config']['custom_apis'] = [
-            a for a in config['geoip_config']['custom_apis'] if a.get('id') != api_id
-        ]
-        save_config(config)
+    def delete_custom_api_config(config: dict):
+        if 'geoip_config' in config and 'custom_apis' in config['geoip_config']:
+            config['geoip_config']['custom_apis'] = [
+                a for a in config['geoip_config']['custom_apis'] if a.get('id') != api_id
+            ]
+
+    update_config(delete_custom_api_config)
     
     return {"status": "success"}

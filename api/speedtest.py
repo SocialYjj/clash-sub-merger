@@ -13,7 +13,7 @@ from slowapi.util import get_remote_address
 
 from core.config import AppConfig
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
 from logger_config import get_logger
@@ -174,10 +174,6 @@ def get_speedtest_profiles(_: bool = Depends(verify_session)):
 @router.post("/profiles")
 def create_speedtest_profile(data: SpeedTestProfile, _: bool = Depends(verify_session)):
     """Create a new speed test profile"""
-    config = load_config()
-    if 'speedtest_profiles' not in config:
-        config['speedtest_profiles'] = []
-    
     profile = {
         "id": secrets.token_urlsafe(8),
         "name": data.name,
@@ -189,9 +185,11 @@ def create_speedtest_profile(data: SpeedTestProfile, _: bool = Depends(verify_se
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "last_run": None
     }
-    
-    config['speedtest_profiles'].append(profile)
-    save_config(config)
+
+    def add_speedtest_profile(config: dict):
+        config.setdefault('speedtest_profiles', []).append(profile)
+
+    update_config(add_speedtest_profile)
     return {"status": "success", "profile": profile}
 
 
@@ -211,47 +209,50 @@ def get_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
 @router.put("/profiles/{profile_id}")
 def update_speedtest_profile(profile_id: str, data: SpeedTestProfile, _: bool = Depends(verify_session)):
     """Update a speed test profile"""
-    config = load_config()
-    profiles = config.get('speedtest_profiles', [])
-    profile = next((p for p in profiles if p['id'] == profile_id), None)
-    
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    
-    profile['name'] = data.name
-    profile['description'] = data.description
-    profile['subscription_ids'] = data.subscription_ids
-    profile['test_speed'] = data.test_speed
-    profile['timeout'] = data.timeout
-    profile['concurrency'] = data.concurrency
-    
-    save_config(config)
+    def apply_profile_update(config: dict) -> dict:
+        profiles = config.get('speedtest_profiles', [])
+        profile = next((p for p in profiles if p['id'] == profile_id), None)
+
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        profile['name'] = data.name
+        profile['description'] = data.description
+        profile['subscription_ids'] = data.subscription_ids
+        profile['test_speed'] = data.test_speed
+        profile['timeout'] = data.timeout
+        profile['concurrency'] = data.concurrency
+        return dict(profile)
+
+    profile = update_config(apply_profile_update)
     return {"status": "success", "profile": profile}
 
 
 @router.delete("/profiles/{profile_id}")
 def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
     """Delete a speed test profile"""
-    config = load_config()
-    profiles = config.get('speedtest_profiles', [])
-    
-    config['speedtest_profiles'] = [p for p in profiles if p['id'] != profile_id]
-    save_config(config)
+    def remove_speedtest_profile(config: dict):
+        profiles = config.get('speedtest_profiles', [])
+        config['speedtest_profiles'] = [p for p in profiles if p['id'] != profile_id]
+
+    update_config(remove_speedtest_profile)
     return {"status": "success"}
 
 
 @router.post("/profiles/{profile_id}/run")
 async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Depends(verify_session)):
     """Run a speed test profile"""
-    config = load_config()
-    profiles = config.get('speedtest_profiles', [])
-    profile = next((p for p in profiles if p['id'] == profile_id), None)
-    
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    
-    profile['last_run'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_config(config)
+    def mark_profile_run(config: dict) -> dict:
+        profiles = config.get('speedtest_profiles', [])
+        profile = next((p for p in profiles if p['id'] == profile_id), None)
+
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        profile['last_run'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return dict(profile)
+
+    profile = update_config(mark_profile_run)
     
     return {
         "status": "info",
