@@ -8,11 +8,50 @@ passwords as salted PBKDF2-SHA256 hashes using only Python's standard library.
 import base64
 import hashlib
 import hmac
+import os
+import re
 import secrets
 
 
 PBKDF2_SCHEME = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 260_000
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 8, 1)
+PASSWORD_MAX_LENGTH = _env_int("PASSWORD_MAX_LENGTH", 100, PASSWORD_MIN_LENGTH)
+PASSWORD_REQUIRE_LETTER = _env_bool("PASSWORD_REQUIRE_LETTER", True)
+PASSWORD_REQUIRE_NUMBER = _env_bool("PASSWORD_REQUIRE_NUMBER", True)
+
+
+def validate_password_policy(password: str) -> str:
+    """Validate and normalize an admin password according to environment policy."""
+    password = (password or "").strip()
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_LENGTH} characters")
+    if PASSWORD_REQUIRE_LETTER and not re.search(r"[A-Za-z]", password):
+        raise ValueError("Password must contain at least one letter")
+    if PASSWORD_REQUIRE_NUMBER and not re.search(r"[0-9]", password):
+        raise ValueError("Password must contain at least one number")
+    return password
 
 
 def generate_token() -> str:

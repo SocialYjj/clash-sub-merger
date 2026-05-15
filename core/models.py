@@ -2,26 +2,19 @@
 Pydantic Data Models
 Shared data models for API validation
 """
-import re
 from typing import Optional, Dict, List
 from pydantic import BaseModel, HttpUrl, Field, validator
+from core.security import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validate_password_policy
 
 
 # ==================== Authentication Models ====================
 
 class SetPassword(BaseModel):
-    password: str = Field(min_length=8, max_length=100)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     
     @validator('password')
     def validate_password(cls, v):
-        v = v.strip()
-        if len(v) < 8:
-            raise ValueError('Password must be at least 8 characters')
-        if not re.search(r'[A-Za-z]', v):
-            raise ValueError('Password must contain at least one letter')
-        if not re.search(r'[0-9]', v):
-            raise ValueError('Password must contain at least one number')
-        return v
+        return validate_password_policy(v)
 
 
 class Login(BaseModel):

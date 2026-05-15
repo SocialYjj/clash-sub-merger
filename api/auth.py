@@ -2,7 +2,6 @@
 Authentication API
 Login, logout, password management
 """
-import re
 import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
@@ -12,7 +11,15 @@ from slowapi.util import get_remote_address
 
 from core.database import load_config, update_config
 from core.dependencies import verify_session
-from core.security import generate_token, hash_password, needs_password_rehash, verify_password
+from core.security import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    generate_token,
+    hash_password,
+    needs_password_rehash,
+    validate_password_policy,
+    verify_password,
+)
 from helpers import handle_api_errors
 from logger_config import get_logger
 
@@ -26,18 +33,11 @@ limiter = Limiter(key_func=get_remote_address)
 # ==================== Data Models ====================
 
 class SetPassword(BaseModel):
-    password: str = Field(min_length=8, max_length=100)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     
     @validator('password')
     def validate_password(cls, v):
-        v = v.strip()
-        if len(v) < 8:
-            raise ValueError('Password must be at least 8 characters')
-        if not re.search(r'[A-Za-z]', v):
-            raise ValueError('Password must contain at least one letter')
-        if not re.search(r'[0-9]', v):
-            raise ValueError('Password must contain at least one number')
-        return v
+        return validate_password_policy(v)
 
 
 class Login(BaseModel):
