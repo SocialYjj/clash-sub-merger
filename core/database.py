@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from logger_config import get_logger
 from .config import AppConfig, CONFIG_FILE
+from .proxy_compat import normalize_config_nodes
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,10 @@ def _load_config_from_disk() -> dict:
     for key in default:
         if key not in config:
             config[key] = default[key]
+
+    normalized_count = normalize_config_nodes(config)
+    if normalized_count:
+        logger.info("Normalized %s legacy xhttp node(s) from config", normalized_count)
 
     return config
 

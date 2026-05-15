@@ -9,6 +9,7 @@ from typing import Dict, Tuple, Optional
 from fastapi import HTTPException
 from dotenv import load_dotenv
 from logger_config import get_logger
+from core.proxy_compat import normalize_subscription_data
 from core import (
     cache_hits_total, cache_misses_total,
     file_operations_total, file_operation_duration_seconds
@@ -171,6 +172,10 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
             result = {}
         else:
             result = cfg if cfg else {}
+
+        normalized_count = normalize_subscription_data(result)
+        if normalized_count:
+            logger.info(f"Normalized {normalized_count} legacy xhttp node(s) in subscription {sub_id}")
         
         # Update cache
         if use_cache:
