@@ -3,13 +3,13 @@ Users API
 User management endpoints
 """
 import time
-import secrets
 from typing import Optional, Dict, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, validator
 
 from core.dependencies import verify_session
-from core.database import load_config, save_config
+from core.database import load_config, update_config
+from core.security import generate_token
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
 
@@ -26,10 +26,6 @@ def _get_server():
         import server as srv
         _server_module = srv
     return _server_module
-
-
-def generate_token() -> str:
-    return secrets.token_urlsafe(24)
 
 
 # ==================== Data Models ====================
@@ -99,25 +95,23 @@ def get_user(user_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def create_user(data: CreateUser, _: bool = Depends(verify_session)):
     """Create a new user"""
-    config = load_config()
-    
-    user_id = generate_timestamp_id('user_')
-    user = {
-        'id': user_id,
-        'name': data.name,
-        'token': generate_token(),
-        'enabled': True,
-        'expire_time': data.expire_time,
-        'created_at': int(time.time()),
-        'allocations': {},
-        'template_id': 'builtin',
-        'group_config': {}
-    }
-    
-    if 'users' not in config:
-        config['users'] = []
-    config['users'].append(user)
-    save_config(config)
+    def add_user(config: dict) -> dict:
+        user_id = generate_timestamp_id('user_')
+        user = {
+            'id': user_id,
+            'name': data.name,
+            'token': generate_token(),
+            'enabled': True,
+            'expire_time': data.expire_time,
+            'created_at': int(time.time()),
+            'allocations': {},
+            'template_id': 'builtin',
+            'group_config': {}
+        }
+        config.setdefault('users', []).append(user)
+        return dict(user)
+
+    user = update_config(add_user)
     
     return {"status": "success", "user": user}
 
@@ -126,42 +120,43 @@ def create_user(data: CreateUser, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_user(user_id: str, data: UpdateUser, _: bool = Depends(verify_session)):
     """Update user info"""
-    config = load_config()
-    
-    for user in config.get('users', []):
-        if user['id'] == user_id:
-            if data.name is not None:
-                user['name'] = data.name
-            if data.expire_time is not None:
-                user['expire_time'] = data.expire_time
-            if data.enabled is not None:
-                user['enabled'] = data.enabled
-            if data.template_id is not None:
-                if data.template_id != 'builtin':
-                    templates = config.get('templates', [])
-                    if not any(t['id'] == data.template_id for t in templates):
-                        raise HTTPException(status_code=400, detail="Template not found")
-                user['template_id'] = data.template_id
-            if data.sub_name is not None:
-                user['sub_name'] = data.sub_name
-            if data.sub_filename is not None:
-                user['sub_filename'] = data.sub_filename
-            if 'sub_cache' in user:
-                del user['sub_cache']
-            save_config(config)
-            return {"status": "success", "user": user}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+    def apply_user_update(config: dict) -> dict:
+        for user in config.get('users', []):
+            if user['id'] == user_id:
+                if data.name is not None:
+                    user['name'] = data.name
+                if data.expire_time is not None:
+                    user['expire_time'] = data.expire_time
+                if data.enabled is not None:
+                    user['enabled'] = data.enabled
+                if data.template_id is not None:
+                    if data.template_id != 'builtin':
+                        templates = config.get('templates', [])
+                        if not any(t['id'] == data.template_id for t in templates):
+                            raise HTTPException(status_code=400, detail="Template not found")
+                    user['template_id'] = data.template_id
+                if data.sub_name is not None:
+                    user['sub_name'] = data.sub_name
+                if data.sub_filename is not None:
+                    user['sub_filename'] = data.sub_filename
+                user.pop('sub_cache', None)
+                return dict(user)
+
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user = update_config(apply_user_update)
+    return {"status": "success", "user": user}
 
 
 @router.delete("/{user_id}")
 @handle_api_errors
 def delete_user(user_id: str, _: bool = Depends(verify_session)):
     """Delete a user"""
-    config = load_config()
-    users = config.get('users', [])
-    config['users'] = [u for u in users if u['id'] != user_id]
-    save_config(config)
+    def remove_user(config: dict):
+        users = config.get('users', [])
+        config['users'] = [u for u in users if u['id'] != user_id]
+
+    update_config(remove_user)
     return {"status": "success"}
 
 
@@ -169,35 +164,36 @@ def delete_user(user_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def regenerate_user_token(user_id: str, data: RegenerateTokenRequest = None, _: bool = Depends(verify_session)):
     """Regenerate user's subscription token"""
-    config = load_config()
-    
-    for user in config.get('users', []):
-        if user['id'] == user_id:
-            if data and data.custom_token and len(data.custom_token.strip()) >= 8:
-                user['token'] = data.custom_token.strip()
-            else:
-                user['token'] = generate_token()
-            save_config(config)
-            return {"status": "success", "token": user['token']}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+    def regenerate_token(config: dict) -> str:
+        for user in config.get('users', []):
+            if user['id'] == user_id:
+                if data and data.custom_token and len(data.custom_token.strip()) >= 8:
+                    user['token'] = data.custom_token.strip()
+                else:
+                    user['token'] = generate_token()
+                return user['token']
+
+        raise HTTPException(status_code=404, detail="User not found")
+
+    token = update_config(regenerate_token)
+    return {"status": "success", "token": token}
 
 
 @router.post("/{user_id}/reset-group-config")
 @handle_api_errors
 def reset_user_group_config(user_id: str, _: bool = Depends(verify_session)):
     """Reset user's group configuration"""
-    config = load_config()
-    
-    for user in config.get('users', []):
-        if user['id'] == user_id:
-            user['group_config'] = {}
-            if 'sub_cache' in user:
-                del user['sub_cache']
-            save_config(config)
-            return {"status": "success", "message": "Group config reset"}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+    def reset_group_config(config: dict):
+        for user in config.get('users', []):
+            if user['id'] == user_id:
+                user['group_config'] = {}
+                user.pop('sub_cache', None)
+                return
+
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_config(reset_group_config)
+    return {"status": "success", "message": "Group config reset"}
 
 
 @router.get("/{user_id}/allocations")
@@ -217,31 +213,31 @@ def get_user_allocations(user_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = Depends(verify_session)):
     """Update user's node allocations"""
-    config = load_config()
-    
-    for user in config.get('users', []):
-        if user['id'] == user_id:
-            user['allocations'] = data.subscriptions
-            if 'sub_cache' in user:
-                del user['sub_cache']
-            save_config(config)
-            return {"status": "success", "allocations": user['allocations']}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+    def update_allocations(config: dict) -> dict:
+        for user in config.get('users', []):
+            if user['id'] == user_id:
+                user['allocations'] = data.subscriptions
+                user.pop('sub_cache', None)
+                return dict(user['allocations'])
+
+        raise HTTPException(status_code=404, detail="User not found")
+
+    allocations = update_config(update_allocations)
+    return {"status": "success", "allocations": allocations}
 
 
 @router.put("/{user_id}/group-config")
 @handle_api_errors
 def update_user_group_config(user_id: str, data: UpdateUserGroupConfig, _: bool = Depends(verify_session)):
     """Update user's group configuration"""
-    config = load_config()
-    
-    for user in config.get('users', []):
-        if user['id'] == user_id:
-            user['group_config'] = data.group_config
-            if 'sub_cache' in user:
-                del user['sub_cache']
-            save_config(config)
-            return {"status": "success", "group_config": user['group_config']}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+    def update_group_config(config: dict) -> dict:
+        for user in config.get('users', []):
+            if user['id'] == user_id:
+                user['group_config'] = data.group_config
+                user.pop('sub_cache', None)
+                return dict(user['group_config'])
+
+        raise HTTPException(status_code=404, detail="User not found")
+
+    group_config = update_config(update_group_config)
+    return {"status": "success", "group_config": group_config}
