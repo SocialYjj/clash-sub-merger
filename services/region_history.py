@@ -15,6 +15,7 @@ import yaml
 from filelock import FileLock
 
 from core.config import DATA_DIR
+from helpers import atomic_write_text
 from logger_config import get_logger
 from services.name_transformer import NameTransformer
 
@@ -266,8 +267,10 @@ def _save_history_entries(entries: Dict[str, dict]):
         'updated_at': int(time.time()),
         'entries': _trim_entries(entries),
     }
-    with open(REGION_HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write_text(
+        REGION_HISTORY_FILE,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
 
 
 def _with_history_lock():

@@ -40,6 +40,15 @@ class SetPassword(BaseModel):
         return validate_password_policy(v)
 
 
+class ChangePassword(BaseModel):
+    current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+    @validator('new_password')
+    def validate_new_password(cls, v):
+        return validate_password_policy(v)
+
+
 class Login(BaseModel):
     password: str = Field(max_length=100)
 
@@ -142,12 +151,19 @@ def logout(authorization: Optional[str] = Header(None)):
 
 @router.post("/change-password")
 @handle_api_errors
-def change_password(data: SetPassword, _: bool = Depends(verify_session)):
-    """Change password"""
+def change_password(data: ChangePassword, _: bool = Depends(verify_session)):
+    """Change password after validating the current password."""
     def change_auth_password(config: dict) -> str:
         auth = config.setdefault('auth', {})
+        password_hash = auth.get('password_hash')
+        if not password_hash:
+            raise HTTPException(status_code=400, detail="Password is not set")
+
+        if not verify_password(data.current_password, password_hash):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
         session_token = generate_token()
-        auth['password_hash'] = hash_password(data.password)
+        auth['password_hash'] = hash_password(data.new_password)
         auth['sessions'] = {session_token: time.time() + 86400}
         return session_token
 

@@ -35,7 +35,9 @@ class TemplateCompatRoutesTest(unittest.TestCase):
             update_config=update_config,
             logger=logging.getLogger("test.template_compat"),
         ))
-        return TestClient(app), config
+        client = TestClient(app)
+        client.output_file = output_file
+        return client, config
 
     def test_split_template_removes_proxy_sections(self):
         header, suffix = split_template(
@@ -51,6 +53,24 @@ class TemplateCompatRoutesTest(unittest.TestCase):
         self.assertIn("mixed-port: 7890", header)
         self.assertNotIn("should-drop", header)
         self.assertNotIn("group-drop", suffix)
+        self.assertIn("rules:", suffix)
+
+    def test_split_template_preserves_unknown_sections_after_proxy_sections(self):
+        header, suffix = split_template(
+            "mixed-port: 7890\n"
+            "proxies:\n"
+            "  - name: should-drop\n"
+            "proxy-groups:\n"
+            "  - name: group-drop\n"
+            "tun:\n"
+            "  enable: true\n"
+            "rules:\n"
+            "  - MATCH,DIRECT\n"
+        )
+
+        self.assertIn("mixed-port: 7890", header)
+        self.assertNotIn("should-drop", suffix)
+        self.assertIn("tun:", suffix)
         self.assertIn("rules:", suffix)
 
     def test_default_template_route_is_registered(self):
@@ -73,3 +93,23 @@ class TemplateCompatRoutesTest(unittest.TestCase):
         self.assertTrue(response.json()["success"])
         self.assertEqual(config["template"]["header"], "mixed-port: 7890")
         self.assertIn("MATCH,DIRECT", config["template"]["suffix"])
+
+    def test_save_content_rejects_arbitrary_server_path(self):
+        client, _ = self.make_client({"auth": {}, "subscriptions": [], "custom_nodes": []})
+
+        response = client.post("/api/save_content", json={
+            "content": "mixed-port: 7890\n",
+            "save_path": "../config.json",
+        })
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_save_content_writes_only_configured_output_file(self):
+        client, _ = self.make_client({"auth": {}, "subscriptions": [], "custom_nodes": []})
+
+        response = client.post("/api/save_content", json={
+            "content": "mixed-port: 7890\n",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Path(client.output_file).read_text(encoding="utf-8"), "mixed-port: 7890\n")

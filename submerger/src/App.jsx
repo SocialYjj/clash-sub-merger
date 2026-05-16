@@ -398,9 +398,12 @@ export default function App() {
     }, 'warning');
   };
 
-  const changePassword = async (newPassword) => {
+  const changePassword = async (currentPassword, newPassword) => {
     try {
-      await request.post(`${API_BASE}/auth/change-password`, { password: newPassword });
+      await request.post(`${API_BASE}/auth/change-password`, {
+        current_password: currentPassword,
+        new_password: newPassword
+      });
       showToast('密码修改成功，即将跳转到登录页');
       // Wait 1 second before logging out to let user see the success message
       setTimeout(() => {

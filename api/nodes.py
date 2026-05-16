@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field, validator
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
-from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_yaml
+from helpers import (
+    handle_api_errors,
+    generate_timestamp_id,
+    load_subscription_yaml,
+    update_subscription_yaml,
+)
 from services.name_transformer import NameTransformer
 from services.node_parser import parse_node_link
 from services.proxy_filter import ProxyFilter
@@ -422,32 +427,36 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_subscription_node(sub_id: str, node_index: int, data: UpdateSubNode, _: bool = Depends(verify_session)):
     """Update subscription node name"""
-    sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
-    nodes = sub_data.get('proxies', []) if sub_data else []
-    
-    if node_index < 0 or node_index >= len(nodes):
-        raise HTTPException(status_code=404, detail="Node not found")
-    
-    nodes[node_index]['name'] = data.name
-    save_subscription_yaml(sub_id, {'proxies': nodes}, YAML_SOURCE_DIR)
-    
-    return {"status": "success", "node": nodes[node_index]}
+    def rename_node(sub_data: dict):
+        nodes = sub_data.get('proxies', []) if sub_data else []
+
+        if node_index < 0 or node_index >= len(nodes):
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        nodes[node_index]['name'] = data.name
+        return dict(nodes[node_index])
+
+    updated_node = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, rename_node)
+
+    return {"status": "success", "node": updated_node}
 
 
 @router.put("/subscriptions/{sub_id}/nodes/{node_index}/full")
 @handle_api_errors
 def update_subscription_node_full(sub_id: str, node_index: int, data: UpdateSubNodeFull, _: bool = Depends(verify_session)):
     """Update subscription node with full config"""
-    sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
-    nodes = sub_data.get('proxies', []) if sub_data else []
-    
-    if node_index < 0 or node_index >= len(nodes):
-        raise HTTPException(status_code=404, detail="Node not found")
-    
-    nodes[node_index] = data.node
-    save_subscription_yaml(sub_id, {'proxies': nodes}, YAML_SOURCE_DIR)
-    
-    return {"status": "success", "node": nodes[node_index]}
+    def replace_node(sub_data: dict):
+        nodes = sub_data.get('proxies', []) if sub_data else []
+
+        if node_index < 0 or node_index >= len(nodes):
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        nodes[node_index] = data.node
+        return dict(nodes[node_index])
+
+    updated_node = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, replace_node)
+
+    return {"status": "success", "node": updated_node}
 
 
 @router.delete("/subscriptions/{sub_id}/nodes/{node_index}")
@@ -460,19 +469,21 @@ def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(ver
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
     
-    sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
-    nodes = sub_data.get('proxies', []) if sub_data else []
-    
-    if node_index < 0 or node_index >= len(nodes):
-        raise HTTPException(status_code=404, detail="Node not found")
-    
-    del nodes[node_index]
-    save_subscription_yaml(sub_id, {'proxies': nodes}, YAML_SOURCE_DIR)
+    def remove_node(sub_data: dict):
+        nodes = sub_data.get('proxies', []) if sub_data else []
+
+        if node_index < 0 or node_index >= len(nodes):
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        del nodes[node_index]
+        return len(nodes)
+
+    node_count = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, remove_node)
     
     def update_subscription_node_count(latest_config: dict):
         latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
         if latest_sub:
-            latest_sub['node_count'] = len(nodes)
+            latest_sub['node_count'] = node_count
 
     update_config(update_subscription_node_count)
     
@@ -537,9 +548,11 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                 remember_nodes_region(updated_region_nodes, source='speedtest:custom-batch')
         else:
             # 保存订阅节点
-            sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=False)
-            if sub_data:
+            def save_subscription_results(sub_data: dict):
+                saved = 0
                 updated_region_nodes = []
+                if not sub_data:
+                    return saved, updated_region_nodes
                 for node_index_str, result in nodes_data.items():
                     node_index = int(node_index_str)
                     nodes = sub_data.get('proxies', [])
@@ -563,10 +576,13 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                             node['city'] = result['city']
                         if 'region' in result:
                             updated_region_nodes.append(node)
-                        saved_count += 1
-                if updated_region_nodes:
-                    remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
-                save_subscription_yaml(source_id, sub_data, YAML_SOURCE_DIR)
+                        saved += 1
+                return saved, updated_region_nodes
+
+            source_saved_count, updated_region_nodes = update_subscription_yaml(source_id, YAML_SOURCE_DIR, save_subscription_results)
+            saved_count += source_saved_count
+            if updated_region_nodes:
+                remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
     
     return {"status": "success", "saved_count": saved_count}
 
@@ -742,8 +758,21 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
 
                         update_config(save_custom_test_result)
                     else:
-                        sub_data['proxies'][node_index] = node
-                        save_subscription_yaml(source_id, sub_data, YAML_SOURCE_DIR)
+                        def save_subscription_test_result(latest_sub_data: dict):
+                            latest_nodes = latest_sub_data.get('proxies', []) if latest_sub_data else []
+                            if not (0 <= node_index < len(latest_nodes)):
+                                return
+
+                            latest_node = ProxyFilter.sanitize_proxy(latest_nodes[node_index])
+                            for field in (
+                                'xhttp-opts', 'last_latency', 'last_latency_time',
+                                'last_speed', 'last_speed_time', 'exit_ip', 'region', 'city'
+                            ):
+                                if field in node:
+                                    latest_node[field] = node[field]
+                            latest_nodes[node_index] = latest_node
+
+                        update_subscription_yaml(source_id, YAML_SOURCE_DIR, save_subscription_test_result)
                 except Exception as e:
                     logger.error(f"Failed to save node test results: {e}")
             

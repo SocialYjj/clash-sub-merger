@@ -10,6 +10,7 @@ import json
 import unicodedata
 import aiohttp
 import asyncio
+import threading
 from typing import Optional, Dict
 from functools import lru_cache
 from logger_config import get_logger
@@ -690,6 +691,9 @@ COUNTRY_NAME_NORMALIZE.update({
 _online_geoip_cache: Dict[str, Dict] = {}
 _online_geoip_inflight: Dict[str, asyncio.Task] = {}
 _online_geoip_semaphore = asyncio.Semaphore(int(os.environ.get('GEOIP_MAX_CONCURRENCY', '8')))
+_online_geoip_cache_lock = threading.RLock()
+_online_geoip_inflight_lock = asyncio.Lock()
+_online_geoip_save_lock = asyncio.Lock()
 
 def load_geoip_cache_from_disk():
     """Load GeoIP cache from disk on startup"""
@@ -718,21 +722,29 @@ def load_geoip_cache_from_disk():
                     # Old format without timestamp, keep it
                     valid_cache[key] = entry
             
-            _online_geoip_cache = valid_cache
+            with _online_geoip_cache_lock:
+                _online_geoip_cache = valid_cache
             logger.info(f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)")
     except Exception as e:
         logger.warning(f"Failed to load GeoIP cache from disk: {e}")
-        _online_geoip_cache = {}
+        with _online_geoip_cache_lock:
+            _online_geoip_cache = {}
 
-def save_geoip_cache_to_disk():
-    """Save GeoIP cache to disk"""
-    try:
-        os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
-        with open(GEOIP_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_online_geoip_cache, f, ensure_ascii=False, indent=2)
-        logger.debug(f"Saved {len(_online_geoip_cache)} GeoIP cache entries to disk")
-    except Exception as e:
-        logger.error(f"Failed to save GeoIP cache to disk: {e}")
+async def save_geoip_cache_to_disk():
+    """Save GeoIP cache to disk with in-process serialization and atomic replace."""
+    async with _online_geoip_save_lock:
+        try:
+            with _online_geoip_cache_lock:
+                cache_snapshot = dict(_online_geoip_cache)
+
+            os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
+            tmp_file = f"{GEOIP_CACHE_FILE}.tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_snapshot, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, GEOIP_CACHE_FILE)
+            logger.debug(f"Saved {len(cache_snapshot)} GeoIP cache entries to disk")
+        except Exception as e:
+            logger.error(f"Failed to save GeoIP cache to disk: {e}")
 
 # Load cache on module import
 load_geoip_cache_from_disk()
@@ -1213,30 +1225,32 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
 
     cache_key = f"{ip}:{api_id or 'default'}"
 
-    entry = _online_geoip_cache.get(cache_key)
-    if isinstance(entry, dict):
-        ts = entry.get('timestamp')
-        if ts and (time.time() - ts) < GEOIP_CACHE_TTL:
-            if entry.get('_negative'):
-                return None
-            normalized_entry = _normalize_cached_geo_entry(entry)
-            if normalized_entry != entry:
-                _online_geoip_cache[cache_key] = normalized_entry
-            return normalized_entry
-        _online_geoip_cache.pop(cache_key, None)
+    def _get_valid_cache_entry():
+        with _online_geoip_cache_lock:
+            entry = _online_geoip_cache.get(cache_key)
+            if not isinstance(entry, dict):
+                return False, None
 
-    inflight = _online_geoip_inflight.get(cache_key)
-    if inflight:
-        try:
-            return await inflight
-        except Exception:
-            return None
+            ts = entry.get('timestamp')
+            if ts and (time.time() - ts) < GEOIP_CACHE_TTL:
+                if entry.get('_negative'):
+                    return True, None
+                normalized_entry = _normalize_cached_geo_entry(entry)
+                if normalized_entry != entry:
+                    _online_geoip_cache[cache_key] = normalized_entry
+                return True, normalized_entry
+
+            _online_geoip_cache.pop(cache_key, None)
+            return False, None
+
+    # Fast path before taking the lock.
+    cache_hit, cached_result = _get_valid_cache_entry()
+    if cache_hit:
+        return cached_result
 
     async def _do_lookup():
-        # Determine which API to use
         target_api = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
 
-        # Builtin API functions
         builtin_api_map = {
             "ip-api.com": _lookup_ip_api_com,
             "ipwhois": _lookup_ipwhois,
@@ -1246,18 +1260,15 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         raw_data = None
 
         async with _online_geoip_semaphore:
-            # Check if it's a builtin API
             if target_api in builtin_api_map:
                 raw_data = await builtin_api_map[target_api](ip, timeout)
             else:
-                # Check if it's a custom API
                 custom_apis = _online_geoip_config.get("custom_apis", [])
                 custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
                 if custom_api and custom_api.get("enabled", True):
                     raw_data = await _lookup_custom_api(ip, custom_api, timeout)
 
-            # If target API failed, try fallback to other enabled APIs
-            if not raw_data and not api_id:  # Only fallback if no specific API was requested
+            if not raw_data and not api_id:
                 for api_name, api_func in builtin_api_map.items():
                     if api_name != target_api:
                         api_settings = _online_geoip_config.get("api_settings", {})
@@ -1275,39 +1286,84 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
             raw_data.get("city", "")
         )
 
-        result = {
+        return {
             **normalized,
             "source": "online",
-            "timestamp": time.time()  # Add timestamp for TTL
+            "timestamp": time.time()
         }
 
-        return result
+    async with _online_geoip_inflight_lock:
+        # Double-check under the lock so cache expiry and task creation are atomic.
+        cache_hit, cached_result = _get_valid_cache_entry()
+        if cache_hit:
+            return cached_result
 
-    task = asyncio.create_task(_do_lookup())
-    _online_geoip_inflight[cache_key] = task
+        task = _online_geoip_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(_do_lookup())
+            _online_geoip_inflight[cache_key] = task
+
     try:
-        result = await task
-    finally:
-        _online_geoip_inflight.pop(cache_key, None)
-
-    if not result:
-        _online_geoip_cache[cache_key] = {"timestamp": time.time(), "_negative": True}
+        # Shield the shared task so a cancelled client request does not cancel
+        # the lookup that other waiters may still be awaiting.
+        result = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Online GeoIP lookup task failed for %s: %s", cache_key, e)
         return None
+    finally:
+        if task.done():
+            async with _online_geoip_inflight_lock:
+                if _online_geoip_inflight.get(cache_key) is task:
+                    _online_geoip_inflight.pop(cache_key, None)
 
-    # Cache the result in memory
-    _online_geoip_cache[cache_key] = result
+    with _online_geoip_cache_lock:
+        if not result:
+            _online_geoip_cache[cache_key] = {"timestamp": time.time(), "_negative": True}
+            return None
 
-    # Periodically save to disk (every 10 new entries)
-    if len(_online_geoip_cache) % 10 == 0:
-        save_geoip_cache_to_disk()
+        _online_geoip_cache[cache_key] = result
+        cache_size = len(_online_geoip_cache)
+
+    if cache_size % 10 == 0:
+        await save_geoip_cache_to_disk()
 
     return result
 
-def clear_online_geoip_cache():
+def get_online_geoip_cache_snapshot() -> Dict[str, Dict]:
+    """Return a shallow snapshot of the online GeoIP cache for safe iteration."""
+    with _online_geoip_cache_lock:
+        return dict(_online_geoip_cache)
+
+
+def get_online_geoip_cache_stats() -> dict:
+    """Return positive/negative cache counts without exposing the live dict."""
+    snapshot = get_online_geoip_cache_snapshot()
+    positive = 0
+    negative = 0
+    for entry in snapshot.values():
+        if isinstance(entry, dict) and entry.get('_negative'):
+            negative += 1
+        else:
+            positive += 1
+    return {
+        "cache_size": len(snapshot),
+        "positive": positive,
+        "negative": negative,
+    }
+
+
+async def clear_online_geoip_cache():
     """Clear the online GeoIP lookup cache (both memory and disk)"""
     global _online_geoip_cache, _online_geoip_inflight
-    _online_geoip_cache = {}
-    _online_geoip_inflight = {}
+    with _online_geoip_cache_lock:
+        _online_geoip_cache = {}
+    async with _online_geoip_inflight_lock:
+        for task in _online_geoip_inflight.values():
+            if not task.done():
+                task.cancel()
+        _online_geoip_inflight = {}
     try:
         if os.path.exists(GEOIP_CACHE_FILE):
             os.remove(GEOIP_CACHE_FILE)

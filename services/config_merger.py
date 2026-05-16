@@ -7,6 +7,7 @@ import json
 import yaml
 from typing import List, Dict, Optional
 from logger_config import get_logger
+from helpers import atomic_write_text
 from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
@@ -328,20 +329,18 @@ rule-providers:
         """Save config to file"""
         proxies = config.get('proxies', [])
         proxy_groups = config.get('proxy-groups', [])
-        
-        with open(self.output_file, 'w', encoding='utf-8') as f:
-            f.write(self.header)
-            
-            f.write('\nproxies:\n')
-            for proxy in proxies:
-                proxy_json = json.dumps(proxy, ensure_ascii=False, separators=(',', ':'))
-                f.write(f'  - {proxy_json}\n')
-            
-            f.write('\nproxy-groups:\n')
-            for group in proxy_groups:
-                group_json = json.dumps(group, ensure_ascii=False, separators=(',', ':'))
-                f.write(f'  - {group_json}\n')
 
-            f.write('\n' + self.suffix)
+        output_parts = [self.header, '\nproxies:\n']
+        for proxy in proxies:
+            proxy_json = json.dumps(proxy, ensure_ascii=False, separators=(',', ':'))
+            output_parts.append(f'  - {proxy_json}\n')
+
+        output_parts.append('\nproxy-groups:\n')
+        for group in proxy_groups:
+            group_json = json.dumps(group, ensure_ascii=False, separators=(',', ':'))
+            output_parts.append(f'  - {group_json}\n')
+
+        output_parts.append('\n' + self.suffix)
+        atomic_write_text(self.output_file, ''.join(output_parts))
         
         logger.info(f"Config saved to: {self.output_file}")

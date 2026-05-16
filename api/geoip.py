@@ -66,10 +66,17 @@ async def batch_lookup_ips(data: BatchGeoIPRequest, _: bool = Depends(verify_ses
     
     results = {}
     ips = data.ips[:100]  # Limit to 100 IPs
-    tasks = [lookup_ip_online(ip) for ip in ips]
-    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [asyncio.create_task(lookup_ip_online(ip)) for ip in ips]
+    try:
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("Batch GeoIP lookup cancelled; cancelled %d pending task(s)", len(tasks))
+        raise
     for ip, res in zip(ips, task_results):
-        if isinstance(res, Exception):
+        if isinstance(res, BaseException):
             results[ip] = None
         else:
             results[ip] = res
@@ -81,30 +88,22 @@ async def batch_lookup_ips(data: BatchGeoIPRequest, _: bool = Depends(verify_ses
 @handle_api_errors
 def get_geoip_cache_stats(_: bool = Depends(verify_session)):
     """Get GeoIP cache statistics"""
-    from geoip_service import _online_geoip_cache
-    positive = 0
-    negative = 0
-    for entry in _online_geoip_cache.values():
-        if isinstance(entry, dict) and entry.get('_negative'):
-            negative += 1
-        else:
-            positive += 1
+    from geoip_service import get_online_geoip_cache_stats
+
+    stats = get_online_geoip_cache_stats()
     return {
-        "cache_size": len(_online_geoip_cache),
-        "positive": positive,
-        "negative": negative,
+        **stats,
         "database_available": False  # No local database
     }
 
 
 @router.post("/cache/clear")
 @handle_api_errors
-def clear_geoip_cache(_: bool = Depends(verify_session)):
+async def clear_geoip_cache(_: bool = Depends(verify_session)):
     """Clear GeoIP cache"""
-    from geoip_service import _online_geoip_cache, save_geoip_cache_to_disk
-    
-    _online_geoip_cache.clear()
-    save_geoip_cache_to_disk()
+    from geoip_service import clear_online_geoip_cache
+
+    await clear_online_geoip_cache()
     
     return {"status": "success", "message": "GeoIP cache cleared"}
 
@@ -137,11 +136,11 @@ def _filter_geoip_entries(entries, q=None, api_id=None, status=None, max_age=Non
 
 def _build_geoip_entries():
     import time as _time
-    from geoip_service import _online_geoip_cache
+    from geoip_service import get_online_geoip_cache_snapshot
 
     entries = []
     now = _time.time()
-    for key, entry in _online_geoip_cache.items():
+    for key, entry in get_online_geoip_cache_snapshot().items():
         if not isinstance(entry, dict):
             continue
         if ':' in key:

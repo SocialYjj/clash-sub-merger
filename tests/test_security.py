@@ -4,6 +4,11 @@ import os
 import unittest
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import api.auth as auth_api
+from core.dependencies import verify_session
 import core.security as security
 
 
@@ -55,6 +60,41 @@ class SecurityTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(original_env)
             importlib.reload(security)
+
+    def test_change_password_requires_current_password(self):
+        config = {
+            "auth": {
+                "password_hash": security.hash_password("OldPass123"),
+                "sessions": {"session": 9999999999},
+            }
+        }
+
+        def update_config(mutator):
+            return mutator(config)
+
+        app = FastAPI()
+        app.dependency_overrides[verify_session] = lambda: True
+        app.include_router(auth_api.router, prefix="/api/auth")
+        client = TestClient(app)
+
+        with patch.object(auth_api, "update_config", side_effect=update_config):
+            missing_current = client.post("/api/auth/change-password", json={
+                "new_password": "NewPass123",
+            })
+            wrong_current = client.post("/api/auth/change-password", json={
+                "current_password": "WrongPass123",
+                "new_password": "NewPass123",
+            })
+            ok = client.post("/api/auth/change-password", json={
+                "current_password": "OldPass123",
+                "new_password": "NewPass123",
+            })
+
+        self.assertEqual(missing_current.status_code, 422)
+        self.assertEqual(wrong_current.status_code, 401)
+        self.assertEqual(ok.status_code, 200)
+        self.assertTrue(security.verify_password("NewPass123", config["auth"]["password_hash"]))
+        self.assertFalse(security.verify_password("OldPass123", config["auth"]["password_hash"]))
 
 
 if __name__ == "__main__":

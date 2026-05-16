@@ -6,6 +6,7 @@ import os
 import platform
 import httpx
 from logger_config import get_logger
+from helpers import atomic_write_text
 
 logger = get_logger(__name__)
 
@@ -44,9 +45,7 @@ def get_flclash_latest_version() -> str:
                 
                 # Save to cache file
                 try:
-                    os.makedirs(os.path.dirname(_cache_file), exist_ok=True)
-                    with open(_cache_file, 'w') as f:
-                        f.write(version)
+                    atomic_write_text(_cache_file, version)
                     logger.info(f"Fetched and cached FlClash version: {version}")
                 except Exception as e:
                     logger.warning(f"Failed to cache version: {e}")

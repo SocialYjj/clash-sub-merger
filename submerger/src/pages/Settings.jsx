@@ -738,6 +738,7 @@ export default function Settings({
   showToast
 }) {
   const [speedtestConfig, setSpeedtestConfig] = useState({});
+  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   
@@ -1513,13 +1514,24 @@ export default function Settings({
         <div className="space-y-4">
           <div>
             <label className="block text-sm text-gray-400 mb-2">修改密码</label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="输入当前密码"
+                  autoComplete="current-password"
+                  className="w-full px-3 py-2 pr-10 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="输入新密码"
+                  autoComplete="new-password"
                   className="w-full px-3 py-2 pr-10 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
                 <button
@@ -1532,10 +1544,11 @@ export default function Settings({
               </div>
               <button
                 onClick={() => {
-                  onChangePassword(newPassword);
+                  onChangePassword(currentPassword, newPassword);
+                  setCurrentPassword('');
                   setNewPassword('');
                 }}
-                disabled={!newPassword.trim()}
+                disabled={!currentPassword.trim() || !newPassword.trim()}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
               >
                 修改

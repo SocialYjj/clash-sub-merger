@@ -3,6 +3,7 @@
 import json
 import os
 from collections import OrderedDict
+from pathlib import Path
 from typing import Callable, Tuple
 
 import yaml
@@ -12,7 +13,7 @@ from pydantic import BaseModel
 
 from core.dependencies import verify_session
 from core.models import FinalContent, TemplateContent
-from helpers import Constants
+from helpers import Constants, atomic_write_text
 from services.config_merger import ConfigMerger
 
 try:
@@ -23,34 +24,47 @@ except ImportError:  # pragma: no cover - depends on optional PyYAML C extension
 def split_template(full_content: str) -> Tuple[str, str]:
     """
     Split template into header (config before proxies) and suffix (rules after proxy-groups).
-    Removes proxies: and proxy-groups: sections completely.
+    Removes only top-level proxies: and proxy-groups: sections completely.
+    Unknown top-level sections after those generated sections are preserved in the suffix.
     """
     lines = full_content.splitlines(keepends=True)
-    header_lines, suffix_lines = [], []
-    state = 0  # 0=header, 1=skip(proxies/groups), 2=suffix
+    blocks = []
+    current_key = None
+    current_lines = []
+
+    def top_level_key(line: str):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or line[:1] in (' ', '\t'):
+            return None
+        if ':' not in stripped or stripped.startswith('-'):
+            return None
+        return stripped.split(':', 1)[0]
 
     for line in lines:
-        stripped = line.strip()
+        key = top_level_key(line)
+        if key is not None and current_lines:
+            blocks.append((current_key, current_lines))
+            current_lines = [line]
+            current_key = key
+        else:
+            if key is not None:
+                current_key = key
+            current_lines.append(line)
 
-        if state == 0:
-            # In header section
-            if stripped.startswith('proxies:') or stripped.startswith('proxy-groups:'):
-                # Start skipping proxies/proxy-groups sections
-                state = 1
-                continue
-            header_lines.append(line)
+    if current_lines:
+        blocks.append((current_key, current_lines))
 
-        elif state == 1:
-            # Skipping proxies/proxy-groups sections
-            # Check if we've reached the suffix (rules, etc.)
-            if any(stripped.startswith(k) for k in ['rules:', 'rule-providers:', 'script:', 'url-rewrite:']):
-                state = 2
-                suffix_lines.append(line)
-            # Otherwise, skip this line (it's part of proxies/proxy-groups)
+    header_lines, suffix_lines = [], []
+    seen_generated_section = False
 
-        elif state == 2:
-            # In suffix section
-            suffix_lines.append(line)
+    for key, block_lines in blocks:
+        if key in {'proxies', 'proxy-groups'}:
+            seen_generated_section = True
+            continue
+        if seen_generated_section:
+            suffix_lines.extend(block_lines)
+        else:
+            header_lines.extend(block_lines)
 
     return "".join(header_lines).strip(), "".join(suffix_lines).strip()
 
@@ -68,6 +82,24 @@ def create_template_router(
     router = APIRouter()
     YAML_SOURCE_DIR = yaml_source_dir
     OUTPUT_FILE = output_file
+    OUTPUT_PATH = Path(OUTPUT_FILE).resolve()
+
+    def _resolve_allowed_output_path(save_path: str | None) -> Path:
+        if not save_path:
+            return OUTPUT_PATH
+
+        candidate = Path(save_path)
+        if not candidate.is_absolute():
+            candidate = OUTPUT_PATH.parent / candidate
+        candidate = candidate.resolve()
+
+        # This legacy endpoint is only allowed to write the configured generated
+        # output file.  A caller that needs a different location should download
+        # the result and save it client-side; accepting arbitrary server paths is
+        # equivalent to authenticated arbitrary file write.
+        if candidate != OUTPUT_PATH:
+            raise HTTPException(status_code=400, detail="save_path is not allowed")
+        return candidate
 
     @router.get("/api/template", tags=["templates"])
     def get_saved_template(_: bool = Depends(verify_session)):
@@ -291,11 +323,10 @@ def create_template_router(
 
     @router.post("/api/save_content", tags=["templates"])
     def save_final_content(data: FinalContent, _: bool = Depends(verify_session)):
-        target = data.save_path if data.save_path else OUTPUT_FILE
+        target = _resolve_allowed_output_path(data.save_path)
         try:
-            with open(target, 'w', encoding='utf-8') as f:
-                f.write(data.content)
-            return {"status": "success", "output_file": target}
+            atomic_write_text(target, data.content)
+            return {"status": "success", "output_file": str(target)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

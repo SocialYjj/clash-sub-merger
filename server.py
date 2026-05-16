@@ -12,6 +12,7 @@ import asyncio  # Used for async operations
 import uuid  # Used for request IDs
 import signal  # Used for signal handling
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Use C-accelerated YAML loader for better performance
 try:
@@ -43,7 +44,7 @@ from scheduler_service import get_scheduler, init_scheduler
 from logger_config import get_logger
 from helpers import (
     Constants,
-    load_subscription_yaml, save_subscription_content,
+    load_subscription_yaml, save_subscription_content, save_subscription_yaml,
     generate_timestamp_id,
 )
 
@@ -159,10 +160,45 @@ async def global_exception_handler(request, exc):
         content={"detail": str(exc)}
     )
 
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Add conservative browser security headers for the built-in UI."""
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'"
+    )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    return response
+
+
+_cors_origins = [origin.strip() for origin in AppConfig.CORS_ORIGINS.split(',') if origin.strip()]
+_cors_allow_credentials = True
+if AppConfig.CORS_ORIGINS.strip() == '*':
+    _cors_origins = ["*"]
+    # Browsers reject Access-Control-Allow-Origin: * with credentials=true.
+    # This app authenticates API calls with an Authorization header, so wildcard
+    # deployments should disable credentialed-cookie CORS instead of emitting an
+    # invalid combination.
+    _cors_allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=AppConfig.CORS_ORIGINS.split(',') if AppConfig.CORS_ORIGINS != '*' else ["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -534,10 +570,23 @@ def start_go_speedtest_service():
         GO_SPEEDTEST_PROCESS = subprocess.Popen(
             [speedtest_exe],
             cwd=speedtest_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
+        startup_grace = float(os.environ.get('GO_SPEEDTEST_STARTUP_GRACE', '0.5'))
+        if startup_grace > 0:
+            time.sleep(startup_grace)
+        exit_code = GO_SPEEDTEST_PROCESS.poll()
+        if exit_code is not None:
+            logger.error(
+                "Go speedtest service exited during startup (code=%s, path=%s). "
+                "Check port conflicts or binary compatibility.",
+                exit_code,
+                speedtest_exe,
+            )
+            GO_SPEEDTEST_PROCESS = None
+            return False
         logger.info("Go speedtest service started (PID: %s)", GO_SPEEDTEST_PROCESS.pid)
         return True
     except FileNotFoundError:
@@ -1406,9 +1455,7 @@ def update_custom_nodes_yaml():
         if proxy and 'type' in proxy:  # Ensure it's a valid proxy config
             proxies.append(proxy)
 
-    filepath = os.path.join(YAML_SOURCE_DIR, 'custom_nodes.yaml')
-    with open(filepath, 'w', encoding='utf-8') as f:
-        yaml.dump({'proxies': proxies}, f, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+    save_subscription_yaml('custom_nodes', {'proxies': proxies}, YAML_SOURCE_DIR)
 
 def get_ordered_sources() -> List[dict]:
     """Get all sources in order"""
@@ -1499,6 +1546,28 @@ app.include_router(create_template_router(
 frontend_dist = os.environ.get('FRONTEND_DIST_DIR') or os.path.join(BASE_DIR, 'submerger', 'dist')
 if not os.path.isabs(frontend_dist):
     frontend_dist = os.path.join(BASE_DIR, frontend_dist)
+frontend_dist_path = Path(frontend_dist).resolve()
+
+
+def _is_path_within(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_frontend_static_file(full_path: str) -> Optional[Path]:
+    """Resolve a SPA/static file request without allowing path traversal."""
+    normalized = (full_path or '').replace('\\', '/').lstrip('/')
+    target = (frontend_dist_path / normalized).resolve()
+    if not _is_path_within(target, frontend_dist_path):
+        return None
+    if target.is_file():
+        return target
+    return None
+
+
 if os.path.exists(frontend_dist):
     # 1. Mount assets with cache headers for performance
     assets_path = os.path.join(frontend_dist, 'assets')
@@ -1508,7 +1577,7 @@ if os.path.exists(frontend_dist):
     # 2. Serve root requests
     @app.get("/", include_in_schema=False)
     async def serve_index():
-        response = FileResponse(os.path.join(frontend_dist, "index.html"))
+        response = FileResponse(str(frontend_dist_path / "index.html"))
         # No cache for HTML to ensure fresh content
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
@@ -1521,9 +1590,9 @@ if os.path.exists(frontend_dist):
             raise HTTPException(status_code=404, detail="Not Found")
 
         # Try to serve static file if it exists (e.g. favicon.ico)
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            response = FileResponse(file_path)
+        file_path = _resolve_frontend_static_file(full_path)
+        if file_path:
+            response = FileResponse(str(file_path))
             # Cache static assets (js, css, images) for 1 year (immutable with hash)
             if full_path.endswith(('.js', '.css', '.woff', '.woff2', '.ttf', '.eot')):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
@@ -1534,7 +1603,7 @@ if os.path.exists(frontend_dist):
             return response
 
         # Fallback to index.html for React Router
-        response = FileResponse(os.path.join(frontend_dist, "index.html"))
+        response = FileResponse(str(frontend_dist_path / "index.html"))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 

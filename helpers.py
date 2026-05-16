@@ -4,6 +4,10 @@ Helper functions and utilities
 import os
 import yaml
 import time
+import tempfile
+import threading
+from pathlib import Path
+from contextlib import contextmanager
 from typing import Dict, Optional
 from fastapi import HTTPException
 from dotenv import load_dotenv
@@ -120,6 +124,77 @@ yaml_cache = YAMLCache()
 
 # ==================== YAML Operations ====================
 
+_yaml_file_locks_guard = threading.Lock()
+_yaml_file_locks: Dict[str, threading.RLock] = {}
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _subscription_filepath(sub_id: str, yaml_source_dir: str) -> Path:
+    """Resolve a subscription YAML path and reject path traversal in sub_id."""
+    base_dir = Path(yaml_source_dir).resolve()
+    target = (base_dir / f"{sub_id}{Constants.YAML_EXT}").resolve()
+    if not _is_relative_to(target, base_dir):
+        raise HTTPException(status_code=400, detail="Invalid subscription id")
+    return target
+
+
+def _get_yaml_file_lock(filepath: Path | str) -> threading.RLock:
+    key = str(Path(filepath).resolve())
+    with _yaml_file_locks_guard:
+        lock = _yaml_file_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _yaml_file_locks[key] = lock
+        return lock
+
+
+@contextmanager
+def subscription_yaml_lock(sub_id: str, yaml_source_dir: str):
+    """Lock a subscription YAML file for a read-modify-write operation."""
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
+    lock = _get_yaml_file_lock(filepath)
+    with lock:
+        yield filepath
+
+
+def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = 'utf-8'):
+    """Atomically write text using a same-directory temp file and os.replace()."""
+    target = Path(path)
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding=encoding,
+            dir=str(parent),
+            prefix=f".{target.name}.",
+            suffix='.tmp',
+            delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.debug("Failed to remove temp file after atomic write failure: %s", tmp_name, exc_info=True)
+        raise
+
 def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = True) -> dict:
     """
     Load subscription YAML file safely with caching
@@ -146,15 +221,16 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
             return cached
         cache_misses_total.labels(cache_type='yaml').inc()
     
-    filepath = os.path.join(yaml_source_dir, f"{sub_id}{Constants.YAML_EXT}")
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
     
     if not os.path.exists(filepath):
         file_operations_total.labels(operation='read', status='failed').inc()
         raise HTTPException(status_code=404, detail="Subscription not found")
     
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
+        with _get_yaml_file_lock(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
         
         # Check if content is Base64 encoded or node links (legacy format)
         if content and not content.startswith(('proxies:', 'proxy-groups:', '#')):
@@ -211,11 +287,12 @@ def save_subscription_yaml(sub_id: str, cfg: dict, yaml_source_dir: str):
         HTTPException: If save fails
     """
     start_time = time.time()
-    filepath = os.path.join(yaml_source_dir, f"{sub_id}{Constants.YAML_EXT}")
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
     
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+        with _get_yaml_file_lock(filepath):
+            content = yaml.dump(cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+            atomic_write_text(filepath, content)
         
         # Invalidate cache
         yaml_cache.invalidate(sub_id)
@@ -246,11 +323,11 @@ def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
         HTTPException: If save fails
     """
     start_time = time.time()
-    filepath = os.path.join(yaml_source_dir, f"{sub_id}{Constants.YAML_EXT}")
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
     
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
+        with _get_yaml_file_lock(filepath):
+            atomic_write_text(filepath, content)
         
         # Invalidate cache
         yaml_cache.invalidate(sub_id)
@@ -265,6 +342,17 @@ def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
         logger.error(f"Failed to save YAML content {sub_id}: {e}")
         file_operations_total.labels(operation='write', status='failed').inc()
         raise HTTPException(status_code=500, detail="Failed to save subscription")
+
+
+def update_subscription_yaml(sub_id: str, yaml_source_dir: str, mutator):
+    """Atomically load, mutate, and save a subscription YAML file under one lock."""
+    with subscription_yaml_lock(sub_id, yaml_source_dir):
+        cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=False)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        result = mutator(cfg)
+        save_subscription_yaml(sub_id, cfg, yaml_source_dir)
+        return result
 
 
 def generate_timestamp_id(prefix: str = '') -> str:
