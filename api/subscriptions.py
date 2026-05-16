@@ -14,6 +14,7 @@ from slowapi.util import get_remote_address
 from core.dependencies import verify_session
 from core.database import load_config, update_config, update_subscription_fields
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_content
+from services.node_visibility import apply_node_visibility_to_yaml_content
 from services.region_history import apply_region_history_to_yaml_content
 from logger_config import get_logger
 
@@ -119,6 +120,7 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
             existing_nodes=[],
             source=f'sub:add:{sub_id}',
         )
+        content, visibility_inherited = apply_node_visibility_to_yaml_content(content, existing_nodes=[])
         new_sub = {
             'id': sub_id, 'name': data.name, 'url': str(data.url), 'enabled': True,
             'type': 'url',
@@ -130,6 +132,8 @@ def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
 
         if inherited:
             logger.info("Inherited saved region for %s node(s) while adding subscription %s", inherited, sub_id)
+        if visibility_inherited:
+            logger.info("Inherited disabled state for %s node(s) while adding subscription %s", visibility_inherited, sub_id)
         
         save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
 
@@ -157,6 +161,7 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
             existing_nodes=[],
             source=f'sub:add-local:{sub_id}',
         )
+        yaml_content, visibility_inherited = apply_node_visibility_to_yaml_content(yaml_content, existing_nodes=[])
         new_sub = {
             'id': sub_id, 'name': data.name, 'enabled': True,
             'type': 'local', 'node_count': node_count,
@@ -166,6 +171,8 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
 
         if inherited:
             logger.info("Inherited saved region for %s node(s) while adding local subscription %s", inherited, sub_id)
+        if visibility_inherited:
+            logger.info("Inherited disabled state for %s node(s) while adding local subscription %s", visibility_inherited, sub_id)
         
         save_subscription_content(sub_id, yaml_content, srv.YAML_SOURCE_DIR)
 
@@ -206,13 +213,18 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                 existing_nodes=existing_nodes,
                 source=f'sub:update-local:{sub_id}',
             )
+            yaml_content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                yaml_content,
+                existing_nodes=existing_nodes,
+            )
             updates['node_count'] = node_count
-            if remembered or inherited:
+            if remembered or inherited or visibility_inherited:
                 logger.info(
-                    "Local subscription %s region history: remembered=%s inherited=%s",
+                    "Local subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
                     sub_id,
                     remembered,
                     inherited,
+                    visibility_inherited,
                 )
             save_subscription_content(sub_id, yaml_content, srv.YAML_SOURCE_DIR)
         except ValueError as e:
@@ -371,6 +383,10 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
                 existing_nodes=existing_nodes,
                 source=f'sub:refresh:{sub_id}',
             )
+            content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+            )
             
             updates = {
                 'upload': sub_info.get('upload', 0),
@@ -382,12 +398,13 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
                 'update_status': 'success'
             }
 
-            if remembered or inherited:
+            if remembered or inherited or visibility_inherited:
                 logger.info(
-                    "Subscription %s region history after refresh: remembered=%s inherited=%s",
+                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
                     sub_id,
                     remembered,
                     inherited,
+                    visibility_inherited,
                 )
             
             save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
@@ -435,6 +452,10 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                     existing_nodes=existing_nodes,
                     source=f"sub:refresh-all:{sub['id']}",
                 )
+                content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                    content,
+                    existing_nodes=existing_nodes,
+                )
                 
                 updates = {
                     'upload': sub_info.get('upload', 0),
@@ -446,12 +467,13 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
                     'update_status': 'success'
                 }
 
-                if remembered or inherited:
+                if remembered or inherited or visibility_inherited:
                     logger.info(
-                        "Subscription %s region history in refresh-all: remembered=%s inherited=%s",
+                        "Subscription %s history in refresh-all: remembered=%s inherited_region=%s inherited_disabled=%s",
                         sub['id'],
                         remembered,
                         inherited,
+                        visibility_inherited,
                     )
                 
                 save_subscription_content(sub['id'], content, srv.YAML_SOURCE_DIR)

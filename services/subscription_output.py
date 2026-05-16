@@ -26,6 +26,7 @@ from helpers import load_subscription_yaml, save_subscription_content
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.link_exporter import proxy_to_link
 from services.name_transformer import NameTransformer
+from services.node_visibility import apply_node_visibility_to_yaml_content, is_node_enabled
 from services.proxy_chain_utils import coerce_group_strategy, unique_group_name, unique_name
 from services.region_history import apply_region_history_to_yaml_content
 
@@ -147,7 +148,7 @@ def create_subscription_output_router(
 
         subs = config.get('subscriptions', [])
         enabled_subs = [s for s in subs if s['enabled']]
-        custom_nodes = config.get('custom_nodes', [])
+        custom_nodes = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]
 
         # Filter subscriptions based on user allocations
         has_chain_allocations = False
@@ -163,6 +164,8 @@ def create_subscription_output_router(
                 if allocated_custom != ['*']:
                     filtered = []
                     for node in custom_nodes:
+                        if not is_node_enabled(node):
+                            continue
                         transformed = NameTransformer.transform_name(node, 'Custom')
                         node_name = transformed.get('name', node.get('name', ''))
                         if is_name_allocated(node_name, allocated_custom):
@@ -217,6 +220,10 @@ def create_subscription_output_router(
                             existing_nodes=existing_nodes,
                             source=f"sub:auto-refresh-missing:{sub['id']}",
                         )
+                        content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                            content,
+                            existing_nodes=existing_nodes,
+                        )
                         sub.update({
                             'upload': sub_info.get('upload', 0),
                             'download': sub_info.get('download', 0),
@@ -226,12 +233,13 @@ def create_subscription_output_router(
                             'last_update': int(time.time()),
                             'update_status': 'success'
                         })
-                        if remembered or inherited:
+                        if remembered or inherited or visibility_inherited:
                             logger.info(
-                                "Missing subscription %s region history: remembered=%s inherited=%s",
+                                "Missing subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
                                 sub['id'],
                                 remembered,
                                 inherited,
+                                visibility_inherited,
                             )
                         save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
                         update_subscription_record(sub['id'], {

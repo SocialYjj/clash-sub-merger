@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from core.dependencies import verify_session
 from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.node_visibility import is_node_enabled
 from services.proxy_chain_utils import unique_group_name, unique_name
 
 
@@ -45,6 +46,8 @@ def create_user_allocation_router(
         if custom_nodes:
             node_names = []
             for node in custom_nodes:
+                if not is_node_enabled(node):
+                    continue
                 original_name = node.get('name', '')
                 if is_info_node(original_name):
                     continue
@@ -67,6 +70,8 @@ def create_user_allocation_router(
 
                 node_names = []
                 for proxy in proxies:
+                    if not is_node_enabled(proxy):
+                        continue
                     original_name = proxy.get('name', '')
                     if is_info_node(original_name):
                         continue

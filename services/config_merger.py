@@ -11,6 +11,7 @@ from helpers import atomic_write_text
 from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
+from services.node_visibility import filter_enabled_nodes
 from services.proxy_chain_utils import unique_name
 
 logger = get_logger(__name__)
@@ -309,13 +310,22 @@ rule-providers:
                 logger.info(f"{file_name} has no proxy nodes")
                 continue
             
-            # Filter invalid nodes
+            # Filter invalid nodes and admin-disabled nodes. Disabled nodes stay
+            # manageable in the admin UI, but must never enter generated output.
             valid_proxies = ProxyFilter.filter_proxies(proxies)
+            enabled_proxies = filter_enabled_nodes(valid_proxies, strip=True)
             
-            logger.info(f"{file_name} - Original: {len(proxies)}, Valid: {len(valid_proxies)}")
+            disabled_count = len(valid_proxies) - len(enabled_proxies)
+            logger.info(
+                "%s - Original: %s, Valid: %s, Disabled: %s",
+                file_name,
+                len(proxies),
+                len(enabled_proxies),
+                disabled_count,
+            )
             
             # Add source prefix
-            transformed_proxies = NameTransformer.transform_proxies(valid_proxies, source_name)
+            transformed_proxies = NameTransformer.transform_proxies(enabled_proxies, source_name)
             source_id = self._source_id_from_filename(file_name)
             for proxy in transformed_proxies:
                 proxy['name'] = self._make_unique_proxy_name(proxy.get('name', ''), used_names)

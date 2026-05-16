@@ -12,6 +12,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
 from logger_config import get_logger
 
@@ -84,6 +85,8 @@ def _get_all_nodes_for_chain():
         try:
             sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
             for i, proxy in enumerate(sub_data.get('proxies', [])):
+                if not is_node_enabled(proxy):
+                    continue
                 # Skip invalid/info nodes but keep original index
                 if not ProxyFilter.is_valid_proxy(proxy):
                     continue
@@ -102,6 +105,8 @@ def _get_all_nodes_for_chain():
     
     # Get custom nodes
     for i, node in enumerate(config.get('custom_nodes', [])):
+        if not is_node_enabled(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         nodes.append({
             'sub_id': 'custom',

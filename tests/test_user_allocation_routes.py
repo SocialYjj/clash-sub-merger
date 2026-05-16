@@ -21,6 +21,7 @@ class UserAllocationRoutesTest(unittest.TestCase):
             "subscriptions": [],
             "custom_nodes": [
                 {"name": "US 01", "type": "ss", "server": "example.com"},
+                {"name": "US Disabled", "type": "ss", "server": "disabled.example.com", "enabled": False},
                 {"name": "剩余流量 10G", "type": "ss", "server": "info.example.com"},
             ],
             "proxy_chains": [],
@@ -43,4 +44,5 @@ class UserAllocationRoutesTest(unittest.TestCase):
         nodes = sources["custom_nodes"]["nodes"]
         self.assertEqual(len(nodes), 1)
         self.assertIn("US 01", nodes[0])
+        self.assertNotIn("US Disabled", nodes)
         self.assertNotIn("剩余流量", nodes[0])

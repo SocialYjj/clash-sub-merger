@@ -56,6 +56,15 @@ class FrontendAbortStaticTests(unittest.TestCase):
                 self.assertNotIn("@dnd-kit", content)
                 self.assertNotIn("dnd-kit", content)
 
+    def test_nodes_page_has_node_visibility_toggle(self):
+        content = self.read_src("pages/Nodes.jsx")
+
+        self.assertIn("const toggleNodeEnabled = async (node) =>", content)
+        self.assertIn("/custom-nodes/${node.id}/toggle", content)
+        self.assertIn("/subscriptions/${node.sourceId}/nodes/${node.idx}/toggle", content)
+        self.assertIn("节点已禁用，不会出现在聚合配置中", content)
+        self.assertIn("已禁用", content)
+
 
 if __name__ == "__main__":
     unittest.main()

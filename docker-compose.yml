@@ -1,6 +1,6 @@
 services:
   clash-merger:
-    image: ghcr.io/socialyjj/clash-sub-merger:4.0.1
+    image: ghcr.io/socialyjj/clash-sub-merger:4.2.0
     container_name: submerger
     restart: unless-stopped
     ports:

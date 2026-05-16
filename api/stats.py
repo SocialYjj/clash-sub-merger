@@ -9,6 +9,7 @@ from core.dependencies import verify_session
 from core.database import load_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.node_visibility import is_node_enabled
 from services.country_data import COUNTRY_NAMES
 from services.proxy_filter import ProxyFilter
 from geoip_service import GeoIPService
@@ -42,6 +43,8 @@ def _get_all_nodes_with_country():
         try:
             sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
             for i, proxy in enumerate(sub_data.get('proxies', [])):
+                if not is_node_enabled(proxy):
+                    continue
                 # Skip info/advertisement nodes
                 node_name = proxy.get('name', '')
                 if _is_info_node(node_name):
@@ -65,6 +68,8 @@ def _get_all_nodes_with_country():
     
     # Get custom nodes
     for i, node in enumerate(config.get('custom_nodes', [])):
+        if not is_node_enabled(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         country_info = transformed.get('_country', {})
         nodes.append({
@@ -105,6 +110,8 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         try:
             sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
             for proxy in sub_data.get('proxies', []):
+                if not is_node_enabled(proxy):
+                    continue
                 # Skip info/advertisement nodes
                 if _is_info_node(proxy.get('name', '')):
                     continue
@@ -131,13 +138,13 @@ def get_stats_overview(_: bool = Depends(verify_session)):
             pass
     
     # Count custom nodes
-    custom_nodes_list = config.get('custom_nodes', [])
+    custom_nodes_list = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]
     for node in custom_nodes_list:
+        if _is_info_node(node.get('name', '')):
+            continue
         ptype = node.get('type', 'unknown')
         by_protocol[ptype] = by_protocol.get(ptype, 0) + 1
 
-        if _is_info_node(node.get('name', '')):
-            continue
         latency = node.get('last_latency')
         if latency is not None:
             try:

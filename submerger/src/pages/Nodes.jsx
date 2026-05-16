@@ -386,6 +386,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           source: subName,
           sourceId: subId,
           sourceType: 'subscription',
+          enabled: node.enabled !== false,
           idx,
           nodeKey,
           flag: flag,
@@ -442,6 +443,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         source: '自建节点',
         sourceId: 'custom',
         sourceType: 'custom',
+        enabled: node.enabled !== false,
         idx,  // Add idx for API calls
         nodeKey,
         flag: flag,
@@ -1510,6 +1512,41 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
   };
 
+  const toggleNodeEnabled = async (node) => {
+    if (!node || node.sourceType === 'chain') return;
+
+    try {
+      const endpoint = node.sourceType === 'custom'
+        ? `${API_BASE}/custom-nodes/${node.id}/toggle`
+        : `${API_BASE}/subscriptions/${node.sourceId}/nodes/${node.idx}/toggle`;
+      const res = await request.put(endpoint);
+      const enabled = res.data?.enabled !== false;
+
+      if (node.sourceType === 'subscription') {
+        setSubNodes(prev => {
+          const source = prev[node.sourceId];
+          if (!source) return prev;
+          return {
+            ...prev,
+            [node.sourceId]: {
+              ...source,
+              nodes: (source.nodes || []).map((item, index) => (
+                index === node.idx ? { ...item, enabled } : item
+              ))
+            }
+          };
+        });
+      } else {
+        onRefreshCustomNodes?.();
+      }
+
+      fetchAvailableChainNodes();
+      showToast?.(enabled ? '节点已启用，将出现在聚合配置中' : '节点已禁用，不会出现在聚合配置中', 'success');
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '节点开关失败', 'error');
+    }
+  };
+
   const deleteChain = async (chainId) => {
     try {
       await request.delete(`${API_BASE}/proxy-chains/${chainId}`);
@@ -1965,9 +2002,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     const rawDisplayName = node.display_name || node.name || '未命名';
                     const visibleDisplayName = stripLeadingFlagIcon(rawDisplayName);
                     const nodeFlag = node.flag || (rawDisplayName.match(LEADING_FLAG_ICON_RE)?.[0]?.trim() ?? '');
+                    const isDisabled = node.enabled === false;
 
                     return (
-                      <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''}`}>
+                      <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''} ${isDisabled ? 'opacity-60' : ''}`}>
                         <td className="px-4 py-3">
                           <button
                             onClick={() => toggleSelectNode(node.nodeKey)}
@@ -2014,9 +2052,22 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {nodeFlag}
                               </span>
                             )}
-                            <span className={`text-white truncate max-w-[200px] ${node.sourceType === 'chain' && !node.enabled ? 'opacity-50' : ''}`} title={rawDisplayName}>
+                            <span className={`text-white truncate max-w-[200px] ${isDisabled ? 'line-through decoration-gray-500' : ''}`} title={rawDisplayName}>
                               {visibleDisplayName || rawDisplayName}
                             </span>
+                            {node.sourceType !== 'chain' && (
+                              <button
+                                onClick={() => toggleNodeEnabled(node)}
+                                className="text-gray-400 hover:text-white transition-colors"
+                                title={isDisabled ? '点击启用节点，重新加入聚合配置' : '点击禁用节点，从聚合配置中移除'}
+                              >
+                                {isDisabled ? (
+                                  <ToggleLeft size={18} />
+                                ) : (
+                                  <ToggleRight size={18} className="text-green-400" />
+                                )}
+                              </button>
+                            )}
                             {node.sourceType === 'chain' && (
                               <button
                                 onClick={() => toggleChain(node.chainId)}
@@ -2029,6 +2080,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                   <ToggleLeft size={18} />
                                 )}
                               </button>
+                            )}
+                            {isDisabled && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-600/30 text-gray-400 text-xs">
+                                已禁用
+                              </span>
                             )}
                             {currentMappedPort && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 text-xs font-mono">

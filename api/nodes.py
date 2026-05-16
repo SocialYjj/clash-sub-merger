@@ -16,6 +16,7 @@ from helpers import (
     update_subscription_yaml,
 )
 from services.name_transformer import NameTransformer
+from services.node_visibility import clear_user_subscription_caches, is_node_enabled
 from services.node_parser import parse_node_link
 from services.proxy_filter import ProxyFilter
 from services.region_history import inherit_regions_for_nodes, remember_nodes_region
@@ -126,6 +127,10 @@ class BatchDeleteNodes(BaseModel):
     ids: List[str] = Field(min_items=1)
 
 
+def _display_enabled(node: dict) -> bool:
+    return is_node_enabled(node)
+
+
 # ==================== Custom Nodes API ====================
 
 @router.get("/custom-nodes")
@@ -142,6 +147,7 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
         enhanced['city'] = _resolve_city_name(node)
+        enhanced['enabled'] = _display_enabled(node)
         
         enhanced_nodes.append(enhanced)
     
@@ -248,6 +254,27 @@ def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     return {"status": "success"}
 
 
+@router.put("/custom-nodes/{node_id}/toggle")
+@handle_api_errors
+def toggle_custom_node(node_id: str, _: bool = Depends(verify_session)):
+    """Toggle whether a custom node is included in generated subscriptions."""
+    srv = _get_server()
+
+    def toggle_node(config: dict) -> bool:
+        for node in config.get('custom_nodes', []):
+            if node.get('id') == node_id:
+                node['enabled'] = not is_node_enabled(node)
+                clear_user_subscription_caches(config)
+                return node['enabled']
+
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    enabled = update_config(toggle_node)
+    srv.update_custom_nodes_yaml()
+    srv.invalidate_stats_cache()
+    return {"status": "success", "enabled": enabled}
+
+
 @router.post("/custom-nodes/batch-delete")
 @handle_api_errors
 def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_session)):
@@ -337,8 +364,11 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
                 previous = dict(node)
                 parsed = parse_node_link(node['link'])
                 if parsed:
+                    previous_enabled = node.get('enabled')
                     remember_nodes_region([previous], source='custom:reparse-one-existing')
                     node.update(parsed)
+                    if previous_enabled is not None:
+                        node['enabled'] = previous_enabled
                     inherit_regions_for_nodes([node], source='custom:reparse-one')
                     return dict(node)
                 raise HTTPException(status_code=400, detail="Failed to parse node link")
@@ -380,7 +410,10 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
             if node['id'] == node_id:
                 updated = {'id': node_id, 'link': node.get('link', '')}
                 updated.update(data.node)
+                if 'enabled' not in updated and 'enabled' in node:
+                    updated['enabled'] = node['enabled']
                 config['custom_nodes'][i] = updated
+                clear_user_subscription_caches(config)
                 return dict(updated)
 
         raise HTTPException(status_code=404, detail="Node not found")
@@ -419,6 +452,7 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
         enhanced['city'] = _resolve_city_name(node)
+        enhanced['enabled'] = _display_enabled(node)
         
         enhanced_nodes.append(enhanced)
     
@@ -453,12 +487,46 @@ def update_subscription_node_full(sub_id: str, node_index: int, data: UpdateSubN
         if node_index < 0 or node_index >= len(nodes):
             raise HTTPException(status_code=404, detail="Node not found")
 
-        nodes[node_index] = data.node
+        previous = nodes[node_index]
+        updated = dict(data.node)
+        if 'enabled' not in updated and isinstance(previous, dict) and 'enabled' in previous:
+            updated['enabled'] = previous['enabled']
+        nodes[node_index] = updated
         return dict(nodes[node_index])
 
     updated_node = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, replace_node)
 
     return {"status": "success", "node": updated_node}
+
+
+@router.put("/subscriptions/{sub_id}/nodes/{node_index}/toggle")
+@handle_api_errors
+def toggle_subscription_node(sub_id: str, node_index: int, _: bool = Depends(verify_session)):
+    """Toggle whether a subscription node is included in generated subscriptions."""
+    srv = _get_server()
+    config = load_config()
+
+    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    def toggle_node(sub_data: dict):
+        nodes = sub_data.get('proxies', []) if sub_data else []
+
+        if node_index < 0 or node_index >= len(nodes):
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        nodes[node_index]['enabled'] = not is_node_enabled(nodes[node_index])
+        return nodes[node_index]['enabled']
+
+    enabled = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, toggle_node)
+
+    def invalidate_user_caches(config: dict):
+        clear_user_subscription_caches(config)
+
+    update_config(invalidate_user_caches)
+    srv.invalidate_stats_cache()
+    return {"status": "success", "enabled": enabled}
 
 
 @router.delete("/subscriptions/{sub_id}/nodes/{node_index}")

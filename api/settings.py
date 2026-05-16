@@ -11,6 +11,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
 from services.name_transformer import NameTransformer
+from services.node_visibility import is_node_enabled
 from services.proxy_chain_utils import unique_group_name, unique_name
 from logger_config import get_logger
 
@@ -78,6 +79,8 @@ def get_available_proxy_nodes(_: bool = Depends(verify_session)):
     # Add custom nodes
     custom_nodes = config.get('custom_nodes', [])
     for i, node in enumerate(custom_nodes):
+        if not is_node_enabled(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         final_name = transformed.get('name', node.get('name', 'Unknown'))
         
@@ -101,6 +104,8 @@ def get_available_proxy_nodes(_: bool = Depends(verify_session)):
             sub_nodes = sub_data.get('proxies', []) if sub_data else []
             
             for i, node in enumerate(sub_nodes):
+                if not is_node_enabled(node):
+                    continue
                 if not node.get('server'):
                     continue
                 transformed = NameTransformer.transform_name(node, sub['name'])
@@ -163,6 +168,8 @@ def get_port_mappings(_: bool = Depends(verify_session)):
     # Add custom nodes
     custom_nodes = config.get('custom_nodes', [])
     for node in custom_nodes:
+        if not is_node_enabled(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         available_nodes.add(transformed.get('name', ''))
     
@@ -176,6 +183,8 @@ def get_port_mappings(_: bool = Depends(verify_session)):
             sub_nodes = sub_data.get('proxies', []) if sub_data else []
             
             for node in sub_nodes:
+                if not is_node_enabled(node):
+                    continue
                 transformed = NameTransformer.transform_name(node, sub['name'])
                 available_nodes.add(transformed.get('name', ''))
         except Exception as e:

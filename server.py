@@ -39,6 +39,7 @@ from core import (
     concurrent_requests,
 )
 from services.name_transformer import NameTransformer
+from services.node_visibility import apply_node_visibility_to_yaml_content, is_node_enabled
 from services.proxy_filter import ProxyFilter
 from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP
 from services.node_parser import parse_node_link
@@ -399,9 +400,11 @@ def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name
         custom_nodes = config.get('custom_nodes', [])
         if node_name:
             for node in custom_nodes:
+                if not is_node_enabled(node):
+                    continue
                 exclude_fields = {
                     'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                    'last_peak_speed', 'last_speed_time', 'geoip'
+                    'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
                 }
                 proxy = {k: v for k, v in node.items() if k not in exclude_fields}
                 proxy = ProxyFilter.sanitize_proxy(proxy)
@@ -410,10 +413,12 @@ def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name
                     return transformed
         if node_index is not None and 0 <= node_index < len(custom_nodes):
             node = custom_nodes[node_index]
+            if not is_node_enabled(node):
+                return None
             # Strip metadata fields not part of Clash proxy config
             exclude_fields = {
                 'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                'last_peak_speed', 'last_speed_time', 'geoip'
+                'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
             }
             proxy = {k: v for k, v in node.items() if k not in exclude_fields}
             proxy = ProxyFilter.sanitize_proxy(proxy)
@@ -428,17 +433,23 @@ def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name
         proxies = cfg.get('proxies', []) if cfg else []
         if node_name:
             for proxy in proxies:
+                if not is_node_enabled(proxy):
+                    continue
                 if not ProxyFilter.is_valid_proxy(proxy):
                     continue
                 proxy = ProxyFilter.sanitize_proxy(proxy)
+                proxy.pop('enabled', None)
                 transformed = NameTransformer.transform_name(proxy, source_name)
                 if transformed.get('name') == node_name:
                     return transformed
         if node_index is not None and 0 <= node_index < len(proxies):
             proxy = proxies[node_index]
+            if not is_node_enabled(proxy):
+                return None
             if not ProxyFilter.is_valid_proxy(proxy):
                 return None
             proxy = ProxyFilter.sanitize_proxy(proxy)
+            proxy.pop('enabled', None)
             return NameTransformer.transform_name(proxy, source_name)
     except Exception as e:
         logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
@@ -677,6 +688,10 @@ def refresh_subscription_job(sub_id: str):
                 existing_nodes=existing_nodes,
                 source=f'sub:scheduled-refresh:{sub_id}',
             )
+            content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+            )
 
             success_updates = {
                 'upload': sub_info.get('upload', 0),
@@ -701,12 +716,13 @@ def refresh_subscription_job(sub_id: str):
                 logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
                 success_updates['next_update'] = None
 
-            if remembered or inherited:
+            if remembered or inherited or visibility_inherited:
                 logger.info(
-                    "Scheduled refresh %s region history: remembered=%s inherited=%s",
+                    "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
                     sub_id,
                     remembered,
                     inherited,
+                    visibility_inherited,
                 )
 
             save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
@@ -1037,7 +1053,12 @@ def get_proxy_node_by_id(node_id: str) -> dict:
             idx = int(node_id.rsplit('_', 1)[1])
             custom_nodes = config.get('custom_nodes', [])
             if 0 <= idx < len(custom_nodes):
-                return custom_nodes[idx]
+                node = custom_nodes[idx]
+                if not is_node_enabled(node):
+                    return None
+                node = dict(node)
+                node.pop('enabled', None)
+                return node
         except (ValueError, IndexError) as e:
             logger.warning(f"Invalid custom node ID format: {node_id}, error: {e}")
         except Exception as e:
@@ -1070,7 +1091,12 @@ def get_proxy_node_by_id(node_id: str) -> dict:
                 sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
                 proxies = sub_data.get('proxies', [])
                 if 0 <= node_idx < len(proxies):
-                    return proxies[node_idx]
+                    proxy = proxies[node_idx]
+                    if not is_node_enabled(proxy):
+                        return None
+                    proxy = dict(proxy)
+                    proxy.pop('enabled', None)
+                    return proxy
                 logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
                 break
         except (ValueError, IndexError) as e:
@@ -1090,9 +1116,11 @@ def get_proxy_node_by_name(node_name: str) -> dict:
 
     # Custom nodes
     for node in config.get('custom_nodes', []):
+        if not is_node_enabled(node):
+            continue
         exclude_fields = {
             'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-            'last_peak_speed', 'last_speed_time', 'geoip'
+            'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
         }
         proxy = {k: v for k, v in node.items() if k not in exclude_fields}
         proxy = ProxyFilter.sanitize_proxy(proxy)
@@ -1108,9 +1136,12 @@ def get_proxy_node_by_name(node_name: str) -> dict:
             cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
             proxies = cfg.get('proxies', []) if cfg else []
             for proxy in proxies:
+                if not is_node_enabled(proxy):
+                    continue
                 if not ProxyFilter.is_valid_proxy(proxy):
                     continue
                 proxy = ProxyFilter.sanitize_proxy(proxy)
+                proxy.pop('enabled', None)
                 transformed = NameTransformer.transform_name(proxy, sub['name'])
                 if transformed.get('name') == node_name:
                     return transformed
@@ -1460,9 +1491,11 @@ def update_custom_nodes_yaml():
 
     # Fields to exclude from proxy config (metadata fields)
     exclude_fields = ['id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                      'last_peak_speed', 'last_speed_time', 'geoip']
+                      'last_peak_speed', 'last_speed_time', 'geoip', 'enabled']
 
     for node in nodes:
+        if not is_node_enabled(node):
+            continue
         # Use stored node config instead of re-parsing to avoid performance issues
         # Exclude metadata fields which are not part of proxy config
         proxy = {k: v for k, v in node.items() if k not in exclude_fields}
@@ -1507,6 +1540,8 @@ def get_all_final_node_names() -> set:
             try:
                 cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
                 for proxy in cfg.get('proxies', []):
+                    if not is_node_enabled(proxy):
+                        continue
                     transformed = NameTransformer.transform_name(proxy, sub['name'])
                     names.add(transformed.get('name', ''))
             except HTTPException:
@@ -1517,6 +1552,8 @@ def get_all_final_node_names() -> set:
 
     # Get custom nodes
     for node in config.get('custom_nodes', []):
+        if not is_node_enabled(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         names.add(transformed.get('name', ''))
 
