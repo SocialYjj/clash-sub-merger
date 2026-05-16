@@ -2,6 +2,7 @@ import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
 import request from './utils/request';
+import { copyToClipboard } from './utils/clipboard';
 
 // Components (keep these as regular imports since they're small and used frequently)
 import Layout from './components/Layout';
@@ -341,7 +342,10 @@ export default function App() {
       const res = await request.get(`${API_BASE}/users/${user.id}`);
       let url = `${window.location.origin}/sub?token=${res.data.user.token}`;
       url += `&format=${format}`;
-      navigator.clipboard.writeText(url);
+      const copied = await copyToClipboard(url);
+      if (!copied) {
+        throw new Error('clipboard unavailable');
+      }
       setFormatSelectorUser(null);
       showToast('订阅地址已复制');
     } catch (err) {

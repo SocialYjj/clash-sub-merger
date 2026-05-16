@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, RefreshCw, Server } from 'lucide-react';
 import request from '../utils/request';
+import { copyToClipboard } from '../utils/clipboard';
 import SubscriptionCard from '../components/SubscriptionCard';
 import AddSubscriptionModal from '../components/AddSubscriptionModal';
 import EditSubscriptionModal from '../components/EditSubscriptionModal';
@@ -83,9 +84,9 @@ export default function Subscriptions({
     setDragOverItem(null);
   };
 
-  const copyUrl = (url) => {
-    navigator.clipboard.writeText(url);
-    showToast?.('订阅地址已复制');
+  const copyUrl = async (url) => {
+    const copied = await copyToClipboard(url);
+    showToast?.(copied ? '订阅地址已复制' : '复制失败', copied ? 'success' : 'error');
   };
 
   return (

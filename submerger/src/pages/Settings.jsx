@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Key, Globe, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
 import request from '../utils/request';
+import { copyToClipboard } from '../utils/clipboard';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
 
@@ -237,8 +238,8 @@ const AdminTokenSection = ({ showToast }) => {
       showToast?.('Token 已重新生成');
       fetchData();
       // Copy new token to clipboard
-      navigator.clipboard.writeText(res.data.token);
-      showToast?.('新 Token 已复制到剪贴板');
+      const copied = await copyToClipboard(res.data.token);
+      showToast?.(copied ? '新 Token 已复制到剪贴板' : 'Token 已重新生成，请手动复制');
     } catch (err) {
       showToast?.('重新生成失败', 'error');
     }
@@ -251,7 +252,10 @@ const AdminTokenSection = ({ showToast }) => {
       const fullToken = res.data.token.token;
       let url = `${window.location.origin}/sub?token=${fullToken}`;
       url += `&format=${format}`;
-      navigator.clipboard.writeText(url);
+      const copied = await copyToClipboard(url);
+      if (!copied) {
+        throw new Error('clipboard unavailable');
+      }
       setCopiedId(tokenId);
       setShowFormatSelector(null);
       setTimeout(() => setCopiedId(null), 2000);
@@ -1056,11 +1060,15 @@ export default function Settings({
     setDeleteApiConfirm(null);
   };
 
-  const copySubUrl = () => {
+  const copySubUrl = async () => {
     const url = `${window.location.origin}/sub?token=${subToken}`;
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const copied = await copyToClipboard(url);
+    if (copied) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      showToast('复制失败', 'error');
+    }
   };
 
   const formatFileSize = (bytes) => {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileCode, Upload, RotateCcw, Plus, Trash2, Edit3, Copy, X, Info } from 'lucide-react';
 import request from '../utils/request';
+import { copyToClipboard } from '../utils/clipboard';
 
 const API_BASE = '/api';
 
@@ -248,9 +249,9 @@ export default function Templates({ showToast }) {
     }
   };
 
-  const copyTemplateId = (id) => {
-    navigator.clipboard.writeText(id);
-    showToast?.('模版 ID 已复制');
+  const copyTemplateId = async (id) => {
+    const copied = await copyToClipboard(id);
+    showToast?.(copied ? '模版 ID 已复制' : '复制失败', copied ? 'success' : 'error');
   };
 
   const formatDate = (timestamp) => {

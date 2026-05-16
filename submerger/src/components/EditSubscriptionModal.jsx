@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, FileText } from 'lucide-react';
 import request from '../utils/request';
+import { copyToClipboard } from '../utils/clipboard';
 
 const API_BASE = '/api';
 
@@ -85,9 +86,9 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
         }
     };
 
-    const copyUrl = (url) => {
-        navigator.clipboard.writeText(url);
-        showToast?.('订阅地址已复制');
+    const copyUrl = async (url) => {
+        const copied = await copyToClipboard(url);
+        showToast?.(copied ? '订阅地址已复制' : '复制失败', copied ? 'success' : 'error');
     };
 
     return (
