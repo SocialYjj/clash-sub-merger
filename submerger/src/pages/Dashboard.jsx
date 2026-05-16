@@ -36,8 +36,9 @@ const StatCard = ({ title, value, subtext, icon: Icon, color, gradient }) => (
   </div>
 );
 
-export default function Dashboard() {
+export default function Dashboard({ showToast }) {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [overview, setOverview] = useState({
     subscriptions: { total: 0, active: 0 },
     nodes: { total: 0, by_protocol: {} },
@@ -47,21 +48,31 @@ export default function Dashboard() {
   const [countryStats, setCountryStats] = useState([]);
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    fetchData(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = async (signal) => {
+    setLoadError('');
     try {
       const [overviewRes, countryRes] = await Promise.all([
-        request.get(`${API_BASE}/stats/overview`),
-        request.get(`${API_BASE}/stats/nodes-by-country`)
+        request.get(`${API_BASE}/stats/overview`, { signal }),
+        request.get(`${API_BASE}/stats/nodes-by-country`, { signal })
       ]);
+      if (signal?.aborted) return;
       setOverview(overviewRes.data);
       setCountryStats(countryRes.data.countries || []);
     } catch (err) {
+      if (signal?.aborted || err.name === 'CanceledError' || err.code === 'ERR_CANCELED') return;
       console.error('Failed to fetch dashboard data', err);
+      const message = err.response?.data?.detail || err.message || '未知错误';
+      setLoadError(`仪表盘数据加载失败: ${message}`);
+      showToast?.(`仪表盘数据加载失败: ${message}`, 'error');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 
@@ -100,6 +111,12 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {loadError}
+        </div>
+      )}
 
       {/* Top Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

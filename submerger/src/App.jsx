@@ -1,7 +1,7 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
-import request from './utils/request';
+import request, { isRequestCanceled } from './utils/request';
 import { copyToClipboard } from './utils/clipboard';
 
 // Components (keep these as regular imports since they're small and used frequently)
@@ -139,25 +139,33 @@ export default function App() {
     setConfirmModal({ open: true, title, message, type, onConfirm });
   };
 
+  const getErrorMessage = (err, fallback) => (
+    err.response?.data?.detail || err.message || fallback
+  );
+
   const closeConfirm = () => {
     setConfirmModal({ open: false, title: '', message: '', type: 'warning', onConfirm: null });
   };
 
   // Check auth status on mount
   useEffect(() => {
-    checkAuthStatus();
+    const controller = new AbortController();
+    checkAuthStatus(controller.signal);
+    return () => controller.abort();
   }, []);
 
   // Fetch data when logged in
   useEffect(() => {
-    if (isLoggedIn) {
-      fetchAllData();
-    }
+    if (!isLoggedIn) return;
+    const controller = new AbortController();
+    fetchAllData(controller.signal);
+    return () => controller.abort();
   }, [isLoggedIn]);
 
-  const checkAuthStatus = async () => {
+  const checkAuthStatus = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/auth/status`);
+      const res = await request.get(`${API_BASE}/auth/status`, { signal });
+      if (signal?.aborted) return;
       setHasPassword(res.data.has_password);
       setSubToken(res.data.sub_token || '');
       setSubFilename(res.data.sub_filename || 'config.yaml');
@@ -166,16 +174,21 @@ export default function App() {
       const session = localStorage.getItem('session');
       if (session && res.data.has_password) {
         try {
-          await request.get(`${API_BASE}/subscriptions`);
+          await request.get(`${API_BASE}/subscriptions`, { signal });
+          if (signal?.aborted) return;
           setIsLoggedIn(true);
-        } catch {
+        } catch (err) {
+          if (signal?.aborted || isRequestCanceled(err)) return;
           localStorage.removeItem('session');
         }
       }
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Auth check failed', err);
     } finally {
-      setAuthLoading(false);
+      if (!signal?.aborted) {
+        setAuthLoading(false);
+      }
     }
   };
 
@@ -201,38 +214,47 @@ export default function App() {
     setIsLoggedIn(false);
   };
 
-  const fetchAllData = async () => {
+  const fetchAllData = async (signal) => {
     await Promise.all([
-      fetchSubscriptions(),
-      fetchCustomNodes(),
-      fetchUsers(),
+      fetchSubscriptions(signal),
+      fetchCustomNodes(signal),
+      fetchUsers(signal),
     ]);
   };
 
-  const fetchSubscriptions = async () => {
+  const fetchSubscriptions = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/subscriptions`);
+      const res = await request.get(`${API_BASE}/subscriptions`, { signal });
+      if (signal?.aborted) return;
       setSubscriptions(res.data.subscriptions || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch subscriptions', err);
+      showToast(`订阅列表加载失败: ${getErrorMessage(err, '未知错误')}`, 'error');
     }
   };
 
-  const fetchCustomNodes = async () => {
+  const fetchCustomNodes = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/custom-nodes`);
+      const res = await request.get(`${API_BASE}/custom-nodes`, { signal });
+      if (signal?.aborted) return;
       setCustomNodes(res.data.nodes || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch custom nodes', err);
+      showToast(`自建节点加载失败: ${getErrorMessage(err, '未知错误')}`, 'error');
     }
   };
 
-  const fetchUsers = async () => {
+  const fetchUsers = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/users`);
+      const res = await request.get(`${API_BASE}/users`, { signal });
+      if (signal?.aborted) return;
       setUsers(res.data.users || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch users', err);
+      showToast(`用户列表加载失败: ${getErrorMessage(err, '未知错误')}`, 'error');
     }
   };
 
@@ -442,7 +464,7 @@ export default function App() {
         }>
           <Routes>
             <Route path="/" element={
-              <Dashboard subscriptions={subscriptions} customNodes={customNodes} />
+              <Dashboard subscriptions={subscriptions} customNodes={customNodes} showToast={showToast} />
             } />
             <Route path="/subscriptions" element={
               <Subscriptions

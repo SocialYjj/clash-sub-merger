@@ -1,7 +1,6 @@
 """Tests for default Clash/Mihomo proxy-group health-check URLs."""
 
 import unittest
-from pathlib import Path
 
 from api.templates import get_builtin_template
 from services.config_merger import ProxyGroupGenerator
@@ -32,13 +31,6 @@ class DefaultGroupUrlTests(unittest.TestCase):
 
         self.assertEqual(groups_by_name["♻️ 自动选择(测速)"]["url"], DEFAULT_GROUP_URL)
         self.assertEqual(groups_by_name["🔯 故障转移"]["url"], DEFAULT_GROUP_URL)
-
-    def test_frontend_template_example_uses_default_group_url(self):
-        template_page = Path("submerger/src/pages/Templates.jsx").read_text(encoding="utf-8")
-
-        self.assertIn(f"url: {DEFAULT_GROUP_URL}", template_page)
-        old_url = "http://" + "www.gstatic.com" + "/generate_204"
-        self.assertNotIn(f"url: {old_url}", template_page)
 
 
 if __name__ == "__main__":

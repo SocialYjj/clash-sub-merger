@@ -9,8 +9,8 @@ SubMerger 的前端部分，基于 React 19 和 Vite 构建的现代化单页应
 - **路由管理**: [React Router v7](https://reactrouter.com/)
 - **样式方案**: [TailwindCSS](https://tailwindcss.com/)
 - **图标库**: [Lucide React](https://lucide.dev/)
-- **数据可视化**: [ECharts](https://echarts.apache.org/) & [Recharts](https://recharts.org/)
-- **拖拽排序**: [dnd-kit](https://dndkit.com/)
+- **数据可视化**: [ECharts](https://echarts.apache.org/)
+- **拖拽排序**: 原生 HTML5 Drag and Drop
 - **网络请求**: [Axios](https://axios-http.com/)
 
 ## 📂 项目结构

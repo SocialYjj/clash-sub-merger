@@ -1,9 +1,6 @@
 """
 Services module - Business logic layer
 """
-# HTTP Client
-from .http_client import http_client, close_http_client
-
 # Backup
 from .backup import (
     create_backup,
@@ -48,9 +45,6 @@ from .country_data import (
 )
 
 __all__ = [
-    # HTTP Client
-    'http_client',
-    'close_http_client',
     # Backup
     'create_backup',
     'cleanup_old_backups',

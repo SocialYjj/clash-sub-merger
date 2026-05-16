@@ -7,6 +7,15 @@ const RETRY_CONFIG = {
   retryableStatuses: [408, 429, 500, 502, 503, 504],
 };
 
+let authRedirecting = false;
+
+const isRequestCanceled = (error) => (
+  error?.name === 'CanceledError' ||
+  error?.name === 'AbortError' ||
+  error?.code === 'ERR_CANCELED' ||
+  error?.message === 'canceled'
+);
+
 // Create axios instance with retry logic
 const request = axios.create({
   timeout: 30000,
@@ -29,11 +38,20 @@ request.interceptors.response.use(
   async error => {
     const config = error.config;
 
+    if (isRequestCanceled(error)) {
+      return Promise.reject(error);
+    }
+
     // Handle 401 unauthorized
     if (error.response?.status === 401) {
-      localStorage.removeItem('session');
-      window.location.reload();
-      return Promise.reject(error);
+      if (!authRedirecting) {
+        authRedirecting = true;
+        localStorage.removeItem('session');
+        window.location.reload();
+      }
+      // The page is unloading. Keep this request pending so callers do not
+      // emit noisy "Uncaught (in promise)" warnings during reload.
+      return new Promise(() => {});
     }
 
     // Check if we should retry
@@ -65,4 +83,4 @@ request.interceptors.response.use(
 export default request;
 
 // Export retry config for customization
-export { RETRY_CONFIG };
+export { RETRY_CONFIG, isRequestCanceled };

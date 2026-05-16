@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Copy, Check, FileText } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 
 const API_BASE = '/api';
@@ -12,6 +12,7 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
     const [editContent, setEditContent] = useState('');
     const [loading, setLoading] = useState(false);
     const [parseResult, setParseResult] = useState(null);
+    const previewRequestSeq = useRef(0);
 
     const isLocal = sub?.type === 'local';
 
@@ -27,24 +28,36 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
     // Preview parsing for local subscriptions
     useEffect(() => {
         if (!isLocal || !editContent.trim()) {
+            previewRequestSeq.current += 1;
             setParseResult(null);
             return;
         }
 
+        const controller = new AbortController();
+        const requestId = ++previewRequestSeq.current;
         const timer = setTimeout(async () => {
             try {
                 const res = await request.post(`${API_BASE}/subscriptions/parse-preview`, {
                     name: editName || 'preview',
                     content: editContent
-                });
-                setParseResult(res.data);
+                }, { signal: controller.signal });
+                if (!controller.signal.aborted && requestId === previewRequestSeq.current) {
+                    setParseResult(res.data);
+                }
             } catch (e) {
-                setParseResult({ status: 'error', error: e.message, node_count: 0 });
+                if (controller.signal.aborted || isRequestCanceled(e)) return;
+                if (requestId === previewRequestSeq.current) {
+                    setParseResult({ status: 'error', error: e.message, node_count: 0 });
+                }
             }
         }, 500);
 
-        return () => clearTimeout(timer);
-    }, [editContent, isLocal]);
+        return () => {
+            clearTimeout(timer);
+            controller.abort();
+            previewRequestSeq.current += 1;
+        };
+    }, [editContent, editName, isLocal]);
 
     const saveEdit = async () => {
         if (!sub || !editName.trim()) return;

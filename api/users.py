@@ -5,11 +5,15 @@ User management endpoints
 import time
 from typing import Optional, Dict, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
-from core.security import generate_token
+from core.token_utils import (
+    ensure_subscription_token_unique,
+    generate_unique_subscription_token,
+    normalize_custom_subscription_token,
+)
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
 
@@ -34,7 +38,8 @@ class CreateUser(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     expire_time: Optional[int] = Field(0, ge=0)
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if '/' in v or '\\' in v or '..' in v:
             raise ValueError('Name contains invalid characters')
@@ -49,7 +54,8 @@ class UpdateUser(BaseModel):
     sub_name: Optional[str] = Field(None, max_length=100)
     sub_filename: Optional[str] = Field(None, max_length=100)
     
-    @validator('name', 'sub_name', 'sub_filename')
+    @field_validator('name', 'sub_name', 'sub_filename')
+    @classmethod
     def validate_names(cls, v):
         if v and ('/' in v or '\\' in v or '..' in v):
             raise ValueError('Name contains invalid characters')
@@ -100,7 +106,7 @@ def create_user(data: CreateUser, _: bool = Depends(verify_session)):
         user = {
             'id': user_id,
             'name': data.name,
-            'token': generate_token(),
+            'token': generate_unique_subscription_token(config),
             'enabled': True,
             'expire_time': data.expire_time,
             'created_at': int(time.time()),
@@ -167,10 +173,18 @@ def regenerate_user_token(user_id: str, data: RegenerateTokenRequest = None, _: 
     def regenerate_token(config: dict) -> str:
         for user in config.get('users', []):
             if user['id'] == user_id:
-                if data and data.custom_token and len(data.custom_token.strip()) >= 8:
-                    user['token'] = data.custom_token.strip()
+                custom_token = normalize_custom_subscription_token(data.custom_token if data else None)
+                if custom_token:
+                    user['token'] = ensure_subscription_token_unique(
+                        config,
+                        custom_token,
+                        exclude_user_id=user_id,
+                    )
                 else:
-                    user['token'] = generate_token()
+                    user['token'] = generate_unique_subscription_token(
+                        config,
+                        exclude_user_id=user_id,
+                    )
                 return user['token']
 
         raise HTTPException(status_code=404, detail="User not found")

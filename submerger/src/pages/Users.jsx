@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
 import UserConfigEditor from '../components/UserConfigEditor';
 
@@ -15,17 +15,23 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetchTemplates();
+    const controller = new AbortController();
+    fetchTemplates(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchTemplates = async () => {
+  const fetchTemplates = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`, { signal });
+      if (signal?.aborted) return;
       setTemplates(res.data.templates || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch templates', err);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 
@@ -275,19 +281,23 @@ const AllocationModal = ({ user, onClose, showToast }) => {
   const [expandedSubs, setExpandedSubs] = useState({});
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    fetchData(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = async (signal) => {
     try {
       const [nodesRes, allocRes] = await Promise.all([
-        request.get(`${API_BASE}/available-nodes`),
-        request.get(`${API_BASE}/users/${user.id}/allocations`)
+        request.get(`${API_BASE}/available-nodes`, { signal }),
+        request.get(`${API_BASE}/users/${user.id}/allocations`, { signal })
       ]);
+      if (signal?.aborted) return;
       setSources(nodesRes.data.sources);
       setAllocations(allocRes.data.allocations || {});
       setLoading(false);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       showToast('加载数据失败', 'error');
       onClose();
     }
@@ -502,14 +512,18 @@ export default function Users({
 
   // Load templates on mount
   useEffect(() => {
-    fetchTemplates();
+    const controller = new AbortController();
+    fetchTemplates(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchTemplates = async () => {
+  const fetchTemplates = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`, { signal });
+      if (signal?.aborted) return;
       setTemplates(res.data.templates || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch templates', err);
     }
   };

@@ -2,7 +2,9 @@
 
 import copy
 import logging
+import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,7 +13,7 @@ from services.subscription_output import create_subscription_output_router
 
 
 class SubscriptionOutputRouterTest(unittest.TestCase):
-    def make_client(self, config):
+    def make_client(self, config, *, yaml_source_dir="/tmp/nonexistent-sub-output-tests", fetch_subscription_async=None):
         app = FastAPI()
 
         def load_config():
@@ -22,8 +24,8 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             return result
 
         app.include_router(create_subscription_output_router(
-            yaml_source_dir="/tmp/nonexistent-sub-output-tests",
-            output_file="/tmp/nonexistent-sub-output-tests/config.yaml",
+            yaml_source_dir=yaml_source_dir,
+            output_file=str(Path(yaml_source_dir) / "config.yaml"),
             load_config=load_config,
             update_config=update_config,
             fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
@@ -34,6 +36,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             extract_country_from_name=lambda *args, **kwargs: None,
             split_template=lambda content: (content, ""),
             logger=logging.getLogger("test.subscription_output"),
+            fetch_subscription_async=fetch_subscription_async,
         ))
         return TestClient(app)
 
@@ -64,3 +67,42 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "No enabled subscriptions or custom nodes")
+
+    def test_missing_subscription_auto_refresh_uses_async_fetcher(self):
+        calls = []
+
+        async def async_fetch(url, proxy_node=None, force_proxy=False):
+            calls.append((url, proxy_node, force_proxy))
+            return (
+                "proxies:\n"
+                "  - name: Test Node\n"
+                "    type: http\n"
+                "    server: 127.0.0.1\n"
+                "    port: 8080\n",
+                {"upload": 1, "download": 2, "total": 3, "expire": 4},
+                1,
+            )
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            config = {
+                "auth": {"sub_token": "admin-token", "sub_name": "Aggregated"},
+                "subscriptions": [{
+                    "id": "sub_demo",
+                    "name": "Demo",
+                    "url": "https://example.test/sub",
+                    "enabled": True,
+                }],
+                "custom_nodes": [],
+                "users": [],
+                "admin_tokens": [],
+                "proxy_chains": [],
+            }
+            client = self.make_client(config, yaml_source_dir=tempdir, fetch_subscription_async=async_fetch)
+
+            response = client.get("/sub?token=admin-token&format=yaml")
+
+            self.assertEqual(calls, [("https://example.test/sub", {}, False)])
+            self.assertEqual(config["subscriptions"][0]["update_status"], "success")
+            self.assertTrue((Path(tempdir) / "sub_demo.yaml").exists())
+            self.assertNotEqual(response.status_code, 500)
+            self.assertNotIn("_source_id", response.text)

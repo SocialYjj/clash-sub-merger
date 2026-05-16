@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Loader2, RotateCcw } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import GroupCard from './GroupCard';
 import NodeSelector from './NodeSelector';
 
@@ -20,7 +20,9 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
 
   // Load user's or admin token's group configuration
   useEffect(() => {
-    loadGroupConfig();
+    const controller = new AbortController();
+    loadGroupConfig(controller.signal);
+    return () => controller.abort();
   }, [user.id]);
 
   // Update YAML preview when groupConfig changes (real-time)
@@ -30,10 +32,11 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
     }
   }, [groupConfig, groups, loading]);
 
-  const loadGroupConfig = async () => {
+  const loadGroupConfig = async (signal) => {
     try {
       setLoading(true);
-      const response = await request.get(`${apiBasePath}/group-config`);
+      const response = await request.get(`${apiBasePath}/group-config`, { signal });
+      if (signal?.aborted) return;
       const data = response.data;
       
       setTemplateId(data.template_id);
@@ -49,11 +52,14 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
       });
       setGroupConfig(initialConfig);
       
-      setLoading(false);
     } catch (error) {
+      if (signal?.aborted || isRequestCanceled(error)) return;
       console.error('Failed to load group config:', error);
       showToast('加载配置失败', 'error');
-      setLoading(false);
+    } finally {
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 

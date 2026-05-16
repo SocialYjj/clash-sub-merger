@@ -5,14 +5,78 @@ Handles config backup, restore, and cleanup
 import os
 import json
 import shutil
+from pathlib import Path
 from datetime import datetime as dt
 from typing import Optional, List
+
+from filelock import FileLock, Timeout
 
 from core.config import AppConfig, CONFIG_FILE, BACKUP_DIR
 from core.database import load_config, save_config, invalidate_config_cache
 from logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _config_file_lock() -> FileLock:
+    """Return the same config lock used by core.database writes."""
+    return FileLock(f"{CONFIG_FILE}.lock", timeout=AppConfig.FILE_LOCK_TIMEOUT)
+
+
+def _resolve_backup_path(filename: str) -> Path:
+    """Resolve a user-supplied backup filename inside BACKUP_DIR only."""
+    if not filename or '/' in filename or '\\' in filename or filename in ('.', '..'):
+        raise ValueError("Invalid backup filename")
+
+    backup_dir = Path(BACKUP_DIR).resolve()
+    raw_backup_path = backup_dir / filename
+    if raw_backup_path.exists() and raw_backup_path.is_symlink():
+        raise ValueError("Invalid backup file")
+
+    backup_path = raw_backup_path.resolve()
+
+    if backup_path.parent != backup_dir or backup_path.name != filename:
+        raise ValueError("Invalid backup filename")
+    if not backup_path.name.startswith('config_') or backup_path.suffix != '.json':
+        raise ValueError("Invalid backup filename")
+
+    return backup_path
+
+
+def _backup_filename(reason: str) -> str:
+    timestamp = dt.now().strftime('%Y%m%d_%H%M%S_%f')
+    return f"config_{timestamp}_{reason}.json"
+
+
+def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
+    """Create a backup while the caller holds the config file lock."""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+
+    backup_filename = _backup_filename(reason)
+    backup_path = os.path.join(BACKUP_DIR, backup_filename)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    shutil.copy2(CONFIG_FILE, backup_path)
+    logger.info(f"Backup created: {backup_filename}")
+    return backup_filename
+
+
+def _atomic_restore_config_locked(config_data: dict):
+    """Atomically replace config.json while the caller holds the config lock."""
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    tmp_file = f"{CONFIG_FILE}.restore.tmp"
+    try:
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, ensure_ascii=False, indent=2)
+
+        os.replace(tmp_file, CONFIG_FILE)
+        invalidate_config_cache()
+    finally:
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except OSError:
+                logger.debug("Failed to remove restore temp file: %s", tmp_file, exc_info=True)
 
 
 def create_backup(reason: str = 'manual') -> Optional[str]:
@@ -25,20 +89,16 @@ def create_backup(reason: str = 'manual') -> Optional[str]:
     Returns:
         Backup filename or None if failed
     """
-    if not os.path.exists(CONFIG_FILE):
-        return None
-    
-    timestamp = dt.now().strftime('%Y%m%d_%H%M%S')
-    backup_filename = f"config_{timestamp}_{reason}.json"
-    backup_path = os.path.join(BACKUP_DIR, backup_filename)
-    
     try:
-        shutil.copy2(CONFIG_FILE, backup_path)
-        logger.info(f"Backup created: {backup_filename}")
+        with _config_file_lock():
+            backup_filename = _create_backup_locked(reason)
         
         cleanup_old_backups()
         
         return backup_filename
+    except Timeout:
+        logger.error("Timeout waiting for config file lock while creating backup")
+        return None
     except Exception as e:
         logger.error(f"Failed to create backup: {e}")
         return None
@@ -94,24 +154,29 @@ def restore_backup(filename: str) -> bool:
     Returns:
         True if successful
     """
-    backup_path = os.path.join(BACKUP_DIR, filename)
+    backup_path = _resolve_backup_path(filename)
     
-    if not os.path.exists(backup_path):
+    if not backup_path.exists():
         raise FileNotFoundError(f"Backup not found: {filename}")
     
-    # Validate backup file
+    # Validate and load backup file before taking the config write lock.
     try:
         with open(backup_path, 'r', encoding='utf-8') as f:
-            json.load(f)
+            backup_config = json.load(f)
     except json.JSONDecodeError:
         raise ValueError("Invalid backup file")
+    if not isinstance(backup_config, dict):
+        raise ValueError("Invalid backup file")
     
-    # Create backup before restore
-    create_backup('pre_restore')
-    
-    # Restore
-    shutil.copy2(backup_path, CONFIG_FILE)
-    invalidate_config_cache()
+    try:
+        with _config_file_lock():
+            # Create backup before restore under the same lock used for the
+            # atomic replacement, so concurrent readers/writers never observe a
+            # partially copied config file.
+            _create_backup_locked('pre_restore')
+            _atomic_restore_config_locked(backup_config)
+    except Timeout:
+        raise TimeoutError("Configuration is being updated, please try again")
     
     logger.info(f"Config restored from backup: {filename}")
     return True
@@ -119,9 +184,9 @@ def restore_backup(filename: str) -> bool:
 
 def delete_backup(filename: str) -> bool:
     """Delete a backup file"""
-    backup_path = os.path.join(BACKUP_DIR, filename)
+    backup_path = _resolve_backup_path(filename)
     
-    if not os.path.exists(backup_path):
+    if not backup_path.exists():
         raise FileNotFoundError(f"Backup not found: {filename}")
     
     os.remove(backup_path)

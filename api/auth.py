@@ -5,21 +5,24 @@ Login, logout, password management
 import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from core.config import AppConfig
 from core.database import load_config, update_config
 from core.dependencies import verify_session
 from core.security import (
     PASSWORD_MAX_LENGTH,
     PASSWORD_MIN_LENGTH,
-    generate_token,
+    generate_session_token,
     hash_password,
     needs_password_rehash,
+    session_storage_key,
     validate_password_policy,
     verify_password,
 )
+from core.token_utils import generate_unique_subscription_token
 from helpers import handle_api_errors
 from logger_config import get_logger
 
@@ -35,7 +38,8 @@ limiter = Limiter(key_func=get_remote_address)
 class SetPassword(BaseModel):
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         return validate_password_policy(v)
 
@@ -44,7 +48,8 @@ class ChangePassword(BaseModel):
     current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
-    @validator('new_password')
+    @field_validator('new_password')
+    @classmethod
     def validate_new_password(cls, v):
         return validate_password_policy(v)
 
@@ -56,7 +61,8 @@ class Login(BaseModel):
 class UpdateSubFilename(BaseModel):
     filename: str = Field(min_length=1, max_length=100)
     
-    @validator('filename')
+    @field_validator('filename')
+    @classmethod
     def validate_filename(cls, v):
         return v.strip()
 
@@ -82,20 +88,21 @@ def get_auth_status():
 
 
 @router.post("/setup")
+@limiter.limit(AppConfig.RATE_LIMIT_LOGIN)
 @handle_api_errors
-def setup_password(data: SetPassword):
+def setup_password(data: SetPassword, request: Request):
     """Initial password setup"""
     def setup_auth(config: dict):
         auth = config.setdefault('auth', {})
         if auth.get('password_hash'):
             raise HTTPException(status_code=400, detail="Password already set, use change password")
 
-        session_token = generate_token()
-        sub_token = generate_token()
+        session_token = generate_session_token()
+        sub_token = generate_unique_subscription_token(config)
         config['auth'] = {
             'password_hash': hash_password(data.password),
             'sub_token': sub_token,
-            'sessions': {session_token: time.time() + 86400}
+            'sessions': {session_storage_key(session_token): time.time() + 86400}
         }
         return session_token, sub_token
 
@@ -105,6 +112,7 @@ def setup_password(data: SetPassword):
 
 
 @router.post("/login")
+@limiter.limit(AppConfig.RATE_LIMIT_LOGIN)
 @handle_api_errors
 def login(data: Login, request: Request):
     """User login"""
@@ -120,10 +128,10 @@ def login(data: Login, request: Request):
             logger.warning("Failed login attempt from %s", client_host)
             raise HTTPException(status_code=401, detail="Wrong password")
 
-        session_token = generate_token()
+        session_token = generate_session_token()
         if needs_password_rehash(auth['password_hash']):
             auth['password_hash'] = hash_password(data.password)
-        auth.setdefault('sessions', {})[session_token] = time.time() + 86400
+        auth.setdefault('sessions', {})[session_storage_key(session_token)] = time.time() + 86400
         return session_token
 
     session_token = update_config(create_session)
@@ -141,9 +149,9 @@ def logout(authorization: Optional[str] = Header(None)):
 
     def remove_session(config: dict):
         sessions = config.get('auth', {}).get('sessions', {})
-        if authorization in sessions:
-            sessions.pop(authorization, None)
-            config.setdefault('auth', {})['sessions'] = sessions
+        sessions.pop(authorization, None)
+        sessions.pop(session_storage_key(authorization), None)
+        config.setdefault('auth', {})['sessions'] = sessions
 
     update_config(remove_session)
     return {"status": "success"}
@@ -162,9 +170,9 @@ def change_password(data: ChangePassword, _: bool = Depends(verify_session)):
         if not verify_password(data.current_password, password_hash):
             raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-        session_token = generate_token()
+        session_token = generate_session_token()
         auth['password_hash'] = hash_password(data.new_password)
-        auth['sessions'] = {session_token: time.time() + 86400}
+        auth['sessions'] = {session_storage_key(session_token): time.time() + 86400}
         return session_token
 
     session_token = update_config(change_auth_password)
@@ -178,7 +186,7 @@ def change_password(data: ChangePassword, _: bool = Depends(verify_session)):
 def regenerate_sub_token(_: bool = Depends(verify_session)):
     """Regenerate subscription token"""
     def regenerate_token(config: dict) -> str:
-        new_token = generate_token()
+        new_token = generate_unique_subscription_token(config)
         config.setdefault('auth', {})['sub_token'] = new_token
         return new_token
 

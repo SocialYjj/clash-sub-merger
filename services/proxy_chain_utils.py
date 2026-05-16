@@ -10,6 +10,17 @@ DEFAULT_GROUP_URL = "https://cp.cloudflare.com/generate_204"
 DEFAULT_GROUP_INTERVAL = 300
 DEFAULT_GROUP_TOLERANCE = 50
 DEFAULT_LOAD_BALANCE_STRATEGY = "round-robin"
+MAX_PROXY_NAME_LENGTH = 200
+
+
+def _normalize_base_name(base: str | None) -> str:
+    name = str(base or "Unnamed")
+    return name[:MAX_PROXY_NAME_LENGTH] if len(name) > MAX_PROXY_NAME_LENGTH else name
+
+
+def _name_with_suffix(base: str, suffix: str) -> str:
+    max_base_len = max(0, MAX_PROXY_NAME_LENGTH - len(suffix))
+    return f"{base[:max_base_len]}{suffix}"
 
 
 def group_id_suffix(group_id: str | None) -> str:
@@ -26,17 +37,19 @@ def group_id_suffix(group_id: str | None) -> str:
 
 def unique_name(base: str, existing_names: MutableSet[str]) -> str:
     """Return ``base`` or append ``(2)``, ``(3)`` ... while mutating the set."""
+    base = _normalize_base_name(base)
     if base not in existing_names:
         existing_names.add(base)
         return base
 
     idx = 2
-    while f"{base} ({idx})" in existing_names:
+    candidate = _name_with_suffix(base, f" ({idx})")
+    while candidate in existing_names:
         idx += 1
+        candidate = _name_with_suffix(base, f" ({idx})")
 
-    name = f"{base} ({idx})"
-    existing_names.add(name)
-    return name
+    existing_names.add(candidate)
+    return candidate
 
 
 def unique_group_name(
@@ -51,13 +64,14 @@ def unique_group_name(
     This keeps regenerated chain pool names stable across settings,
     allocation-preview, and subscription-output code paths.
     """
+    base = _normalize_base_name(base)
     if base not in existing_group_names:
         existing_group_names.add(base)
         return base
 
     suffix = group_id_suffix(group_id)
     if suffix:
-        candidate = f"{base} ({suffix})"
+        candidate = _name_with_suffix(base, f" ({suffix})")
         if candidate not in existing_group_names:
             existing_group_names.add(candidate)
             return candidate

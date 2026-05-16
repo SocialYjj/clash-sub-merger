@@ -53,8 +53,44 @@ class GeoIPConcurrencyTests(unittest.TestCase):
             self.assertFalse(Path(f"{cache_file}.tmp").exists())
             self.assertEqual(
                 json.loads(Path(cache_file).read_text(encoding="utf-8")),
-                geoip_service._online_geoip_cache,
+                {
+                    "version": geoip_service.GEOIP_CACHE_VERSION,
+                    "entries": geoip_service._online_geoip_cache,
+                },
             )
+
+    def test_cache_load_supports_versioned_entries_and_ignores_unknown_versions(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            cache_file = Path(tempdir) / "geoip_cache.json"
+            cache_file.write_text(json.dumps({
+                "version": geoip_service.GEOIP_CACHE_VERSION,
+                "entries": {
+                    "203.0.113.3:default": {
+                        "timestamp": 9999999999,
+                        "iso_code": "JP",
+                    }
+                },
+            }), encoding="utf-8")
+
+            with patch.object(geoip_service, "GEOIP_CACHE_FILE", str(cache_file)):
+                geoip_service.load_geoip_cache_from_disk()
+
+            self.assertIn("203.0.113.3:default", geoip_service._online_geoip_cache)
+
+            cache_file.write_text(json.dumps({
+                "version": geoip_service.GEOIP_CACHE_VERSION + 1,
+                "entries": {
+                    "203.0.113.4:default": {
+                        "timestamp": 9999999999,
+                        "iso_code": "US",
+                    }
+                },
+            }), encoding="utf-8")
+
+            with patch.object(geoip_service, "GEOIP_CACHE_FILE", str(cache_file)):
+                geoip_service.load_geoip_cache_from_disk()
+
+            self.assertEqual(geoip_service._online_geoip_cache, {})
 
 
 if __name__ == "__main__":

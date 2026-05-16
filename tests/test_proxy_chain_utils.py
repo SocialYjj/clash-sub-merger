@@ -1,6 +1,7 @@
 import unittest
 
 from services.proxy_chain_utils import (
+    MAX_PROXY_NAME_LENGTH,
     coerce_group_strategy,
     group_id_suffix,
     unique_group_name,
@@ -22,6 +23,16 @@ class ProxyChainUtilsTests(unittest.TestCase):
         self.assertEqual(name, "🔗 A (3)")
         self.assertIn("🔗 A (3)", existing)
 
+    def test_unique_name_keeps_numeric_suffix_within_max_length(self):
+        base = "A" * MAX_PROXY_NAME_LENGTH
+        existing = {base}
+
+        name = unique_name(base, existing)
+
+        self.assertEqual(len(name), MAX_PROXY_NAME_LENGTH)
+        self.assertTrue(name.endswith(" (2)"))
+        self.assertIn(name, existing)
+
     def test_unique_group_name_prefers_stable_group_id_suffix(self):
         existing = {"🔀 落地池"}
 
@@ -29,6 +40,16 @@ class ProxyChainUtilsTests(unittest.TestCase):
 
         self.assertEqual(name, "🔀 落地池 (e72e)")
         self.assertIn("🔀 落地池 (e72e)", existing)
+
+    def test_unique_group_name_keeps_id_suffix_within_max_length(self):
+        base = "池" * MAX_PROXY_NAME_LENGTH
+        existing = {base}
+
+        name = unique_group_name(base, existing, "grp_bb05e72e")
+
+        self.assertEqual(len(name), MAX_PROXY_NAME_LENGTH)
+        self.assertTrue(name.endswith(" (e72e)"))
+        self.assertIn(name, existing)
 
     def test_unique_group_name_falls_back_to_numeric_suffix(self):
         existing = {"🔀 落地池", "🔀 落地池 (e72e)"}

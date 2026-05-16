@@ -14,7 +14,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import yaml
 from filelock import FileLock
 
-from core.config import DATA_DIR
+from core.config import DATA_DIR, env_int
 from helpers import atomic_write_text
 from logger_config import get_logger
 from services.name_transformer import NameTransformer
@@ -22,15 +22,15 @@ from services.name_transformer import NameTransformer
 logger = get_logger(__name__)
 
 try:
-    from yaml import CLoader as YAMLLoader, CDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
 except ImportError:
-    from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
 
 REGION_HISTORY_FILE = os.path.join(DATA_DIR, 'node_region_history.json')
 REGION_HISTORY_LOCK = f"{REGION_HISTORY_FILE}.lock"
 REGION_HISTORY_VERSION = 1
-REGION_HISTORY_MAX_AGE_DAYS = int(os.environ.get('NODE_REGION_HISTORY_MAX_AGE_DAYS', '180'))
-REGION_HISTORY_MAX_ENTRIES = int(os.environ.get('NODE_REGION_HISTORY_MAX_ENTRIES', '20000'))
+REGION_HISTORY_MAX_AGE_DAYS = env_int('NODE_REGION_HISTORY_MAX_AGE_DAYS', 180, minimum=1)
+REGION_HISTORY_MAX_ENTRIES = env_int('NODE_REGION_HISTORY_MAX_ENTRIES', 20000, minimum=1)
 
 _SPACE_RE = re.compile(r'\s+')
 _NON_WORD_RE = re.compile(r'[\W_]+', re.UNICODE)
@@ -243,8 +243,8 @@ def _trim_entries(entries: Dict[str, dict]) -> Dict[str, dict]:
     for key, entry in entries.items():
         if not isinstance(entry, dict):
             continue
-        updated_at = int(entry.get('updated_at') or 0)
-        if updated_at and now - updated_at > max_age_seconds:
+        updated_at = _entry_updated_at(entry)
+        if now - updated_at > max_age_seconds:
             continue
         valid_entries[key] = entry
 
@@ -253,10 +253,27 @@ def _trim_entries(entries: Dict[str, dict]) -> Dict[str, dict]:
 
     items = sorted(
         valid_entries.items(),
-        key=lambda item: int((item[1] or {}).get('updated_at') or 0),
+        key=lambda item: _entry_updated_at(item[1] or {}),
         reverse=True,
     )
     return dict(items[:REGION_HISTORY_MAX_ENTRIES])
+
+
+def _entry_updated_at(entry: dict) -> int:
+    """
+    Resolve an entry timestamp for pruning.
+
+    Old raw history files did not always contain updated_at. Treat those rows as
+    very old instead of immortal so max-age cleanup can remove them.
+    """
+    for key in ('updated_at', 'last_seen', 'detected_at', 'created_at', 'timestamp'):
+        try:
+            value = int(entry.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return 0
 
 
 def _save_history_entries(entries: Dict[str, dict]):

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Clock } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -10,27 +10,50 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
     const [nextRun, setNextRun] = useState(null);
     const [error, setError] = useState('');
     const [saving, setSaving] = useState(false);
+    const validateCronDebounced = useRef(null);
+    const cronAbortRef = useRef(null);
 
     useEffect(() => {
+        cronAbortRef.current?.abort();
+        const controller = new AbortController();
+        cronAbortRef.current = controller;
         if (sub) {
             setCronValue(sub.cron_expr || '');
-            calculateNextRun(sub.cron_expr || '');
+            calculateNextRun(sub.cron_expr || '', controller.signal);
         }
+        return () => {
+            controller.abort();
+            if (cronAbortRef.current === controller) {
+                cronAbortRef.current = null;
+            }
+        };
     }, [sub]);
-    const validateCronDebounced = useRef(null);
 
-    const calculateNextRun = async (cron) => {
+    useEffect(() => {
+        return () => {
+            if (validateCronDebounced.current) {
+                clearTimeout(validateCronDebounced.current);
+            }
+            cronAbortRef.current?.abort();
+        };
+    }, []);
+
+    const calculateNextRun = async (cron, signal) => {
         if (!cron || !cron.trim()) {
-            setNextRun(null);
-            setError('');
+            if (!signal?.aborted) {
+                setNextRun(null);
+                setError('');
+            }
             return;
         }
 
         // Basic format check
         const parts = cron.trim().split(/\s+/);
         if (parts.length !== 5) {
-            setError('格式错误：需要5个字段 (分 时 日 月 周)');
-            setNextRun(null);
+            if (!signal?.aborted) {
+                setError('格式错误：需要5个字段 (分 时 日 月 周)');
+                setNextRun(null);
+            }
             return;
         }
 
@@ -38,8 +61,9 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
         try {
             const response = await request.post(`${API_BASE}/scheduler/validate-cron`, {
                 cron_expr: cron.trim()
-            });
+            }, { signal });
 
+            if (signal?.aborted) return;
             if (response.data.valid) {
                 setNextRun(response.data.next_run);
                 setError('');
@@ -48,6 +72,7 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
                 setNextRun(null);
             }
         } catch (e) {
+            if (signal?.aborted || isRequestCanceled(e)) return;
             // Fallback: just clear error if API fails
             setError('');
             setNextRun(null);
@@ -62,17 +87,30 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
         if (validateCronDebounced.current) {
             clearTimeout(validateCronDebounced.current);
         }
+        cronAbortRef.current?.abort();
         validateCronDebounced.current = setTimeout(() => {
-            calculateNextRun(newValue);
+            const controller = new AbortController();
+            cronAbortRef.current = controller;
+            calculateNextRun(newValue, controller.signal);
         }, 300);
     };
 
     const handleExampleClick = (expr) => {
         setCronValue(expr);
-        calculateNextRun(expr);
+        if (validateCronDebounced.current) {
+            clearTimeout(validateCronDebounced.current);
+        }
+        cronAbortRef.current?.abort();
+        const controller = new AbortController();
+        cronAbortRef.current = controller;
+        calculateNextRun(expr, controller.signal);
     };
 
     const handleClear = () => {
+        if (validateCronDebounced.current) {
+            clearTimeout(validateCronDebounced.current);
+        }
+        cronAbortRef.current?.abort();
         setCronValue('');
         setNextRun(null);
         setError('');

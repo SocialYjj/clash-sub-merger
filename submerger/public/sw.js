@@ -53,9 +53,21 @@ self.addEventListener('fetch', event => {
             });
           }
           return networkResponse;
-        }).catch(() => {
-          // Network failed, return cached response
-          return cachedResponse;
+        }).catch(async () => {
+          // Network failed: return cache if available, otherwise a real Response.
+          // respondWith() must never resolve to null/undefined.
+          if (cachedResponse) return cachedResponse;
+
+          if (request.mode === 'navigate') {
+            const fallback = await caches.match('/index.html');
+            if (fallback) return fallback;
+          }
+
+          return new Response('Offline', {
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+          });
         });
 
         // Return cached response immediately, update in background

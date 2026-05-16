@@ -6,6 +6,7 @@ import json
 import os
 import time
 import copy
+import threading
 from typing import Callable, Optional, TypeVar
 from filelock import FileLock, Timeout
 from fastapi import HTTPException
@@ -19,6 +20,7 @@ logger = get_logger(__name__)
 # Config cache for performance
 _config_cache: Optional[dict] = None
 _config_mtime: Optional[float] = None
+_config_cache_lock = threading.RLock()
 T = TypeVar("T")
 
 
@@ -72,8 +74,9 @@ def _write_config_locked(config: dict):
 
     os.replace(temp_file, CONFIG_FILE)
 
-    _config_cache = None
-    _config_mtime = None
+    with _config_cache_lock:
+        _config_cache = None
+        _config_mtime = None
 
 
 def load_config() -> dict:
@@ -88,17 +91,18 @@ def load_config() -> dict:
     
     try:
         current_mtime = os.path.getmtime(CONFIG_FILE)
-        
-        if _config_cache is not None and _config_mtime == current_mtime:
-            return copy.deepcopy(_config_cache)
-        
-        config = _load_config_from_disk()
-        
-        _config_cache = config
-        _config_mtime = current_mtime
-        
-        logger.debug("Config loaded successfully from %s", CONFIG_FILE)
-        return copy.deepcopy(config)
+
+        with _config_cache_lock:
+            if _config_cache is not None and _config_mtime == current_mtime:
+                return copy.deepcopy(_config_cache)
+
+            config = _load_config_from_disk()
+
+            _config_cache = config
+            _config_mtime = current_mtime
+
+            logger.debug("Config loaded successfully from %s", CONFIG_FILE)
+            return copy.deepcopy(config)
     except json.JSONDecodeError as e:
         logger.error("Config file is corrupted (invalid JSON): %s, error: %s", CONFIG_FILE, e)
         backup_file = f"{CONFIG_FILE}.corrupted.{int(time.time())}"
@@ -137,8 +141,9 @@ def save_config(config: dict):
 def invalidate_config_cache():
     """Invalidate config cache"""
     global _config_cache, _config_mtime
-    _config_cache = None
-    _config_mtime = None
+    with _config_cache_lock:
+        _config_cache = None
+        _config_mtime = None
 
 
 def update_config(mutator: Callable[[dict], T]) -> T:

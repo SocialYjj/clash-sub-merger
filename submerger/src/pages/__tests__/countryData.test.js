@@ -8,6 +8,8 @@ describe('country map data', () => {
     expect(COUNTRY_CHINESE_NAMES.SG).toBe('新加坡');
     expect(COUNTRY_CHINESE_NAMES.HK).toBe('中国香港');
     expect(COUNTRY_CHINESE_NAMES.TW).toBe('中国台湾');
+    expect(COUNTRY_CHINESE_NAMES.GF).toBe('法属圭亚那');
+    expect(COUNTRY_CHINESE_NAMES.RE).toBe('留尼汪');
   });
 
   it('keeps coordinates in [longitude, latitude] order', () => {
@@ -21,5 +23,7 @@ describe('country map data', () => {
     expect(COUNTRY_NAME_MAP.usa).toBe('US');
     expect(COUNTRY_NAME_MAP.uk).toBe('GB');
     expect(COUNTRY_NAME_MAP.hongkong).toBe('HK');
+    expect(COUNTRY_NAME_MAP['french guiana']).toBe('GF');
+    expect(COUNTRY_NAME_MAP['réunion']).toBe('RE');
   });
 });

@@ -6,6 +6,7 @@ import yaml
 import time
 import tempfile
 import threading
+import secrets
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Optional
@@ -13,6 +14,7 @@ from fastapi import HTTPException
 from dotenv import load_dotenv
 from logger_config import get_logger
 from core.proxy_compat import normalize_subscription_data
+from core.config import env_int
 from core import (
     cache_hits_total, cache_misses_total,
     file_operations_total, file_operation_duration_seconds
@@ -23,13 +25,15 @@ load_dotenv()
 
 logger = get_logger(__name__)
 
-# Use C-accelerated YAML loader if available for better performance
+# Use C-accelerated safe YAML loader if available for better performance.
+# Never use yaml.Loader/CLoader here: subscription YAML can come from remote
+# providers and user uploads, and unsafe loaders can instantiate Python objects.
 try:
-    from yaml import CLoader as YAMLLoader, CDumper as YAMLDumper
-    logger.info("Using C-accelerated YAML loader")
+    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
+    logger.info("Using C-accelerated safe YAML loader")
 except ImportError:
-    from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
-    logger.warning("C-accelerated YAML loader not available, using pure Python")
+    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
+    logger.warning("C-accelerated safe YAML loader not available, using pure Python")
 
 # ==================== Constants ====================
 
@@ -58,14 +62,14 @@ class Constants:
     MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10MB
     
     # Defaults
-    DEFAULT_CACHE_DURATION = int(os.getenv('CONFIG_CACHE_DURATION', '60'))
+    DEFAULT_CACHE_DURATION = env_int('CONFIG_CACHE_DURATION', 60, minimum=0)
     DEFAULT_PAGE_SIZE = 50
     SLOW_REQUEST_THRESHOLD = 1.0  # seconds
     
     # Timeouts (seconds) - configurable via .env
-    TIMEOUT_SUBSCRIPTION_FETCH = int(os.getenv('DEFAULT_TIMEOUT', '30'))
-    TIMEOUT_GEOIP_LOOKUP = int(os.getenv('HEALTH_CHECK_TIMEOUT', '10'))
-    TIMEOUT_SPEEDTEST_PROXY = int(os.getenv('SPEEDTEST_TIMEOUT', '35'))
+    TIMEOUT_SUBSCRIPTION_FETCH = env_int('DEFAULT_TIMEOUT', 30, minimum=1)
+    TIMEOUT_GEOIP_LOOKUP = env_int('GEOIP_LOOKUP_TIMEOUT', 10, minimum=1)
+    TIMEOUT_SPEEDTEST_PROXY = env_int('SPEEDTEST_TIMEOUT', 10, minimum=1)
     TIMEOUT_PROCESS_TERMINATE = 5
     
     # Default ports
@@ -155,6 +159,18 @@ def _get_yaml_file_lock(filepath: Path | str) -> threading.RLock:
         return lock
 
 
+def _looks_like_yaml_mapping(content: str) -> bool:
+    """Heuristic for rejecting malformed YAML mappings instead of treating them as URI lists."""
+    for line in (content or '').splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or stripped.startswith('-'):
+            continue
+        if '://' in stripped:
+            return False
+        return ':' in stripped
+    return False
+
+
 @contextmanager
 def subscription_yaml_lock(sub_id: str, yaml_source_dir: str):
     """Lock a subscription YAML file for a read-modify-write operation."""
@@ -232,14 +248,24 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
         
-        # Check if content is Base64 encoded or node links (legacy format)
-        if content and not content.startswith(('proxies:', 'proxy-groups:', '#')):
+        cfg = None
+        direct_yaml_error = None
+        # Prefer YAML parsing for any mapping-shaped content instead of relying
+        # on fragile startswith() heuristics. This preserves legal Clash/Mihomo
+        # files that start with sections such as mixed-port:, dns:, or rules:.
+        try:
+            cfg = yaml.load(content, Loader=YAMLLoader)
+        except yaml.YAMLError as e:
+            direct_yaml_error = e
+            logger.debug(f"Content is not direct YAML for {sub_id}: {e}")
+
+        if not isinstance(cfg, dict):
+            if direct_yaml_error and _looks_like_yaml_mapping(content):
+                raise direct_yaml_error
             # Use SubscriptionParser to handle Base64 and node links
             from services.subscription import SubscriptionParser
             logger.info(f"Parsing subscription content for {sub_id}")
             cfg = SubscriptionParser.parse_content(content)
-        else:
-            cfg = yaml.load(content, Loader=YAMLLoader)
         
         # Ensure result is a dict, not a string or other type
         if not isinstance(cfg, dict):
@@ -357,16 +383,18 @@ def update_subscription_yaml(sub_id: str, yaml_source_dir: str, mutator):
 
 def generate_timestamp_id(prefix: str = '') -> str:
     """
-    Generate timestamp-based ID
+    Generate a timestamp-prefixed ID with random entropy.
     
     Args:
         prefix: Optional prefix for the ID (e.g., 'sub_', 'node_', 'chain_')
     
     Returns:
-        Timestamp-based ID string
+        Timestamp-prefixed ID string that is safe under same-millisecond concurrency.
     """
     timestamp = int(time.time() * 1000)
-    return f"{prefix}{timestamp}" if prefix else str(timestamp)
+    suffix = secrets.token_hex(4)
+    value = f"{timestamp}_{suffix}"
+    return f"{prefix}{value}" if prefix else value
 
 
 

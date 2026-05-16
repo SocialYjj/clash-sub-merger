@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -20,6 +20,10 @@ from logger_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
+
+MAX_SPEEDTEST_TIMEOUT = 60
+MAX_SPEEDTEST_CONCURRENCY = 100
+MAX_SPEEDTEST_NODES = 500
 
 # Get YAML_SOURCE_DIR from environment or default
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,40 +45,48 @@ def _get_server():
 # ==================== Data Models ====================
 
 class SpeedTestRequest(BaseModel):
-    node_id: str
+    node_id: str = Field(..., min_length=1)
     test_speed: bool = False
-    timeout: int = 10
+    timeout: int = Field(default=10, ge=1, le=MAX_SPEEDTEST_TIMEOUT)
 
 
 class BatchSpeedTestRequest(BaseModel):
-    node_ids: List[str]
+    node_ids: List[str] = Field(..., min_length=1, max_length=MAX_SPEEDTEST_NODES)
     test_speed: bool = False
-    timeout: int = 10
-    concurrency: int = 10
+    timeout: int = Field(default=10, ge=1, le=MAX_SPEEDTEST_TIMEOUT)
+    concurrency: int = Field(default=10, ge=1, le=MAX_SPEEDTEST_CONCURRENCY)
 
 
 class SpeedTestProfile(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1)
     description: Optional[str] = ""
     subscription_ids: Optional[List[str]] = None
     test_speed: Optional[bool] = False
-    timeout: Optional[int] = 10
-    concurrency: Optional[int] = 10
+    timeout: Optional[int] = Field(default=10, ge=1, le=MAX_SPEEDTEST_TIMEOUT)
+    concurrency: Optional[int] = Field(default=10, ge=1, le=MAX_SPEEDTEST_CONCURRENCY)
 
 
 # ==================== Helper Functions ====================
 
+def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
+    """Clamp internal speedtest parameters even when helpers are called directly."""
+    try:
+        value = int(default if value is None else value)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int = 10):
     """Test a single node"""
+    timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
     srv = _get_server()
-    from speedtest_service import get_speedtest_service
     
     node = srv.get_proxy_node_by_id(node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     
-    speedtest = get_speedtest_service()
-    result = await speedtest.test_node(node, test_speed=test_speed, timeout=timeout)
+    result = await _run_go_speedtest(node, test_speed=test_speed, timeout=timeout)
     
     return {
         "node_id": node_id,
@@ -83,9 +95,93 @@ async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int
     }
 
 
+async def _go_speedtest_request(endpoint: str, payload: dict, timeout: int) -> dict:
+    """Call the bundled Go speedtest service."""
+    import aiohttp
+
+    go_port = os.environ.get('GO_SPEEDTEST_PORT', str(AppConfig.GO_SPEEDTEST_PORT))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"http://127.0.0.1:{go_port}{endpoint}",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            return await resp.json()
+
+
+async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int = 10) -> dict:
+    """Run latency/IP/speed checks against the Go service using node config directly."""
+    timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
+    timeout_ms = timeout * 1000
+    result = {
+        "node_name": node.get('name', 'Unknown'),
+        "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "latency": -1,
+        "latency_status": "untested",
+        "speed": 0,
+        "speed_status": "untested",
+        "bytes_downloaded": 0,
+    }
+
+    latency_result = await _go_speedtest_request(
+        "/api/delay",
+        {
+            "node": node,
+            "url": "https://cp.cloudflare.com/generate_204",
+            "timeout": timeout_ms,
+        },
+        timeout + 2,
+    )
+    if latency_result.get("success"):
+        result["latency"] = latency_result.get("latency", -1)
+        result["latency_status"] = "success"
+    else:
+        result["latency_status"] = "error"
+        result["error"] = latency_result.get("error", "Latency test failed")
+        return result
+
+    ip_result = await _go_speedtest_request(
+        "/api/ip",
+        {
+            "node": node,
+            "timeout": timeout_ms,
+        },
+        timeout + 2,
+    )
+    if ip_result.get("success") and ip_result.get("ip"):
+        result["landing_ip"] = ip_result.get("ip")
+
+    if test_speed:
+        speed_result = await _go_speedtest_request(
+            "/api/speed",
+            {
+                "node": node,
+                "url": "https://speed.cloudflare.com/__down?bytes=10000000",
+                "timeout": timeout,
+                "mode": "average",
+            },
+            timeout + 5,
+        )
+        if speed_result.get("success"):
+            result["speed"] = speed_result.get("speed", 0)
+            result["speed_status"] = "success"
+            result["bytes_downloaded"] = speed_result.get("bytes", 0)
+            peak_speed = speed_result.get("peakSpeed", speed_result.get("peak_speed"))
+            if peak_speed is not None:
+                result["peak_speed"] = peak_speed
+        else:
+            result["speed_status"] = "error"
+            result["error"] = speed_result.get("error", "Speed test failed")
+
+    return result
+
+
 async def _speedtest_batch(node_ids: List[str], test_speed: bool = False, timeout: int = 10, concurrency: int = 10):
     """Test multiple nodes"""
     import asyncio
+
+    timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
+    concurrency = _bounded_int(concurrency, default=10, minimum=1, maximum=MAX_SPEEDTEST_CONCURRENCY)
     
     semaphore = asyncio.Semaphore(concurrency)
     
@@ -96,8 +192,22 @@ async def _speedtest_batch(node_ids: List[str], test_speed: bool = False, timeou
             except Exception as e:
                 return {"node_id": node_id, "error": str(e)}
     
-    tasks = [test_with_semaphore(nid) for nid in node_ids]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [asyncio.create_task(test_with_semaphore(nid)) for nid in node_ids]
+    try:
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("Batch speedtest cancelled; cancelled %d pending task(s)", len(tasks))
+        raise
+
+    results = [
+        {"node_id": node_ids[idx], "error": str(result)}
+        if isinstance(result, BaseException)
+        else result
+        for idx, result in enumerate(raw_results)
+    ]
     
     return {"results": results, "count": len(results)}
 
@@ -131,7 +241,7 @@ async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depend
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
     nodes = sub_data.get('proxies', []) if sub_data else []
     
-    node_ids = [f"{sub_id}_{i}" for i in range(len(nodes))]
+    node_ids = [f"sub_{sub_id}_{i}" for i in range(len(nodes))]
     return await _speedtest_batch(node_ids, test_speed=False, timeout=10, concurrency=10)
 
 

@@ -213,12 +213,15 @@ class CountryGrouper:
         
         for proxy in proxies:
             name = proxy.get('name', '')
+            if not name:
+                continue
             server = proxy.get('server', '')
             country = CountryGrouper._country_from_region(proxy.get('region')) or CountryGrouper.identify_country(name, server)
             
             if country not in groups:
                 groups[country] = []
-            groups[country].append(name)
+            if name not in groups[country]:
+                groups[country].append(name)
         
         return groups
     

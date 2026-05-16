@@ -10,15 +10,18 @@ import atexit
 import base64  # Used for node parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
-import signal  # Used for signal handling
-from contextlib import asynccontextmanager
+import re
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-# Use C-accelerated YAML loader for better performance
+# Use C-accelerated safe YAML loader for better performance.
+# Remote subscriptions and uploaded templates must never be parsed with
+# yaml.Loader/CLoader because those loaders can construct arbitrary Python
+# objects from YAML tags.
 try:
-    from yaml import CLoader as YAMLLoader, CDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
 except ImportError:
-    from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
 from typing import Optional, Tuple, Dict, List
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -28,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from filelock import FileLock, Timeout as FileLockTimeout
 
 # Import from refactored modules
 from core import (
@@ -49,12 +53,13 @@ from helpers import (
 )
 
 # Import refactored modules
-from core.config import AppConfig as CoreAppConfig
+from core.config import AppConfig as CoreAppConfig, env_int
 from core.database import load_config, save_config, update_config, find_subscription_by_id
 from services.subscription_output import create_subscription_output_router
 
 # Import API routers
 from api import api_router
+from api.health import set_http_client as set_health_http_client
 from api.user_allocation import create_user_allocation_router
 from api.template_compat import create_template_router, split_template
 
@@ -63,57 +68,9 @@ logger = get_logger(__name__)
 
 # ==================== Application Configuration ====================
 
-class AppConfig:
-    """Centralized application configuration"""
-
-    # Directories
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-
-    # Go Speedtest Service
-    GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
-    GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
-    GO_SPEEDTEST_ENABLED = os.environ.get('GO_SPEEDTEST_ENABLED', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
-    GO_SPEEDTEST_BIN = os.environ.get('GO_SPEEDTEST_BIN', '').strip()
-
-    # Timeouts (seconds) - fine-grained control
-    DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
-    SPEEDTEST_TIMEOUT = int(os.environ.get('SPEEDTEST_TIMEOUT', '10'))
-    HEALTH_CHECK_TIMEOUT = int(os.environ.get('HEALTH_CHECK_TIMEOUT', '2'))
-    CONNECT_TIMEOUT = int(os.environ.get('CONNECT_TIMEOUT', '10'))  # Connection establishment
-    READ_TIMEOUT = int(os.environ.get('READ_TIMEOUT', '30'))  # Reading response
-    WRITE_TIMEOUT = int(os.environ.get('WRITE_TIMEOUT', '10'))  # Writing request
-
-    # Retry settings
-    MAX_RETRIES = int(os.environ.get('MAX_RETRIES', '3'))
-    RETRY_DELAY = int(os.environ.get('RETRY_DELAY', '1'))
-
-    # Cache settings
-    STATS_CACHE_DURATION = int(os.environ.get('STATS_CACHE_DURATION', '60'))
-    CONFIG_CACHE_DURATION = int(os.environ.get('CONFIG_CACHE_DURATION', '5'))
-
-    # File lock timeout
-    FILE_LOCK_TIMEOUT = int(os.environ.get('FILE_LOCK_TIMEOUT', '10'))
-
-    # Rate limiting
-    RATE_LIMIT_LOGIN = os.environ.get('RATE_LIMIT_LOGIN', '10/minute')
-    RATE_LIMIT_REFRESH_SINGLE = os.environ.get('RATE_LIMIT_REFRESH_SINGLE', '10/minute')
-    RATE_LIMIT_REFRESH_ALL = os.environ.get('RATE_LIMIT_REFRESH_ALL', '5/minute')
-    RATE_LIMIT_SPEEDTEST = os.environ.get('RATE_LIMIT_SPEEDTEST', '5/minute')
-    RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
-
-    # CORS settings
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')  # Comma-separated or *
-
-    # GZip compression threshold (bytes)
-    GZIP_MIN_SIZE = int(os.environ.get('GZIP_MIN_SIZE', '500'))
-
-    # HTTP connection pool settings
-    HTTP_MAX_KEEPALIVE = int(os.environ.get('HTTP_MAX_KEEPALIVE', '20'))
-    HTTP_MAX_CONNECTIONS = int(os.environ.get('HTTP_MAX_CONNECTIONS', '50'))
-
-    # Version
-    VERSION = CoreAppConfig.VERSION
+# Keep server.py on the canonical configuration object.  Duplicating AppConfig
+# here made environment variables drift between core and server startup paths.
+AppConfig = CoreAppConfig
 
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
@@ -130,8 +87,9 @@ app = FastAPI(
     title="Clash Config Merger API",
     description="Modern subscription aggregation management panel for Clash/Mihomo",
     version=AppConfig.VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if AppConfig.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if AppConfig.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if AppConfig.ENABLE_API_DOCS else None,
     openapi_tags=[
         {"name": "health", "description": "Health check and metrics"},
         {"name": "auth", "description": "Authentication operations"},
@@ -215,7 +173,7 @@ async def startup_event():
 
     # Start Go speedtest service
     if AppConfig.GO_SPEEDTEST_ENABLED:
-        if start_go_speedtest_service():
+        if await asyncio.to_thread(start_go_speedtest_service):
             logger.info("Go speedtest service started successfully")
         else:
             logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
@@ -423,8 +381,9 @@ http_client = httpx.AsyncClient(
         max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
         max_connections=AppConfig.HTTP_MAX_CONNECTIONS
     ),
-    verify=False  # Disable SSL verification to handle certificates with hostname mismatch
+    verify=AppConfig.HTTP_VERIFY_SSL,
 )
+set_health_http_client(http_client)
 
 # ==================== Config Helper Functions ====================
 
@@ -511,16 +470,64 @@ def is_name_allocated(name: str, allocated_nodes: list | None) -> bool:
     return False
 
 # ==================== Request Deduplication ====================
-# Track ongoing subscription refresh operations to prevent duplicates
-_ongoing_refresh_locks: Dict[str, asyncio.Lock] = {}
-_ongoing_refresh_lock = asyncio.Lock()  # Lock for accessing the locks dict
 
-async def get_refresh_lock(sub_id: str) -> asyncio.Lock:
-    """Get or create a lock for a subscription refresh operation"""
-    async with _ongoing_refresh_lock:
-        if sub_id not in _ongoing_refresh_locks:
-            _ongoing_refresh_locks[sub_id] = asyncio.Lock()
-        return _ongoing_refresh_locks[sub_id]
+class RefreshAlreadyInProgress(RuntimeError):
+    """Raised when the same subscription is already being refreshed."""
+
+
+REFRESH_LOCK_DIR = os.path.join(DATA_DIR, 'refresh_locks')
+
+
+def _refresh_lock_path(sub_id: str) -> str:
+    safe_id = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(sub_id or 'unknown'))
+    return os.path.join(REFRESH_LOCK_DIR, f'{safe_id}.lock')
+
+
+def _acquire_refresh_file_lock(sub_id: str, *, wait: bool = False) -> FileLock:
+    os.makedirs(REFRESH_LOCK_DIR, exist_ok=True)
+    timeout = AppConfig.FILE_LOCK_TIMEOUT if wait else 0
+    lock = FileLock(_refresh_lock_path(sub_id), timeout=timeout)
+    try:
+        lock.acquire()
+        return lock
+    except FileLockTimeout as exc:
+        raise RefreshAlreadyInProgress(f"Subscription {sub_id} refresh is already in progress") from exc
+
+
+@asynccontextmanager
+async def subscription_refresh_lock(sub_id: str):
+    """Async per-subscription refresh lock used by API routes."""
+    try:
+        lock = await asyncio.to_thread(_acquire_refresh_file_lock, sub_id, wait=False)
+    except RefreshAlreadyInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(lock.release)
+
+
+@asynccontextmanager
+async def subscription_refresh_wait_lock(sub_id: str):
+    """Async per-subscription refresh lock that waits briefly for auto-refresh paths."""
+    try:
+        lock = await asyncio.to_thread(_acquire_refresh_file_lock, sub_id, wait=True)
+    except RefreshAlreadyInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(lock.release)
+
+
+@contextmanager
+def subscription_refresh_lock_sync(sub_id: str):
+    """Sync per-subscription refresh lock used by scheduler jobs."""
+    lock = _acquire_refresh_file_lock(sub_id, wait=False)
+    try:
+        yield
+    finally:
+        lock.release()
 
 # ==================== Stats Cache ====================
 # Cache stats data to improve dashboard performance
@@ -620,23 +627,6 @@ def stop_go_speedtest_service():
 # Register cleanup on exit
 atexit.register(stop_go_speedtest_service)
 
-# Also handle signals for proper cleanup (only in main thread)
-def signal_handler(signum, frame):
-    """Handle termination signals to ensure Go service is stopped"""
-    logger.info("Received signal %s, stopping Go speedtest service...", signum)
-    stop_go_speedtest_service()
-    sys.exit(0)
-
-# Register signal handlers (Windows only supports SIGINT and SIGTERM)
-# Only register if running in main thread
-try:
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-except ValueError:
-    # Not in main thread, skip signal registration
-    pass
-
-
 # ==================== Scheduled Job Functions ====================
 
 def refresh_subscription_job(sub_id: str):
@@ -659,6 +649,12 @@ def refresh_subscription_job(sub_id: str):
 
         if sub.get('type') == 'local':
             logger.warning(f"Skipping scheduled refresh for local subscription {sub_id}")
+            return
+
+        try:
+            refresh_lock = _acquire_refresh_file_lock(sub_id, wait=False)
+        except RefreshAlreadyInProgress:
+            logger.info("Skipping scheduled refresh for %s because another refresh is already running", sub_id)
             return
 
         # Run the async refresh in a new event loop
@@ -724,6 +720,7 @@ def refresh_subscription_job(sub_id: str):
             update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
         finally:
             loop.close()
+            refresh_lock.release()
     except Exception as e:
         logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
 
@@ -797,7 +794,7 @@ def migrate_legacy_sub_token():
 
     # Create new admin token from legacy settings
     migrated_token = {
-        'id': generate_timestamp_id('tpl_'),
+        'id': generate_timestamp_id('adm_'),
         'name': auth.get('sub_name', '默认'),  # Use original config name
         'token': legacy_token,  # Keep the same token value for backward compatibility
         'template_id': 'builtin',
@@ -820,8 +817,8 @@ def migrate_legacy_sub_token():
         del config['auth']['sub_name']
 
     save_config(config)
-    logger.info("Legacy sub_token migrated to admin_tokens: %s...", legacy_token[:8])
-    log_migration(f"migrate_legacy_sub_token: migrated legacy token {legacy_token[:8]}...")
+    logger.info("Legacy sub_token migrated to admin_tokens")
+    log_migration("migrate_legacy_sub_token: migrated legacy token")
 
 def migrate_subscription_fields():
     """Migrate subscriptions to add missing cron_expr and next_update fields"""
@@ -981,22 +978,15 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
     if not node_name:
         return None
 
-    # 1. Check for flag emoji first (decode from name)
-    for char in node_name:
-        # Check if it's a regional indicator symbol (flag emoji)
-        if len(char) == 2 or ord(char) >= 0x1F1E6:
-            # Try to convert flag back to country code
-            code = GeoIPService.flag_to_iso(char)
-            if code and len(code) == 2:
-                return {
-                    'country': COUNTRY_NAMES.get(code, code),
-                    'country_code': code,
-                    'flag': GeoIPService.iso_to_flag(code)
-                }
-
-    # Also check for two-char flag sequences
+    # 1. Check for flag emoji first (two regional indicator symbols)
     for i in range(len(node_name) - 1):
         potential_flag = node_name[i:i+2]
+        if not (
+            len(potential_flag) == 2
+            and 0x1F1E6 <= ord(potential_flag[0]) <= 0x1F1FF
+            and 0x1F1E6 <= ord(potential_flag[1]) <= 0x1F1FF
+        ):
+            continue
         code = GeoIPService.flag_to_iso(potential_flag)
         if code and len(code) == 2:
             return {
@@ -1044,7 +1034,7 @@ def get_proxy_node_by_id(node_id: str) -> dict:
     # Check custom nodes
     if node_id.startswith('custom_'):
         try:
-            idx = int(node_id.split('_')[1])
+            idx = int(node_id.rsplit('_', 1)[1])
             custom_nodes = config.get('custom_nodes', [])
             if 0 <= idx < len(custom_nodes):
                 return custom_nodes[idx]
@@ -1055,20 +1045,34 @@ def get_proxy_node_by_id(node_id: str) -> dict:
 
     # Check subscription nodes
     if node_id.startswith('sub_'):
+        sub_id = None
         try:
-            parts = node_id.split('_')
-            sub_id = f"sub_{parts[1]}"
-            node_idx = int(parts[2])
+            node_ref, node_idx_text = node_id.rsplit('_', 1)
+            if not node_ref or node_ref == 'sub':
+                raise ValueError("missing subscription id")
+            node_idx = int(node_idx_text)
 
-            sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-            if os.path.exists(sub_file):
+            # Canonical node ids are sub_<subscription_id>_<index>. Older UI
+            # paths emitted <subscription_id>_<index> when subscription_id
+            # already started with "sub_". Support both forms so ids with
+            # underscores remain resolvable.
+            raw_sub_id = node_ref[4:] if node_ref.startswith('sub_') else node_ref
+            candidate_sub_ids = []
+            for candidate in (raw_sub_id, f"sub_{raw_sub_id}", node_ref):
+                if candidate and candidate not in candidate_sub_ids:
+                    candidate_sub_ids.append(candidate)
+
+            for sub_id in candidate_sub_ids:
+                sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
+                if not os.path.exists(sub_file):
+                    continue
                 # Use cached load for better performance
                 sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
                 proxies = sub_data.get('proxies', [])
                 if 0 <= node_idx < len(proxies):
                     return proxies[node_idx]
-                else:
-                    logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
+                logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
+                break
         except (ValueError, IndexError) as e:
             logger.warning(f"Invalid subscription node ID format: {node_id}, error: {e}")
         except yaml.YAMLError as e:
@@ -1153,7 +1157,7 @@ def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = Fa
     """
     Fetch subscription content from URL (synchronous wrapper for async call)
     """
-    import asyncio
+    _ensure_sync_context("fetch_subscription", "fetch_subscription_async")
     return asyncio.run(fetch_subscription_async(url, proxy_node, force_proxy))
 
 
@@ -1169,9 +1173,9 @@ async def fetch_subscription_async(url: str, proxy_node: dict = None, force_prox
     Returns:
         Tuple of (content, subscription_info, node_count)
     """
-    # Use FlClash User-Agent to get all nodes including anytls
-    # Format: FlClash/v{version} clash-verge Platform/{os}
-    # Priority: 1. SUBSCRIPTION_USER_AGENT env var, 2. Auto-fetch latest version
+    # Use helpers_ua to choose subscription User-Agent.
+    # SUBSCRIPTION_UA_MODE=flclash auto-generates FlClash/v{version} clash-verge Platform/{os};
+    # SUBSCRIPTION_UA_MODE=custom uses SUBSCRIPTION_CUSTOM_UA.
     from helpers_ua import get_subscription_user_agent
     user_agent = get_subscription_user_agent()
     headers = {
@@ -1226,8 +1230,17 @@ async def fetch_subscription_async(url: str, proxy_node: dict = None, force_prox
 
 def _fetch_via_proxy(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
     """Fetch subscription via speedtest service proxy (synchronous wrapper)"""
-    import asyncio
+    _ensure_sync_context("_fetch_via_proxy", "_fetch_via_proxy_async")
     return asyncio.run(_fetch_via_proxy_async(url, proxy_node))
+
+
+def _ensure_sync_context(sync_name: str, async_name: str) -> None:
+    """Prevent synchronous wrappers from being called inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(f"{sync_name}() cannot be called from an async context; use await {async_name}() instead.")
 
 
 async def _fetch_via_proxy_async(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
@@ -1298,7 +1311,7 @@ def _process_subscription_content_str(content: str) -> str:
     # If not YAML, try Base64 decode
     try:
         # Try to decode as Base64
-        padded = content + '=' * (4 - len(content) % 4)
+        padded = _pad_base64(content)
         # Ensure content is ASCII before decoding
         padded_bytes = padded.encode('ascii')
         decoded = base64.b64decode(padded_bytes).decode('utf-8', errors='ignore').strip()
@@ -1329,9 +1342,7 @@ def _process_subscription_content_str(content: str) -> str:
 
         if proxies:
             # Convert to YAML format
-            # Use Python Dumper to ensure allow_unicode works correctly
-            from yaml import Dumper as PyDumper
-            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=PyDumper)
+            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
             logger.debug(f"Parsed {len(proxies)} nodes from Base64 URI list")
             return yaml_content
     except base64.binascii.Error as e:
@@ -1356,9 +1367,7 @@ def _process_subscription_content_str(content: str) -> str:
             proxies.append(proxy)
 
     if proxies:
-        # Use Python Dumper to ensure allow_unicode works correctly
-        from yaml import Dumper as PyDumper
-        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=PyDumper)
+        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
         return yaml_content
 
     # If all parsing failed, return original content
@@ -1379,6 +1388,12 @@ def _count_nodes(content: str) -> int:
         logger.warning(f"Error counting nodes: {e}")
     return 0
 
+
+def _pad_base64(value: str) -> str:
+    """Add only the Base64 padding that is actually missing."""
+    return value + '=' * (-len(value) % 4)
+
+
 def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     """
     Parse local subscription content.
@@ -1392,7 +1407,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     # Try Base64 decode
     try:
         # Remove possible padding issues
-        padded = original_content + '=' * (4 - len(original_content) % 4)
+        padded = _pad_base64(original_content)
         decoded = base64.b64decode(padded).decode('utf-8')
         decoded_content = decoded.strip()
         logger.debug("Successfully decoded Base64 content")
@@ -1524,6 +1539,7 @@ app.include_router(create_subscription_output_router(
     load_config=load_config,
     update_config=update_config,
     fetch_subscription=fetch_subscription,
+    fetch_subscription_async=fetch_subscription_async,
     get_configured_proxy_node=get_configured_proxy_node,
     find_node_by_reference=find_node_by_reference,
     is_name_allocated=is_name_allocated,
@@ -1531,6 +1547,7 @@ app.include_router(create_subscription_output_router(
     extract_country_from_name=extract_country_from_name,
     split_template=split_template,
     logger=logger,
+    subscription_refresh_lock=subscription_refresh_wait_lock,
 ))
 app.include_router(create_template_router(
     yaml_source_dir=YAML_SOURCE_DIR,
@@ -1615,7 +1632,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Get configuration from environment variables
-    port = int(os.getenv('PORT', '8666'))
+    port = env_int('PORT', 8666, minimum=1, maximum=65535)
     host = os.getenv('HOST', '0.0.0.0')
 
     logger.info(f"Starting server on {host}:{port}")

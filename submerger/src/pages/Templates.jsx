@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileCode, Upload, RotateCcw, Plus, Trash2, Edit3, Copy, X, Info } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 
 const API_BASE = '/api';
@@ -67,19 +67,25 @@ export default function Templates({ showToast }) {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {
-    fetchTemplates();
+    const controller = new AbortController();
+    fetchTemplates(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchTemplates = async () => {
+  const fetchTemplates = async (signal) => {
     setLoading(true);
     try {
-      const res = await request.get(`${API_BASE}/templates`);
+      const res = await request.get(`${API_BASE}/templates`, { signal });
+      if (signal?.aborted) return;
       setTemplates(res.data.templates || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch templates', err);
       showToast?.('加载模版列表失败', 'error');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 

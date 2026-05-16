@@ -46,16 +46,20 @@ export default function Sidebar({ collapsed, setCollapsed }) {
 
   // Fetch version from API
   useEffect(() => {
-    fetch('/health')
+    const controller = new AbortController();
+    fetch('/health', { signal: controller.signal })
       .then(res => res.json())
       .then(data => {
+        if (controller.signal.aborted) return;
         if (data.version) {
           setVersion(data.version);
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        if (controller.signal.aborted || err.name === 'AbortError') return;
         setVersion('3.2.0');
       });
+    return () => controller.abort();
   }, []);
 
   const NavItem = ({ item }) => {

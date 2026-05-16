@@ -8,6 +8,12 @@ const path = require('path');
 // Read VERSION file
 const versionFile = path.join(__dirname, '../../VERSION');
 const version = fs.readFileSync(versionFile, 'utf-8').trim();
+const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+if (!semverPattern.test(version)) {
+  console.error(`✗ Invalid VERSION value: "${version}". Expected semantic version like 4.0.3`);
+  process.exit(1);
+}
 
 console.log(`Syncing version: ${version}`);
 

@@ -99,6 +99,8 @@ def restore_from_backup(filename: str, _: bool = Depends(verify_session)):
         raise HTTPException(status_code=404, detail="Backup not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to restore backup: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,6 +114,8 @@ def delete_backup_file(filename: str, _: bool = Depends(verify_session)):
         return {"status": "success"}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Backup not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete backup: {e}")
         raise HTTPException(status_code=500, detail=str(e))

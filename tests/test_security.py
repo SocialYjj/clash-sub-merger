@@ -96,6 +96,26 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(security.verify_password("NewPass123", config["auth"]["password_hash"]))
         self.assertFalse(security.verify_password("OldPass123", config["auth"]["password_hash"]))
 
+    def test_new_sessions_are_stored_hashed_at_rest(self):
+        auth_api.limiter.reset()
+        config = {"auth": {"password_hash": security.hash_password("Correct123"), "sessions": {}}}
+
+        def update_config(mutator):
+            return mutator(config)
+
+        app = FastAPI()
+        app.state.limiter = auth_api.limiter
+        app.include_router(auth_api.router, prefix="/api/auth")
+        client = TestClient(app)
+
+        with patch.object(auth_api, "update_config", side_effect=update_config):
+            response = client.post("/api/auth/login", json={"password": "Correct123"})
+
+        self.assertEqual(response.status_code, 200)
+        session = response.json()["session"]
+        self.assertNotIn(session, config["auth"]["sessions"])
+        self.assertIn(security.session_storage_key(session), config["auth"]["sessions"])
+
 
 if __name__ == "__main__":
     unittest.main()

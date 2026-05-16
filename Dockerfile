@@ -40,6 +40,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+# Run the application as an unprivileged user in the final image.
+RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin appuser
+
 # Install Python dependencies (separate layer for better caching)
 COPY requirements.txt ./
 RUN uv pip install --system --no-cache -r requirements.txt
@@ -69,11 +72,12 @@ mkdir -p /app/data/uploads /app/data/logs /app/data/backups\n\
 # Start services\n\
 /app/speedtest &\n\
 exec python server.py' > /app/start.sh \
-    && chmod +x /app/start.sh
+    && chmod +x /app/start.sh \
+    && chown -R appuser:appuser /app
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8666/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8666/health', timeout=5)" || exit 1
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -83,6 +87,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Expose port
 EXPOSE 8666
+
+USER appuser
 
 # Start both services
 CMD ["/app/start.sh"]

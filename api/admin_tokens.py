@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
-from core.security import generate_token
+from core.token_utils import (
+    ensure_subscription_token_unique,
+    generate_unique_subscription_token,
+    normalize_custom_subscription_token,
+)
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
 
@@ -22,6 +26,7 @@ router = APIRouter()
 class CreateAdminToken(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     template_id: str = "builtin"
+    custom_token: Optional[str] = None
     sub_filename: Optional[str] = ""
     sub_name: Optional[str] = ""
 
@@ -76,11 +81,17 @@ def create_admin_token(data: CreateAdminToken, _: bool = Depends(verify_session)
             if not any(t['id'] == data.template_id for t in templates):
                 raise HTTPException(status_code=400, detail="Template not found")
 
-        token_id = generate_timestamp_id('tpl_')
+        token_value = normalize_custom_subscription_token(data.custom_token)
+        if token_value:
+            ensure_subscription_token_unique(config, token_value)
+        else:
+            token_value = generate_unique_subscription_token(config)
+
+        token_id = generate_timestamp_id('adm_')
         token = {
             'id': token_id,
             'name': data.name,
-            'token': generate_token(),
+            'token': token_value,
             'template_id': data.template_id,
             'sub_filename': data.sub_filename,
             'sub_name': data.sub_name,
@@ -144,10 +155,18 @@ def regenerate_admin_token(token_id: str, data: RegenerateAdminTokenRequest = No
     def regenerate_token(config: dict) -> str:
         for token in config.get('admin_tokens', []):
             if token['id'] == token_id:
-                if data and data.custom_token and len(data.custom_token.strip()) >= 8:
-                    token['token'] = data.custom_token.strip()
+                custom_token = normalize_custom_subscription_token(data.custom_token if data else None)
+                if custom_token:
+                    token['token'] = ensure_subscription_token_unique(
+                        config,
+                        custom_token,
+                        exclude_admin_id=token_id,
+                    )
                 else:
-                    token['token'] = generate_token()
+                    token['token'] = generate_unique_subscription_token(
+                        config,
+                        exclude_admin_id=token_id,
+                    )
                 return token['token']
 
         raise HTTPException(status_code=404, detail="Token not found")

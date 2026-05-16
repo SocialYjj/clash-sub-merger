@@ -4,9 +4,10 @@ Subscription management endpoints
 """
 import time
 from typing import Optional, List
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, HttpUrl, Field, validator
+from pydantic import BaseModel, HttpUrl, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -52,7 +53,8 @@ class AddSubscription(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url: HttpUrl
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if '/' in v or '\\' in v or '..' in v:
             raise ValueError('Name contains invalid characters')
@@ -63,7 +65,8 @@ class AddLocalSubscription(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     content: str = Field(min_length=1, max_length=10*1024*1024)
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if '/' in v or '\\' in v or '..' in v:
             raise ValueError('Name contains invalid characters')
@@ -74,7 +77,8 @@ class UpdateSubscription(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
     url: Optional[HttpUrl] = None
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if v and ('/' in v or '\\' in v or '..' in v):
             raise ValueError('Name contains invalid characters')
@@ -247,9 +251,16 @@ def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     """Delete a subscription"""
     srv = _get_server()
 
-    def remove_subscription(config: dict):
+    if sub_id == 'custom_nodes':
+        raise HTTPException(status_code=400, detail="custom_nodes is not a subscription")
+
+    def remove_subscription(config: dict) -> dict:
         subs = config.get('subscriptions', [])
-        config['subscriptions'] = [s for s in subs if s['id'] != sub_id]
+        sub = next((s for s in subs if s.get('id') == sub_id), None)
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        config['subscriptions'] = [s for s in subs if s.get('id') != sub_id]
+        return dict(sub)
 
     update_config(remove_subscription)
     srv.invalidate_stats_cache()
@@ -258,12 +269,15 @@ def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     from helpers import yaml_cache
     yaml_cache.invalidate(sub_id)
     
-    # Delete the subscription YAML file
-    import os
-    yaml_file = os.path.join(srv.YAML_SOURCE_DIR, f'{sub_id}.yaml')
+    # Delete the subscription YAML file. Resolve the path so reserved IDs or
+    # malformed values cannot escape the uploads directory.
+    yaml_root = Path(srv.YAML_SOURCE_DIR).resolve()
+    yaml_file = (yaml_root / f'{sub_id}.yaml').resolve()
+    if yaml_root not in yaml_file.parents and yaml_file != yaml_root:
+        raise HTTPException(status_code=400, detail="Invalid subscription id")
     try:
-        if os.path.exists(yaml_file):
-            os.remove(yaml_file)
+        if yaml_file.exists():
+            yaml_file.unlink()
             logger.info(f"Deleted subscription file: {yaml_file}")
     except Exception as e:
         logger.warning(f"Failed to delete subscription file {yaml_file}: {e}")
@@ -343,51 +357,54 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
     if sub.get('type') == 'local':
         raise HTTPException(status_code=400, detail="Local subscriptions cannot be refreshed")
     
-    try:
-        proxy_node = srv.get_configured_proxy_node()
-        force_proxy = sub.get('force_proxy', False)
-        logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
-        existing_nodes = _load_existing_subscription_nodes(sub_id, srv.YAML_SOURCE_DIR)
-        content, sub_info, node_count = await srv.fetch_subscription_async(
-            sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
-        )
-        content, remembered, inherited = apply_region_history_to_yaml_content(
-            content,
-            existing_nodes=existing_nodes,
-            source=f'sub:refresh:{sub_id}',
-        )
-        
-        updates = {
-            'upload': sub_info.get('upload', 0),
-            'download': sub_info.get('download', 0),
-            'total': sub_info.get('total', 0),
-            'expire': sub_info.get('expire', 0),
-            'node_count': node_count,
-            'last_update': int(time.time()),
-            'update_status': 'success'
-        }
-
-        if remembered or inherited:
-            logger.info(
-                "Subscription %s region history after refresh: remembered=%s inherited=%s",
-                sub_id,
-                remembered,
-                inherited,
+    async with srv.subscription_refresh_lock(sub_id):
+        try:
+            proxy_node = srv.get_configured_proxy_node()
+            force_proxy = sub.get('force_proxy', False)
+            logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
+            existing_nodes = _load_existing_subscription_nodes(sub_id, srv.YAML_SOURCE_DIR)
+            content, sub_info, node_count = await srv.fetch_subscription_async(
+                sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
             )
-        
-        save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
-        updated_sub = update_subscription_fields(sub_id, updates)
-        if not updated_sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        srv.invalidate_stats_cache()
-        
-        logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
-        return {"status": "success", "subscription": updated_sub}
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-        update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-        raise HTTPException(status_code=400, detail=error_msg)
+            content, remembered, inherited = apply_region_history_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f'sub:refresh:{sub_id}',
+            )
+            
+            updates = {
+                'upload': sub_info.get('upload', 0),
+                'download': sub_info.get('download', 0),
+                'total': sub_info.get('total', 0),
+                'expire': sub_info.get('expire', 0),
+                'node_count': node_count,
+                'last_update': int(time.time()),
+                'update_status': 'success'
+            }
+
+            if remembered or inherited:
+                logger.info(
+                    "Subscription %s region history after refresh: remembered=%s inherited=%s",
+                    sub_id,
+                    remembered,
+                    inherited,
+                )
+            
+            save_subscription_content(sub_id, content, srv.YAML_SOURCE_DIR)
+            updated_sub = update_subscription_fields(sub_id, updates)
+            if not updated_sub:
+                raise HTTPException(status_code=404, detail="Subscription not found")
+            srv.invalidate_stats_cache()
+            
+            logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
+            return {"status": "success", "subscription": updated_sub}
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
+            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
+            raise HTTPException(status_code=400, detail=error_msg)
 
 
 @router.post("/refresh-all")
@@ -407,38 +424,44 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
     
     for sub in url_subs:
         try:
-            force_proxy = sub.get('force_proxy', False)
-            existing_nodes = _load_existing_subscription_nodes(sub['id'], srv.YAML_SOURCE_DIR)
-            content, sub_info, node_count = await srv.fetch_subscription_async(
-                sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
-            )
-            content, remembered, inherited = apply_region_history_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-                source=f"sub:refresh-all:{sub['id']}",
-            )
-            
-            updates = {
-                'upload': sub_info.get('upload', 0),
-                'download': sub_info.get('download', 0),
-                'total': sub_info.get('total', 0),
-                'expire': sub_info.get('expire', 0),
-                'node_count': node_count,
-                'last_update': int(time.time()),
-                'update_status': 'success'
-            }
-
-            if remembered or inherited:
-                logger.info(
-                    "Subscription %s region history in refresh-all: remembered=%s inherited=%s",
-                    sub['id'],
-                    remembered,
-                    inherited,
+            async with srv.subscription_refresh_lock(sub['id']):
+                force_proxy = sub.get('force_proxy', False)
+                existing_nodes = _load_existing_subscription_nodes(sub['id'], srv.YAML_SOURCE_DIR)
+                content, sub_info, node_count = await srv.fetch_subscription_async(
+                    sub['url'], proxy_node=proxy_node, force_proxy=force_proxy
                 )
-            
-            save_subscription_content(sub['id'], content, srv.YAML_SOURCE_DIR)
-            update_subscription_fields(sub['id'], updates)
-            results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
+                content, remembered, inherited = apply_region_history_to_yaml_content(
+                    content,
+                    existing_nodes=existing_nodes,
+                    source=f"sub:refresh-all:{sub['id']}",
+                )
+                
+                updates = {
+                    'upload': sub_info.get('upload', 0),
+                    'download': sub_info.get('download', 0),
+                    'total': sub_info.get('total', 0),
+                    'expire': sub_info.get('expire', 0),
+                    'node_count': node_count,
+                    'last_update': int(time.time()),
+                    'update_status': 'success'
+                }
+
+                if remembered or inherited:
+                    logger.info(
+                        "Subscription %s region history in refresh-all: remembered=%s inherited=%s",
+                        sub['id'],
+                        remembered,
+                        inherited,
+                    )
+                
+                save_subscription_content(sub['id'], content, srv.YAML_SOURCE_DIR)
+                update_subscription_fields(sub['id'], updates)
+                results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+            if e.status_code != 409:
+                update_subscription_fields(sub['id'], {'update_status': f'error: {detail}'})
+            results.append({"id": sub['id'], "name": sub['name'], "status": "error", "error": detail})
         except Exception as e:
             update_subscription_fields(sub['id'], {'update_status': f'error: {str(e)}'})
             results.append({"id": sub['id'], "name": sub['name'], "status": "error", "error": str(e)})

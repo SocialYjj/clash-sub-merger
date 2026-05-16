@@ -28,6 +28,31 @@ except PermissionError:
     pass
 
 
+def env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment variable with safe fallback."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    """Read an integer environment variable without crashing on invalid input."""
+    raw = os.environ.get(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 class AppConfig:
     """Centralized application configuration"""
     
@@ -37,28 +62,28 @@ class AppConfig:
     
     # Go Speedtest Service
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
-    GO_SPEEDTEST_PORT = int(os.environ.get('GO_SPEEDTEST_PORT', '9876'))
-    GO_SPEEDTEST_ENABLED = os.environ.get('GO_SPEEDTEST_ENABLED', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
+    GO_SPEEDTEST_PORT = env_int('GO_SPEEDTEST_PORT', 9876, minimum=1, maximum=65535)
+    GO_SPEEDTEST_ENABLED = env_bool('GO_SPEEDTEST_ENABLED', True)
     GO_SPEEDTEST_BIN = os.environ.get('GO_SPEEDTEST_BIN', '').strip()
     
     # Timeouts (seconds) - fine-grained control
-    DEFAULT_TIMEOUT = int(os.environ.get('DEFAULT_TIMEOUT', '30'))
-    SPEEDTEST_TIMEOUT = int(os.environ.get('SPEEDTEST_TIMEOUT', '10'))
-    HEALTH_CHECK_TIMEOUT = int(os.environ.get('HEALTH_CHECK_TIMEOUT', '2'))
-    CONNECT_TIMEOUT = int(os.environ.get('CONNECT_TIMEOUT', '10'))
-    READ_TIMEOUT = int(os.environ.get('READ_TIMEOUT', '30'))
-    WRITE_TIMEOUT = int(os.environ.get('WRITE_TIMEOUT', '10'))
+    DEFAULT_TIMEOUT = env_int('DEFAULT_TIMEOUT', 30, minimum=1)
+    SPEEDTEST_TIMEOUT = env_int('SPEEDTEST_TIMEOUT', 10, minimum=1)
+    HEALTH_CHECK_TIMEOUT = env_int('HEALTH_CHECK_TIMEOUT', 2, minimum=1)
+    CONNECT_TIMEOUT = env_int('CONNECT_TIMEOUT', 10, minimum=1)
+    READ_TIMEOUT = env_int('READ_TIMEOUT', 30, minimum=1)
+    WRITE_TIMEOUT = env_int('WRITE_TIMEOUT', 10, minimum=1)
     
     # Retry settings
-    MAX_RETRIES = int(os.environ.get('MAX_RETRIES', '3'))
-    RETRY_DELAY = int(os.environ.get('RETRY_DELAY', '1'))
+    MAX_RETRIES = env_int('MAX_RETRIES', 3, minimum=0)
+    RETRY_DELAY = env_int('RETRY_DELAY', 1, minimum=0)
     
     # Cache settings
-    STATS_CACHE_DURATION = int(os.environ.get('STATS_CACHE_DURATION', '60'))
-    CONFIG_CACHE_DURATION = int(os.environ.get('CONFIG_CACHE_DURATION', '5'))
+    STATS_CACHE_DURATION = env_int('STATS_CACHE_DURATION', 60, minimum=0)
+    CONFIG_CACHE_DURATION = env_int('CONFIG_CACHE_DURATION', 5, minimum=0)
     
     # File lock timeout
-    FILE_LOCK_TIMEOUT = int(os.environ.get('FILE_LOCK_TIMEOUT', '10'))
+    FILE_LOCK_TIMEOUT = env_int('FILE_LOCK_TIMEOUT', 10, minimum=0)
     
     # Rate limiting
     RATE_LIMIT_LOGIN = os.environ.get('RATE_LIMIT_LOGIN', '10/minute')
@@ -70,21 +95,30 @@ class AppConfig:
     # CORS settings
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
     
+    # API docs are disabled by default for production hardening. Set
+    # ENABLE_API_DOCS=true to expose /docs, /redoc and /openapi.json.
+    ENABLE_API_DOCS = env_bool('ENABLE_API_DOCS', False)
+
+    # Optional HMAC signing key for newly issued admin session tokens.
+    # Existing unsigned sessions remain compatible when upgrading.
+    SESSION_SECRET = os.environ.get('SESSION_SECRET', '').strip()
+    
     # GZip compression threshold (bytes)
-    GZIP_MIN_SIZE = int(os.environ.get('GZIP_MIN_SIZE', '500'))
+    GZIP_MIN_SIZE = env_int('GZIP_MIN_SIZE', 500, minimum=0)
     
     # HTTP connection pool settings
-    HTTP_MAX_KEEPALIVE = int(os.environ.get('HTTP_MAX_KEEPALIVE', '20'))
-    HTTP_MAX_CONNECTIONS = int(os.environ.get('HTTP_MAX_CONNECTIONS', '50'))
+    HTTP_MAX_KEEPALIVE = env_int('HTTP_MAX_KEEPALIVE', 20, minimum=0)
+    HTTP_MAX_CONNECTIONS = env_int('HTTP_MAX_CONNECTIONS', 50, minimum=1)
+    HTTP_VERIFY_SSL = env_bool('HTTP_VERIFY_SSL', True)
     
     # Backup settings
-    AUTO_BACKUP_ENABLED = os.environ.get('AUTO_BACKUP_ENABLED', 'true').lower() == 'true'
-    AUTO_BACKUP_INTERVAL_HOURS = int(os.environ.get('AUTO_BACKUP_INTERVAL_HOURS', '24'))
-    AUTO_BACKUP_KEEP_COUNT = int(os.environ.get('AUTO_BACKUP_KEEP_COUNT', '7'))
+    AUTO_BACKUP_ENABLED = env_bool('AUTO_BACKUP_ENABLED', True)
+    AUTO_BACKUP_INTERVAL_HOURS = env_int('AUTO_BACKUP_INTERVAL_HOURS', 24, minimum=1)
+    AUTO_BACKUP_KEEP_COUNT = env_int('AUTO_BACKUP_KEEP_COUNT', 7, minimum=1)
     
     # Key rotation settings
-    KEY_ROTATION_DAYS = int(os.environ.get('KEY_ROTATION_DAYS', '90'))
-    KEY_ROTATION_CHECK_ENABLED = os.environ.get('KEY_ROTATION_CHECK_ENABLED', 'true').lower() == 'true'
+    KEY_ROTATION_DAYS = env_int('KEY_ROTATION_DAYS', 90, minimum=1)
+    KEY_ROTATION_CHECK_ENABLED = env_bool('KEY_ROTATION_CHECK_ENABLED', True)
     
     # Version - read from VERSION file
     @staticmethod

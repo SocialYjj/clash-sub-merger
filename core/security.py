@@ -38,6 +38,7 @@ PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 8, 1)
 PASSWORD_MAX_LENGTH = _env_int("PASSWORD_MAX_LENGTH", 100, PASSWORD_MIN_LENGTH)
 PASSWORD_REQUIRE_LETTER = _env_bool("PASSWORD_REQUIRE_LETTER", True)
 PASSWORD_REQUIRE_NUMBER = _env_bool("PASSWORD_REQUIRE_NUMBER", True)
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip()
 
 
 def validate_password_policy(password: str) -> str:
@@ -57,6 +58,55 @@ def validate_password_policy(password: str) -> str:
 def generate_token() -> str:
     """Generate a URL-safe random token."""
     return secrets.token_urlsafe(24)
+
+
+def _session_signature(raw_token: str) -> str:
+    digest = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        raw_token.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def generate_session_token() -> str:
+    """
+    Generate a session token.
+
+    When SESSION_SECRET is configured, new session tokens are signed so
+    operators can pin a persistent server-side signing secret. Existing
+    unsigned tokens stored in config remain readable for backwards
+    compatibility.
+    """
+    raw_token = generate_token()
+    if not SESSION_SECRET:
+        return raw_token
+    return f"st_{raw_token}.{_session_signature(raw_token)}"
+
+
+def verify_session_token_signature(session_token: str) -> bool:
+    """Validate signed session tokens. Unsigned legacy tokens are accepted."""
+    if not SESSION_SECRET or not session_token.startswith("st_"):
+        return True
+    try:
+        raw_token, signature = session_token[3:].rsplit(".", 1)
+    except ValueError:
+        return False
+    expected = _session_signature(raw_token)
+    return hmac.compare_digest(signature, expected)
+
+
+def session_storage_key(session_token: str) -> str:
+    """
+    Return the config.json key used for storing a session.
+
+    Session tokens are bearer credentials.  Store only a digest at rest so a
+    leaked config file does not immediately become a live admin session dump.
+    Legacy plaintext session keys remain readable during upgrade.
+    """
+    token = str(session_token or "")
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def hash_password(password: str) -> str:

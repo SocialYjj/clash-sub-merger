@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Link, FileText, Check } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -12,28 +12,41 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
     const [content, setContent] = useState('');
     const [loading, setLoading] = useState(false);
     const [parseResult, setParseResult] = useState(null);
+    const previewRequestSeq = useRef(0);
 
     // Preview parsing when content changes (debounced)
     useEffect(() => {
         if (type !== 'local' || !content.trim()) {
+            previewRequestSeq.current += 1;
             setParseResult(null);
             return;
         }
 
+        const controller = new AbortController();
+        const requestId = ++previewRequestSeq.current;
         const timer = setTimeout(async () => {
             try {
                 const res = await request.post(`${API_BASE}/subscriptions/parse-preview`, {
                     name: name || 'preview',
                     content: content
-                });
-                setParseResult(res.data);
+                }, { signal: controller.signal });
+                if (!controller.signal.aborted && requestId === previewRequestSeq.current) {
+                    setParseResult(res.data);
+                }
             } catch (e) {
-                setParseResult({ status: 'error', error: e.message, node_count: 0 });
+                if (controller.signal.aborted || isRequestCanceled(e)) return;
+                if (requestId === previewRequestSeq.current) {
+                    setParseResult({ status: 'error', error: e.message, node_count: 0 });
+                }
             }
         }, 500);
 
-        return () => clearTimeout(timer);
-    }, [content, type]);
+        return () => {
+            clearTimeout(timer);
+            controller.abort();
+            previewRequestSeq.current += 1;
+        };
+    }, [content, name, type]);
 
     const handleAdd = async () => {
         if (!name.trim()) return;

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from helpers import update_subscription_yaml
+from helpers import load_subscription_yaml, update_subscription_yaml
 
 
 class SubscriptionYamlSafetyTests(unittest.TestCase):
@@ -38,6 +38,27 @@ class SubscriptionYamlSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             with self.assertRaises(Exception):
                 update_subscription_yaml("../outside", tempdir, lambda cfg: None)
+
+    def test_load_subscription_yaml_preserves_yaml_that_starts_with_mixed_port(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            sub_file = Path(tempdir) / "sub_demo.yaml"
+            sub_file.write_text(
+                "mixed-port: 7890\n"
+                "dns:\n"
+                "  enable: true\n"
+                "proxies:\n"
+                "  - name: Demo\n"
+                "    type: http\n"
+                "    server: 127.0.0.1\n"
+                "    port: 8080\n",
+                encoding="utf-8",
+            )
+
+            loaded = load_subscription_yaml("sub_demo", tempdir, use_cache=False)
+
+        self.assertEqual(loaded["mixed-port"], 7890)
+        self.assertTrue(loaded["dns"]["enable"])
+        self.assertEqual(loaded["proxies"][0]["name"], "Demo")
 
 
 if __name__ == "__main__":

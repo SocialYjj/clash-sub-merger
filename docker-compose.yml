@@ -1,6 +1,6 @@
 services:
   clash-merger:
-    image: ghcr.io/socialyjj/clash-sub-merger:latest
+    image: ghcr.io/socialyjj/clash-sub-merger:4.0.1
     container_name: submerger
     restart: unless-stopped
     ports:
@@ -9,8 +9,10 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      DATA_DIR: /app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8666/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8666/health', timeout=5)\""]
       interval: 30s
       timeout: 10s
       retries: 3

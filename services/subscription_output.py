@@ -11,13 +11,17 @@ import os
 import re
 import sys
 import time
+import asyncio
+from contextlib import asynccontextmanager
 from collections import OrderedDict
-from typing import Callable, Optional
+from typing import AsyncContextManager, Awaitable, Callable, Optional
 
 import yaml
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from core.dependencies import verify_admin_or_user_token
+from core.token_utils import constant_time_equal
 from helpers import load_subscription_yaml, save_subscription_content
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.link_exporter import proxy_to_link
@@ -26,9 +30,9 @@ from services.proxy_chain_utils import coerce_group_strategy, unique_group_name,
 from services.region_history import apply_region_history_to_yaml_content
 
 try:
-    from yaml import CLoader as YAMLLoader
+    from yaml import CSafeLoader as YAMLLoader
 except ImportError:  # pragma: no cover - depends on optional PyYAML C extension
-    from yaml import Loader as YAMLLoader
+    from yaml import SafeLoader as YAMLLoader
 
 
 def create_subscription_output_router(
@@ -45,11 +49,17 @@ def create_subscription_output_router(
     extract_country_from_name: Callable[..., Optional[dict]],
     split_template: Callable[[str], tuple[str, str]],
     logger,
+    fetch_subscription_async: Optional[Callable[..., Awaitable[tuple]]] = None,
+    subscription_refresh_lock: Optional[Callable[[str], AsyncContextManager[None]]] = None,
 ) -> APIRouter:
     """Create the router for subscription output endpoints."""
     router = APIRouter()
     YAML_SOURCE_DIR = yaml_source_dir
     OUTPUT_FILE = output_file
+
+    @asynccontextmanager
+    async def _noop_refresh_lock(_: str):
+        yield
 
     def update_subscription_record(sub_id: str, updates: dict) -> None:
         def mutator(latest_config: dict):
@@ -78,7 +88,9 @@ def create_subscription_output_router(
 
         def mutator(latest_config: dict):
             for latest_user in latest_config.get('users', []):
-                if (user_id and latest_user.get('id') == user_id) or (token_value and latest_user.get('token') == token_value):
+                if (user_id and latest_user.get('id') == user_id) or (
+                    token_value and constant_time_equal(latest_user.get('token'), token_value)
+                ):
                     latest_user['sub_cache'] = cache
                     return True
             return False
@@ -94,48 +106,28 @@ def create_subscription_output_router(
         config = load_config()
         auth = config.get('auth', {})
 
-        # Check if token is admin token or user token
         is_admin = False
         user_info = None
         user_allocations = None
         template_id = 'builtin'  # Default template
         admin_token_info = None  # Store matched admin token for its settings
 
-        # 1. Check legacy admin token (backward compatibility)
-        if auth.get('sub_token') and token == auth['sub_token']:
+        token_result = verify_admin_or_user_token(token, config=config)
+        if token_result.get('type') == 'admin':
             is_admin = True
-            # Legacy admin uses current saved template (if any)
-            if 'template' in config:
-                template_id = 'legacy'  # Special marker for legacy template
+            if token_result.get('legacy'):
+                # Legacy admin uses current saved template (if any)
+                if 'template' in config:
+                    template_id = 'legacy'  # Special marker for legacy template
+            else:
+                admin_token_info = token_result.get('token_info') or {}
+                template_id = admin_token_info.get('template_id', 'builtin')
+        elif token_result.get('type') == 'user':
+            user_info = token_result.get('user_info') or {}
+            user_allocations = user_info.get('allocations', {})
+            template_id = user_info.get('template_id', 'builtin')
         else:
-            # 2. Check new admin tokens
-            for admin_token in config.get('admin_tokens', []):
-                if admin_token.get('token') == token:
-                    if not admin_token.get('enabled', True):
-                        raise HTTPException(status_code=403, detail="Token is disabled")
-                    is_admin = True
-                    template_id = admin_token.get('template_id', 'builtin')
-                    admin_token_info = admin_token  # Save for later use
-                    break
-
-            # 3. Check user tokens
-            if not is_admin:
-                for user in config.get('users', []):
-                    if user.get('token') == token:
-                        # Check if user is enabled
-                        if not user.get('enabled', True):
-                            raise HTTPException(status_code=403, detail="User account is disabled")
-                        # Check if user is expired
-                        expire_time = user.get('expire_time', 0)
-                        if expire_time > 0 and expire_time < time.time():
-                            raise HTTPException(status_code=403, detail="Subscription expired")
-                        user_info = user
-                        user_allocations = user.get('allocations', {})
-                        template_id = user.get('template_id', 'builtin')
-                        break
-
-            if not is_admin and not user_info:
-                raise HTTPException(status_code=401, detail="Invalid subscription token")
+            raise HTTPException(status_code=401, detail="Invalid subscription token")
 
         # Check cache for user subscriptions (admin subscriptions are not cached as they may change frequently)
         if user_info and not format:  # Only cache YAML format
@@ -199,45 +191,59 @@ def create_subscription_output_router(
             proxy_node = get_configured_proxy_node()
             for sub in missing_subs:
                 try:
-                    force_proxy = sub.get('force_proxy', False)
-                    try:
-                        existing_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=False)
-                        existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
-                    except Exception:
-                        existing_nodes = []
-                    content, sub_info, node_count = fetch_subscription(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
-                    content, remembered, inherited = apply_region_history_to_yaml_content(
-                        content,
-                        existing_nodes=existing_nodes,
-                        source=f"sub:auto-refresh-missing:{sub['id']}",
-                    )
-                    sub.update({
-                        'upload': sub_info.get('upload', 0),
-                        'download': sub_info.get('download', 0),
-                        'total': sub_info.get('total', 0),
-                        'expire': sub_info.get('expire', 0),
-                        'node_count': node_count,
-                        'last_update': int(time.time()),
-                        'update_status': 'success'
-                    })
-                    if remembered or inherited:
-                        logger.info(
-                            "Missing subscription %s region history: remembered=%s inherited=%s",
-                            sub['id'],
-                            remembered,
-                            inherited,
+                    lock_factory = subscription_refresh_lock or _noop_refresh_lock
+                    async with lock_factory(sub['id']):
+                        force_proxy = sub.get('force_proxy', False)
+                        try:
+                            existing_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=False)
+                            existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
+                        except Exception:
+                            existing_nodes = []
+                        if fetch_subscription_async is not None:
+                            content, sub_info, node_count = await fetch_subscription_async(
+                                sub['url'],
+                                proxy_node=proxy_node,
+                                force_proxy=force_proxy,
+                            )
+                        else:
+                            content, sub_info, node_count = await asyncio.to_thread(
+                                fetch_subscription,
+                                sub['url'],
+                                proxy_node=proxy_node,
+                                force_proxy=force_proxy,
+                            )
+                        content, remembered, inherited = apply_region_history_to_yaml_content(
+                            content,
+                            existing_nodes=existing_nodes,
+                            source=f"sub:auto-refresh-missing:{sub['id']}",
                         )
-                    save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
-                    update_subscription_record(sub['id'], {
-                        'upload': sub.get('upload', 0),
-                        'download': sub.get('download', 0),
-                        'total': sub.get('total', 0),
-                        'expire': sub.get('expire', 0),
-                        'node_count': sub.get('node_count', 0),
-                        'last_update': sub.get('last_update'),
-                        'update_status': sub.get('update_status'),
-                    })
-                    logger.info(f"  ✓ Refreshed: {sub['name']}")
+                        sub.update({
+                            'upload': sub_info.get('upload', 0),
+                            'download': sub_info.get('download', 0),
+                            'total': sub_info.get('total', 0),
+                            'expire': sub_info.get('expire', 0),
+                            'node_count': node_count,
+                            'last_update': int(time.time()),
+                            'update_status': 'success'
+                        })
+                        if remembered or inherited:
+                            logger.info(
+                                "Missing subscription %s region history: remembered=%s inherited=%s",
+                                sub['id'],
+                                remembered,
+                                inherited,
+                            )
+                        save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
+                        update_subscription_record(sub['id'], {
+                            'upload': sub.get('upload', 0),
+                            'download': sub.get('download', 0),
+                            'total': sub.get('total', 0),
+                            'expire': sub.get('expire', 0),
+                            'node_count': sub.get('node_count', 0),
+                            'last_update': sub.get('last_update'),
+                            'update_status': sub.get('update_status'),
+                        })
+                        logger.info(f"  ✓ Refreshed: {sub['name']}")
                 except Exception as e:
                     logger.error(f"  ✗ Failed to refresh {sub['name']}: {e}")
                     sub['update_status'] = f'error: {str(e)}'
@@ -350,7 +356,8 @@ def create_subscription_output_router(
 
         merger = ConfigMerger(
             yaml_dir=YAML_SOURCE_DIR, output_file=OUTPUT_FILE,
-            custom_header=header, custom_suffix=suffix, file_aliases=file_aliases
+            custom_header=header, custom_suffix=suffix, file_aliases=file_aliases,
+            include_source_metadata=True
         )
 
         try:
@@ -360,34 +367,26 @@ def create_subscription_output_router(
 
             # Filter proxies based on user allocations (specific nodes)
             if user_allocations is not None:
-                allowed_proxy_names = set()
-
-                # Subscription nodes
+                source_allocations = {}
                 for sub in enabled_subs:
                     alloc_list = user_allocations.get(sub['id'])
-                    if not alloc_list:
-                        continue
-                    try:
-                        sub_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
-                        sub_proxies = sub_cfg.get('proxies', []) if sub_cfg else []
-                        for proxy in sub_proxies:
-                            transformed = NameTransformer.transform_name(proxy, sub['name'])
-                            proxy_name = transformed.get('name', proxy.get('name', ''))
-                            if is_name_allocated(proxy_name, alloc_list):
-                                allowed_proxy_names.add(proxy_name)
-                    except Exception as e:
-                        logger.warning("Failed to build allocation list for %s: %s", sub['id'], e)
+                    if alloc_list:
+                        source_allocations[sub['id']] = alloc_list
 
-                # Custom nodes
                 alloc_custom = user_allocations.get('custom_nodes')
-                if alloc_custom and custom_nodes:
-                    for node in custom_nodes:
-                        transformed = NameTransformer.transform_name(node, 'Custom')
-                        node_name = transformed.get('name', node.get('name', ''))
-                        if is_name_allocated(node_name, alloc_custom):
-                            allowed_proxy_names.add(node_name)
+                if alloc_custom:
+                    source_allocations['custom_nodes'] = alloc_custom
 
-                proxies = [p for p in proxies if p.get('name', '') in allowed_proxy_names]
+                def is_allocated_proxy(proxy: dict) -> bool:
+                    source_id = proxy.get('_source_id')
+                    allocated_nodes = source_allocations.get(source_id)
+                    if not allocated_nodes:
+                        return False
+                    if allocated_nodes == ['*']:
+                        return True
+                    return is_name_allocated(proxy.get('name', ''), allocated_nodes)
+
+                proxies = [p for p in proxies if is_allocated_proxy(p)]
 
                 # Regenerate proxy groups based on filtered proxies
                 from services.country_grouper import CountryGrouper
@@ -1111,7 +1110,7 @@ def create_subscription_output_router(
                 # 4. Proxies (excluding traffic info nodes)
                 output_parts.append('\nproxies:')
                 for proxy in socks_proxies:
-                    output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+                    output_parts.append(f'  - {json.dumps(filter_underscore_fields(proxy), ensure_ascii=False, separators=(",",":"))}')
 
                 yaml_content = "\n".join(output_parts)
                 response_headers = {
@@ -1156,7 +1155,7 @@ def create_subscription_output_router(
 
             output_parts.append('\nproxies:')
             for proxy in proxies:
-                output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+                output_parts.append(f'  - {json.dumps(filter_underscore_fields(proxy), ensure_ascii=False, separators=(",",":"))}')
             output_parts.append('\nproxy-groups:')
             for group in proxy_groups:
                 output_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')

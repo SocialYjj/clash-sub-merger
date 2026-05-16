@@ -5,7 +5,7 @@ Custom nodes and subscription nodes management
 import os
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
@@ -82,7 +82,8 @@ class CustomNode(BaseModel):
     link: str = Field(min_length=1, max_length=2000)
     name: Optional[str] = Field(None, max_length=200)
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if v and ('/' in v or '\\' in v or '..' in v):
             raise ValueError('Name contains invalid characters')
@@ -92,7 +93,8 @@ class CustomNode(BaseModel):
 class UpdateNodeName(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if '/' in v or '\\' in v or '..' in v:
             raise ValueError('Name contains invalid characters')

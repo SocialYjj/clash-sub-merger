@@ -14,7 +14,7 @@ export default defineConfig({
           // echarts 单独打包，按需加载
           'echarts': ['echarts'],
           // 将 UI 库打包到一起
-          'ui-vendor': ['framer-motion', 'lucide-react', '@dnd-kit/core', '@dnd-kit/sortable'],
+          'ui-vendor': ['framer-motion', 'lucide-react'],
         },
       },
     },

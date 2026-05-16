@@ -17,9 +17,9 @@ from helpers import Constants, atomic_write_text
 from services.config_merger import ConfigMerger
 
 try:
-    from yaml import CLoader as YAMLLoader, CDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
 except ImportError:  # pragma: no cover - depends on optional PyYAML C extension
-    from yaml import Loader as YAMLLoader, Dumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
 
 def split_template(full_content: str) -> Tuple[str, str]:
     """

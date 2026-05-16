@@ -12,7 +12,22 @@ logger = get_logger(__name__)
 
 # Cache for version to avoid frequent API calls
 _cached_version = None
-_cache_file = "data/.flclash_version_cache"
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+_data_dir = os.environ.get("DATA_DIR", os.path.join(_base_dir, "data"))
+_cache_file = os.path.join(_data_dir, ".flclash_version_cache")
+DEFAULT_FLCLASH_VERSION = "v0.8.91"
+
+
+def _cache_version(version: str, *, log_level: str = "info"):
+    """Store a version in memory and on disk so failed GitHub calls do not repeat every request."""
+    global _cached_version
+    _cached_version = version
+    try:
+        atomic_write_text(_cache_file, version)
+        log = logger.info if log_level == "info" else logger.debug
+        log(f"Cached FlClash version: {version}")
+    except Exception as e:
+        logger.warning(f"Failed to cache version: {e}")
 
 
 def get_flclash_latest_version() -> str:
@@ -40,24 +55,17 @@ def get_flclash_latest_version() -> str:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get("https://api.github.com/repos/chen08209/FlClash/releases/latest")
             if resp.status_code == 200:
-                version = resp.json().get("tag_name", "v0.8.91")
-                _cached_version = version
-                
-                # Save to cache file
-                try:
-                    atomic_write_text(_cache_file, version)
-                    logger.info(f"Fetched and cached FlClash version: {version}")
-                except Exception as e:
-                    logger.warning(f"Failed to cache version: {e}")
-                
+                version = resp.json().get("tag_name", DEFAULT_FLCLASH_VERSION)
+                _cache_version(version)
                 return version
     except Exception as e:
         logger.warning(f"Failed to fetch FlClash version from GitHub: {e}")
     
-    # Fallback to default
-    default_version = "v0.8.91"
-    logger.debug(f"Using default FlClash version: {default_version}")
-    return default_version
+    # Fallback to default and cache it to avoid retrying GitHub on every
+    # subscription fetch while GitHub is unreachable.
+    _cache_version(DEFAULT_FLCLASH_VERSION, log_level="debug")
+    logger.debug(f"Using default FlClash version: {DEFAULT_FLCLASH_VERSION}")
+    return DEFAULT_FLCLASH_VERSION
 
 
 def generate_flclash_ua(version: str = None, os_name: str = None) -> str:

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import * as echarts from 'echarts';
 import { RefreshCw, Globe, ExternalLink, X } from 'lucide-react';
 import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
@@ -55,6 +55,9 @@ export default function NodeMap() {
   const navigate = useNavigate();
   const chartRef = useRef(null);
   const chartInstance = useRef(null);
+  const mountedRef = useRef(false);
+  const countryDataAbortRef = useRef(null);
+  const countryNodesAbortRef = useRef(null);
 
   const [loading, setLoading] = useState(true);
   const [mapLoading, setMapLoading] = useState(true);
@@ -69,21 +72,42 @@ export default function NodeMap() {
   const [loadingNodes, setLoadingNodes] = useState(false);
 
   useEffect(() => {
+    mountedRef.current = true;
+    const controller = new AbortController();
     // Load map data first, then fetch country data
     loadWorldJson().then(() => {
+      if (!mountedRef.current || controller.signal.aborted) return;
       setMapLoading(false);
-      fetchCountryData();
+      fetchCountryData(controller.signal);
     }).catch(err => {
+      if (!mountedRef.current || controller.signal.aborted) return;
       console.error('Failed to load map data', err);
       setMapLoading(false);
       setLoading(false);
     });
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+      countryDataAbortRef.current?.abort();
+      countryNodesAbortRef.current?.abort();
+    };
   }, []);
 
-  const fetchCountryData = async () => {
-    setLoading(true);
+  const fetchCountryData = async (signal) => {
+    let controller = null;
+    if (!signal) {
+      countryDataAbortRef.current?.abort();
+      controller = new AbortController();
+      countryDataAbortRef.current = controller;
+      signal = controller.signal;
+    }
+
+    if (mountedRef.current && !signal?.aborted) {
+      setLoading(true);
+    }
     try {
-      const res = await request.get(`${API_BASE}/stats/nodes-by-country`);
+      const res = await request.get(`${API_BASE}/stats/nodes-by-country`, { signal });
+      if (!mountedRef.current || signal?.aborted) return;
       // res.data.countries is array: [{code, name, flag, count}, ...]
       // Convert to object for map logic: { 'US': 10, 'CN': 5 }
       const dataObj = {};
@@ -95,16 +119,27 @@ export default function NodeMap() {
       setCountryData(res.data.countries || []);
       setTotalNodes(res.data.total || 0);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch country data', err);
     } finally {
-      setLoading(false);
+      if (mountedRef.current && !signal?.aborted) {
+        setLoading(false);
+      }
+      if (controller && countryDataAbortRef.current === controller) {
+        countryDataAbortRef.current = null;
+      }
     }
   };
 
   const fetchCountryNodes = async (countryCode) => {
+    countryNodesAbortRef.current?.abort();
+    const controller = new AbortController();
+    countryNodesAbortRef.current = controller;
+    const { signal } = controller;
     setLoadingNodes(true);
     try {
-      const res = await request.get(`${API_BASE}/stats/nodes-by-country/${countryCode}`);
+      const res = await request.get(`${API_BASE}/stats/nodes-by-country/${countryCode}`, { signal });
+      if (!mountedRef.current || signal.aborted) return;
       setCountryNodes(res.data.nodes || []);
       // Find full country object for display
       const countryObj = countryData.find(c => c.code === countryCode) || {
@@ -116,9 +151,15 @@ export default function NodeMap() {
       setSelectedCountry(countryObj);
       setShowNodeList(true);
     } catch (err) {
+      if (signal.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch country nodes', err);
     } finally {
-      setLoadingNodes(false);
+      if (mountedRef.current && !signal.aborted) {
+        setLoadingNodes(false);
+      }
+      if (countryNodesAbortRef.current === controller) {
+        countryNodesAbortRef.current = null;
+      }
     }
   };
 
@@ -188,32 +229,30 @@ export default function NodeMap() {
 
     if (!chartInstance.current) {
       chartInstance.current = echarts.init(chartRef.current);
-
-      // Handle click events on map items (scatter points and target point)
-      chartInstance.current.on('click', (params) => {
-        if (params.componentType === 'series' && params.seriesType === 'effectScatter') {
-          // Check if it's a country point with data (not CN target point)
-          const code = params.value && params.value[3]; // [lon, lat, count, code]
-          if (code && code !== 'CN') {
-            fetchCountryNodes(code);
-          }
-          // CN target point should not be clickable
-        }
-      });
-
-      // Handle click on map regions (geo component)
-      chartInstance.current.on('click', (params) => {
-        if (params.componentType === 'geo') {
-          const countryName = params.name;
-          const code = findCountryCode(countryName);
-          if (code && rawData[code]) {
-            fetchCountryNodes(code);
-          }
-        }
-      });
-
-
     }
+
+    // Re-register click handler on every data refresh so the closure sees the
+    // latest rawData/countryData instead of the first render's stale objects.
+    chartInstance.current.off('click');
+    chartInstance.current.on('click', (params) => {
+      if (params.componentType === 'series' && params.seriesType === 'effectScatter') {
+        // Check if it's a country point with data (not CN target point)
+        const code = params.value && params.value[3]; // [lon, lat, count, code]
+        if (code && code !== 'CN') {
+          fetchCountryNodes(code);
+        }
+        // CN target point should not be clickable
+        return;
+      }
+
+      if (params.componentType === 'geo') {
+        const countryName = params.name;
+        const code = findCountryCode(countryName);
+        if (code && rawData[code]) {
+          fetchCountryNodes(code);
+        }
+      }
+    });
 
     const option = {
       backgroundColor: 'transparent',

@@ -11,6 +11,7 @@ from helpers import atomic_write_text
 from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
+from services.proxy_chain_utils import unique_name
 
 logger = get_logger(__name__)
 
@@ -194,13 +195,25 @@ rule-providers:
 """
 
     def __init__(self, yaml_dir: str, output_file: str, custom_header: str = None, 
-                 custom_suffix: str = None, file_aliases: Dict[str, str] = None):
+                 custom_suffix: str = None, file_aliases: Dict[str, str] = None,
+                 include_source_metadata: bool = False):
         self.yaml_dir = yaml_dir
         self.output_file = output_file
         self.all_proxies: List[dict] = []
         self.header = custom_header if custom_header is not None else self.DEFAULT_HEADER
         self.suffix = custom_suffix if custom_suffix is not None else self.DEFAULT_SUFFIX
         self.file_aliases = file_aliases or {}
+        self.include_source_metadata = include_source_metadata
+
+    @staticmethod
+    def _source_id_from_filename(file_name: str) -> str:
+        if file_name == 'custom_nodes.yaml':
+            return 'custom_nodes'
+        return os.path.splitext(file_name)[0]
+
+    @staticmethod
+    def _make_unique_proxy_name(name: str, used_names: set) -> str:
+        return unique_name(name or 'Unnamed', used_names)
 
     @staticmethod
     def load_yaml(file_path: str) -> Optional[dict]:
@@ -251,6 +264,7 @@ rule-providers:
         from services.subscription import SubscriptionParser
         
         all_proxies = []
+        used_names = set()
         
         if not os.path.exists(self.yaml_dir):
             logger.error(f"Directory {self.yaml_dir} does not exist")
@@ -302,6 +316,13 @@ rule-providers:
             
             # Add source prefix
             transformed_proxies = NameTransformer.transform_proxies(valid_proxies, source_name)
+            source_id = self._source_id_from_filename(file_name)
+            for proxy in transformed_proxies:
+                proxy['name'] = self._make_unique_proxy_name(proxy.get('name', ''), used_names)
+                if self.include_source_metadata:
+                    proxy['_source_file'] = file_name
+                    proxy['_source_id'] = source_id
+                    proxy['_source_name'] = source_name
             all_proxies.extend(transformed_proxies)
         
         return all_proxies

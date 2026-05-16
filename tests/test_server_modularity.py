@@ -31,6 +31,17 @@ class ServerModularityTests(unittest.TestCase):
         self.assertIn("load_config", imported_names)
         self.assertIn("save_config", imported_names)
 
+    def test_server_does_not_keep_duplicate_app_config_class(self):
+        class_names = {
+            node.name
+            for node in self.tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        self.assertNotIn("AppConfig", class_names)
+
+        content = SERVER_PATH.read_text(encoding="utf-8")
+        self.assertIn("AppConfig = CoreAppConfig", content)
+
     def test_server_does_not_keep_duplicate_database_find_helpers(self):
         function_names = {
             node.name

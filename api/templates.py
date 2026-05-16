@@ -3,6 +3,7 @@ Templates API
 Template management endpoints
 """
 import os
+import json
 import time
 from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
@@ -211,9 +212,9 @@ def update_template(template_id: str, data: UpdateTemplate, _: bool = Depends(ve
         # Split content into header, proxy_groups, and suffix
         import yaml
         try:
-            from yaml import CLoader as YAMLLoader
+            from yaml import CSafeLoader as YAMLLoader
         except ImportError:
-            from yaml import Loader as YAMLLoader
+            from yaml import SafeLoader as YAMLLoader
         
         try:
             parsed = yaml.load(data.content, Loader=YAMLLoader)
@@ -370,7 +371,21 @@ def preview_template(data: TemplateContent, _: bool = Depends(verify_session)):
             custom_header=data.content,
             file_aliases=data.file_aliases or {}
         )
-        result = merger.merge()
-        return {"status": "success", "preview": result[:5000]}
+        cfg = merger.merge_and_generate()
+        proxies = cfg.get('proxies', [])
+        proxy_groups = cfg.get('proxy-groups', [])
+
+        preview_parts = [data.content.rstrip()]
+        if proxies:
+            preview_parts.append('\nproxies:')
+            for proxy in proxies:
+                preview_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+        if proxy_groups:
+            preview_parts.append('\nproxy-groups:')
+            for group in proxy_groups:
+                preview_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')
+
+        result = "\n".join(preview_parts)
+        return {"status": "success", "preview": result[:10000]}
     except Exception as e:
         return {"status": "error", "error": str(e)}

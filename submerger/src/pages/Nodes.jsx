@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
 import { COUNTRY_CHINESE_NAMES } from './countryData';
@@ -173,18 +173,27 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [groupSearch, setGroupSearch] = useState({});
   const [deleteChainConfirm, setDeleteChainConfirm] = useState({ open: false, chainId: null });
   const [showAddDropdown, setShowAddDropdown] = useState(false);
+  const subNodesRequestSeq = useRef(0);
+  const geoipRequestSeq = useRef(0);
 
 
   // Fetch nodes from subscription files
   useEffect(() => {
-    fetchAllSubNodes();
+    const controller = new AbortController();
+    fetchAllSubNodes(controller.signal);
+    return () => {
+      controller.abort();
+      subNodesRequestSeq.current += 1;
+    };
   }, [subscriptions]);
 
   // Fetch proxy chains
   useEffect(() => {
-    fetchProxyChains();
-    fetchAvailableChainNodes();
-    fetchGeoipApis();
+    const controller = new AbortController();
+    fetchProxyChains(controller.signal);
+    fetchAvailableChainNodes(controller.signal);
+    fetchGeoipApis(controller.signal);
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -197,28 +206,33 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setCustomOrderMap(next);
   }, [customNodes]);
 
-  const fetchGeoipApis = async () => {
+  const fetchGeoipApis = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/geoip/online-config`);
+      const res = await request.get(`${API_BASE}/geoip/online-config`, { signal });
+      if (signal?.aborted) return;
       setGeoipApis(res.data.apis || []);
       setSelectedGeoipApi(res.data.preferred_api || 'ip-api.com');
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch GeoIP APIs', err);
     }
   };
 
-  const fetchProxyChains = async () => {
+  const fetchProxyChains = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/proxy-chains`);
+      const res = await request.get(`${API_BASE}/proxy-chains`, { signal });
+      if (signal?.aborted) return;
       setProxyChains(res.data.chains || []);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch proxy chains', err);
     }
   };
 
-  const fetchAvailableChainNodes = async () => {
+  const fetchAvailableChainNodes = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/proxy-chains/available-nodes`);
+      const res = await request.get(`${API_BASE}/proxy-chains/available-nodes`, { signal });
+      if (signal?.aborted) return;
       const nodes = (res.data.nodes || []).map(node => {
         const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
         const nodeType = node?.node_type ?? node?.type ?? '';
@@ -230,44 +244,62 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
       setAvailableChainNodes(nodes);
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch available chain nodes', err);
     }
   };
 
-  const fetchAllSubNodes = async () => {
-    if (!subscriptions?.length) {
-      setSubNodes({});
-      setLoadingNodes(false);
+  const fetchAllSubNodes = async (signal) => {
+    const requestId = ++subNodesRequestSeq.current;
+    const subscriptionsSnapshot = [...(subscriptions || [])];
+
+    if (!subscriptionsSnapshot.length) {
+      if (!signal?.aborted && requestId === subNodesRequestSeq.current) {
+        setSubNodes({});
+        setLoadingNodes(false);
+      }
       return;
     }
 
     setLoadingNodes(true);
     const nodesMap = {};
 
-    for (const sub of subscriptions) {
+    for (const sub of subscriptionsSnapshot) {
+      if (signal?.aborted || requestId !== subNodesRequestSeq.current) return;
       try {
-        const res = await request.get(`${API_BASE}/subscriptions/${sub.id}/nodes`);
+        const res = await request.get(`${API_BASE}/subscriptions/${sub.id}/nodes`, { signal });
+        if (signal?.aborted || requestId !== subNodesRequestSeq.current) return;
         nodesMap[sub.id] = {
           name: sub.name,
           nodes: res.data.nodes || []
         };
       } catch (err) {
+        if (signal?.aborted || isRequestCanceled(err) || requestId !== subNodesRequestSeq.current) return;
         console.error(`Failed to fetch nodes for ${sub.name}`, err);
         nodesMap[sub.id] = { name: sub.name, nodes: [] };
       }
     }
 
-    setSubNodes(nodesMap);
-    setLoadingNodes(false);
+    if (!signal?.aborted && requestId === subNodesRequestSeq.current) {
+      setSubNodes(nodesMap);
+      setLoadingNodes(false);
+    }
   };
 
   // Fetch GeoIP data for nodes
   useEffect(() => {
     if (loadingNodes) return;
-    fetchGeoipData();
+    const controller = new AbortController();
+    const requestId = ++geoipRequestSeq.current;
+    fetchGeoipData(controller.signal, requestId);
+
+    return () => {
+      controller.abort();
+      geoipRequestSeq.current += 1;
+    };
   }, [subNodes, customNodes, loadingNodes]);
 
-  const fetchGeoipData = async () => {
+  const fetchGeoipData = async (signal, requestId) => {
     const servers = new Set();
     Object.values(subNodes).forEach(({ nodes }) => {
       nodes.forEach(node => {
@@ -278,25 +310,35 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (node.server) servers.add(node.server);
     });
 
-    if (servers.size === 0) return;
+    if (servers.size === 0) {
+      if (!signal?.aborted && requestId === geoipRequestSeq.current) {
+        setGeoipData({});
+      }
+      return;
+    }
 
     const data = {};
     const serverList = Array.from(servers).slice(0, 100);
 
     const batchSize = 100;
     for (let i = 0; i < serverList.length; i += batchSize) {
+      if (signal?.aborted || requestId !== geoipRequestSeq.current) return;
       const batch = serverList.slice(i, i + batchSize);
       try {
-        const res = await request.post(`${API_BASE}/geoip/batch`, { ips: batch });
+        const res = await request.post(`${API_BASE}/geoip/batch`, { ips: batch }, { signal });
+        if (signal?.aborted || requestId !== geoipRequestSeq.current) return;
         const results = res.data.results || {};
         Object.entries(results).forEach(([server, geoData]) => {
           if (geoData) data[server] = geoData;
         });
       } catch (err) {
+        if (signal?.aborted || err.name === 'CanceledError' || err.code === 'ERR_CANCELED') return;
         console.error('Failed to fetch GeoIP batch', err);
       }
     }
-    setGeoipData(data);
+    if (!signal?.aborted && requestId === geoipRequestSeq.current) {
+      setGeoipData(data);
+    }
   };
 
 
@@ -351,8 +393,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           country: country,
           city: city,
           exit_ip: testResult?.exit_ip || node.exit_ip,
-          latency: testResult?.latency ?? node.last_latency,
-          speed: testResult?.speed ?? node.last_speed,
+          latency: testResult?.latency !== undefined ? testResult.latency : node.last_latency,
+          speed: testResult?.speed !== undefined ? testResult.speed : node.last_speed,
+          speedError: testResult?.speed_error,
           testError: testResult?.error,
           detectedRegion: testResult?.region,
           final_name: node.display_name || node.name  // Use display_name from backend (transformed name)
@@ -406,8 +449,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         country: country,
         city: city,
         exit_ip: testResult?.exit_ip || node.exit_ip,
-        latency: testResult?.latency ?? node.last_latency,
-        speed: testResult?.speed ?? node.last_speed,
+        latency: testResult?.latency !== undefined ? testResult.latency : node.last_latency,
+        speed: testResult?.speed !== undefined ? testResult.speed : node.last_speed,
+        speedError: testResult?.speed_error,
         testError: testResult?.error,
         detectedRegion: testResult?.region,
         final_name: node.display_name || node.name  // Use display_name from backend (transformed name)
@@ -470,8 +514,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         country: country,
         city: city,
         exit_ip: testResult?.exit_ip,
-        latency: testResult?.latency ?? chain.last_latency,
-        speed: testResult?.speed ?? chain.last_speed,
+        latency: testResult?.latency !== undefined ? testResult.latency : chain.last_latency,
+        speed: testResult?.speed !== undefined ? testResult.speed : chain.last_speed,
+        speedError: testResult?.speed_error,
         testError: testResult?.error,
         detectedRegion: testResult?.region,
         enabled: chain.enabled,
@@ -650,6 +695,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   // Test single node
+  const mergeNodeTestResults = (updates) => {
+    setNodeTestResults(prev => {
+      const next = { ...prev };
+      Object.entries(updates || {}).forEach(([nodeKey, result]) => {
+        next[nodeKey] = { ...prev[nodeKey], ...result };
+      });
+      return next;
+    });
+  };
+
   const testNode = async (node, isRegionTest = false) => {
     setTestingNode(node.nodeKey);
     setTestingType(isRegionTest ? 'region' : 'latency');
@@ -670,17 +725,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           newResult.region = res.data.region;
           newResult.city = res.data.city;
           newResult.exit_ip = res.data.exit_ip;
+          newResult.error = false;
         } else {
           newResult.latency = res.data.latency;
           newResult.error = false;
         }
         return { ...prev, [node.nodeKey]: newResult };
       });
-    } catch {
+    } catch (err) {
       setNodeTestResults(prev => ({
         ...prev,
-        [node.nodeKey]: { latency: null, error: true }
+        [node.nodeKey]: { ...prev[node.nodeKey], latency: null, error: true }
       }));
+      showToast?.(`节点测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
     } finally {
       setTestingNode(null);
     }
@@ -699,10 +756,26 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
       setNodeTestResults(prev => ({
         ...prev,
-        [node.nodeKey]: { ...prev[node.nodeKey], speed: res.data.speed, peak_speed: res.data.peak_speed }
+        [node.nodeKey]: {
+          ...prev[node.nodeKey],
+          speed: res.data.speed,
+          peak_speed: res.data.peak_speed,
+          speed_error: false,
+          error: false
+        }
       }));
-    } catch {
-      // Speed test failed, keep existing data
+    } catch (err) {
+      setNodeTestResults(prev => ({
+        ...prev,
+        [node.nodeKey]: {
+          ...prev[node.nodeKey],
+          speed: null,
+          peak_speed: null,
+          speed_error: true,
+          error: true
+        }
+      }));
+      showToast?.(`速度测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
     } finally {
       setTestingNode(null);
     }
@@ -776,7 +849,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '延迟' });
         
         // Update state every batch instead of every node
-        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
+        mergeNodeTestResults(batchResults);
       }
     }
 
@@ -804,7 +877,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             saveData[node.sourceId][node.idx].region = res.data.region;
             saveData[node.sourceId][node.idx].city = res.data.city;
             
-            return { nodeKey: node.nodeKey, data: { region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip } };
+            return { nodeKey: node.nodeKey, data: { region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip, error: false } };
           } catch {
             return null;
           }
@@ -821,7 +894,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '地区' });
         
         // Update state every batch
-        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
+        mergeNodeTestResults(batchResults);
       }
     }
 
@@ -848,9 +921,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
             saveData[node.sourceId][node.idx].speed = res.data.speed;
             
-            return { nodeKey: node.nodeKey, data: { speed: res.data.speed, peak_speed: res.data.peak_speed } };
+            return { nodeKey: node.nodeKey, data: { speed: res.data.speed, peak_speed: res.data.peak_speed, speed_error: false, error: false } };
           } catch {
-            return null;
+            return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true, error: true } };
           }
         }));
         
@@ -865,7 +938,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '速度' });
         
         // Update state every batch
-        setNodeTestResults(prev => ({ ...prev, ...batchResults }));
+        mergeNodeTestResults(batchResults);
       }
     }
 
@@ -1483,9 +1556,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setPortMappingValue(currentPort ? String(currentPort) : '');
   };
 
-  const fetchAllPortMappings = async () => {
+  const fetchAllPortMappings = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/port-mappings`);
+      const res = await request.get(`${API_BASE}/port-mappings`, { signal });
+      if (signal?.aborted) return;
       setAllPortMappings(res.data.mappings || []);
       // Build local cache
       const cache = {};
@@ -1495,6 +1569,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       setLocalPortMappings(cache);
       setPortMappingsLoaded(true);  // Mark as loaded
     } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch port mappings', err);
       setPortMappingsLoaded(true);  // Even on error, mark as loaded to prevent fallback issues
     }
@@ -1502,7 +1577,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Fetch port mappings on mount
   useEffect(() => {
-    fetchAllPortMappings();
+    const controller = new AbortController();
+    fetchAllPortMappings(controller.signal);
+    return () => controller.abort();
   }, []);
 
   const savePortMapping = async () => {
@@ -1878,10 +1955,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   paginatedNodes.map((node, idx) => {
                     const isTesting = testingNode === node.nodeKey;
                     const isSelected = selectedNodes.has(node.nodeKey);
-                    const testResult = nodeTestResults[node.nodeKey];
-                    const displayedLatency = testResult?.latency !== undefined ? testResult.latency : node.latency;
-                    const displayedError = testResult?.error !== undefined ? testResult.error : node.testError;
-                    const latencyBadge = getLatencyBadge(displayedLatency, displayedError);
+	                    const testResult = nodeTestResults[node.nodeKey];
+	                    const displayedLatency = testResult?.latency !== undefined ? testResult.latency : node.latency;
+	                    const displayedError = testResult?.error !== undefined ? testResult.error : node.testError;
+	                    const displayedSpeedError = testResult?.speed_error === true;
+	                    const latencyBadge = getLatencyBadge(displayedLatency, displayedError);
                     // Use local cache for port mapping (updates instantly without page refresh)
                     const currentMappedPort = localPortMappings[node.final_name] ?? node.mapped_port;
                     const rawDisplayName = node.display_name || node.name || '未命名';
@@ -1994,9 +2072,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            {node.speed !== undefined && node.speed > 0 ? (
-                              <span className="font-mono text-sm text-green-400">
-                                {node.speed.toFixed(1)} MB/s
+	                            {displayedSpeedError ? (
+	                              <span className="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">
+	                                失败
+	                              </span>
+	                            ) : node.speed !== undefined && node.speed > 0 ? (
+	                              <span className="font-mono text-sm text-green-400">
+	                                {node.speed.toFixed(1)} MB/s
                               </span>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">

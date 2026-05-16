@@ -4,7 +4,7 @@ Health check and metrics API
 import os
 import time
 from fastapi import APIRouter
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from core.config import AppConfig, CONFIG_FILE
@@ -35,9 +35,12 @@ async def health_check():
         - version: Application version
         - services: Status of dependent services
     """
-    # Check if Go speedtest service is running
-    speedtest_healthy = False
-    if _http_client:
+    # Check if Go speedtest service is running when enabled. Treat disabled
+    # speedtest as non-blocking so deployments without the Go helper can still
+    # report healthy.
+    speedtest_required = AppConfig.GO_SPEEDTEST_ENABLED
+    speedtest_healthy = not speedtest_required
+    if speedtest_required and _http_client:
         try:
             response = await _http_client.get(
                 f"{AppConfig.GO_SPEEDTEST_URL}/health",
@@ -50,17 +53,22 @@ async def health_check():
     # Check if config file is accessible
     config_healthy = os.path.exists(CONFIG_FILE)
     
-    is_healthy = config_healthy
-    
-    return {
+    is_healthy = config_healthy and speedtest_healthy
+
+    payload = {
         "status": "healthy" if is_healthy else "unhealthy",
         "timestamp": int(time.time()),
         "version": AppConfig.VERSION,
         "services": {
             "config": config_healthy,
-            "speedtest": speedtest_healthy
+            "speedtest": speedtest_healthy,
+            "speedtest_enabled": speedtest_required,
         }
     }
+    return JSONResponse(
+        status_code=200 if is_healthy else 503,
+        content=payload,
+    )
 
 
 @router.get("/metrics", summary="Prometheus Metrics")

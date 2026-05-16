@@ -6,7 +6,7 @@ import os
 import time
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
@@ -27,6 +27,8 @@ YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 # ==================== Data Models ====================
 
 class ProxyChainNode(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     # type: 'node' (default) or 'group'
     type: str = 'node'
     sub_id: str | None = None
@@ -37,19 +39,28 @@ class ProxyChainNode(BaseModel):
     group_name: str | None = None
     group_strategy: str | None = None
     lb_strategy: str | None = None
+    group_url: str | None = None
+    group_interval: int | str | None = None
+    group_tolerance: int | str | None = None
     group_nodes: list | None = None
 
 
 class ProxyChainRow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     nodes: List[ProxyChainNode]
 
 
 class CreateProxyChain(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     name: str
     rows: List[ProxyChainRow]
 
 
 class UpdateProxyChain(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     name: Optional[str] = None
     rows: Optional[List[ProxyChainRow]] = None
     enabled: Optional[bool] = None
@@ -133,7 +144,7 @@ def create_proxy_chain(data: CreateProxyChain, _: bool = Depends(verify_session)
         chain = {
             'id': chain_id,
             'name': data.name,
-            'rows': [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows],
+            'rows': [{'nodes': [n.model_dump(exclude_none=True) for n in row.nodes]} for row in data.rows],
             'enabled': True,
             'created_at': int(time.time())
         }
@@ -168,7 +179,7 @@ def update_proxy_chain(chain_id: str, data: UpdateProxyChain, _: bool = Depends(
                 if data.name is not None:
                     chain['name'] = data.name
                 if data.rows is not None:
-                    chain['rows'] = [{'nodes': [n.dict() for n in row.nodes]} for row in data.rows]
+                    chain['rows'] = [{'nodes': [n.model_dump(exclude_none=True) for n in row.nodes]} for row in data.rows]
                 if data.enabled is not None:
                     chain['enabled'] = data.enabled
                 return dict(chain)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/constant"
 )
 
@@ -173,7 +173,6 @@ func getExitIPWithAdapter(proxyAdapter constant.Proxy, timeout time.Duration) (s
 				}
 				return proxyAdapter.DialContext(dialCtx, md)
 			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 		Timeout: timeout,
 	}
@@ -240,7 +239,6 @@ func testSpeedWithAdapter(proxyAdapter constant.Proxy, testURL string, timeout t
 				}
 				return proxyAdapter.DialContext(dialCtx, md)
 			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 		Timeout: timeout,
 	}
@@ -258,48 +256,35 @@ func testSpeedWithAdapter(proxyAdapter constant.Proxy, testURL string, timeout t
 	var totalRead int64
 	readStart := time.Now()
 
-	// Peak speed sampling variables
+	// Peak speed sampling variables. Sampling is done inside the read loop to
+	// avoid data races between the download goroutine and a separate sampler.
 	var peakSpeed float64
 	var lastSampleBytes int64
 	var lastSampleTime time.Time
-	var sampleTicker *time.Ticker
-	var sampleDone chan struct{}
+	sampleInterval := time.Duration(peakSampleInterval) * time.Millisecond
 
 	if mode == "peak" {
 		lastSampleTime = readStart
 		lastSampleBytes = 0
-		sampleTicker = time.NewTicker(time.Duration(peakSampleInterval) * time.Millisecond)
-		sampleDone = make(chan struct{})
-
-		// Sampling goroutine: calculate instant speed at fixed intervals
-		go func() {
-			defer sampleTicker.Stop()
-			for {
-				select {
-				case <-sampleTicker.C:
-					now := time.Now()
-					currentBytes := totalRead
-					elapsed := now.Sub(lastSampleTime).Seconds()
-					if elapsed > 0 {
-						instantSpeed := float64(currentBytes-lastSampleBytes) / 1024 / 1024 / elapsed
-						if instantSpeed > peakSpeed {
-							peakSpeed = instantSpeed
-						}
-					}
-					lastSampleBytes = currentBytes
-					lastSampleTime = now
-				case <-sampleDone:
-					return
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
 	}
 
 	for {
 		n, err := resp.Body.Read(buf)
 		totalRead += int64(n)
+		if mode == "peak" {
+			now := time.Now()
+			if now.Sub(lastSampleTime) >= sampleInterval {
+				elapsed := now.Sub(lastSampleTime).Seconds()
+				if elapsed > 0 {
+					instantSpeed := float64(totalRead-lastSampleBytes) / 1024 / 1024 / elapsed
+					if instantSpeed > peakSpeed {
+						peakSpeed = instantSpeed
+					}
+				}
+				lastSampleBytes = totalRead
+				lastSampleTime = now
+			}
+		}
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -317,9 +302,15 @@ func testSpeedWithAdapter(proxyAdapter constant.Proxy, testURL string, timeout t
 	}
 
 Calculate:
-	// Stop sampling goroutine
-	if sampleDone != nil {
-		close(sampleDone)
+	if mode == "peak" {
+		now := time.Now()
+		elapsed := now.Sub(lastSampleTime).Seconds()
+		if elapsed > 0 && totalRead > lastSampleBytes {
+			instantSpeed := float64(totalRead-lastSampleBytes) / 1024 / 1024 / elapsed
+			if instantSpeed > peakSpeed {
+				peakSpeed = instantSpeed
+			}
+		}
 	}
 
 	duration := time.Since(readStart)
@@ -339,61 +330,11 @@ Calculate:
 	return avgSpeed, peakSpeed, latency, totalRead, nil
 }
 
-
 // buildProxyChain creates a chain of proxies where each proxy uses the previous one as dialer
 // chain: [A, B, C] means traffic goes A -> B -> C -> target
 // Returns the final proxy adapter that represents the entire chain
 func buildProxyChain(chain []map[string]interface{}) (constant.Proxy, error) {
-	if len(chain) == 0 {
-		return nil, fmt.Errorf("empty chain")
-	}
-
-	if len(chain) == 1 {
-		// Single node, no chain needed
-		return getProxyAdapterFromNode(chain[0])
-	}
-
-	// Create adapters for all nodes
-	adapters := make([]constant.Proxy, len(chain))
-	for i, node := range chain {
-		adapter, err := getProxyAdapterFromNode(node)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create adapter for node %d: %v", i, err)
-		}
-		adapters[i] = adapter
-	}
-
-	// Build chain: each node uses the previous one as dialer
-	// For [A, B, C]: B dials through A, C dials through B
-	// We need to create new adapters with dialer-proxy set
-	
-	// Start with the first adapter as the base
-	var currentProxy constant.Proxy = adapters[0]
-	
-	for i := 1; i < len(chain); i++ {
-		// Create a new node config with dialer-proxy pointing to previous
-		nodeConfig := make(map[string]interface{})
-		for k, v := range chain[i] {
-			nodeConfig[k] = v
-		}
-		
-		// Set dialer-proxy to the previous proxy's name
-		nodeConfig["dialer-proxy"] = currentProxy.Name()
-		
-		// Parse the new proxy with dialer-proxy set
-		// Note: mihomo's adapter.ParseProxy handles dialer-proxy internally
-		// But we need to register the previous proxy first
-		
-		// For now, use a simpler approach: create a wrapped proxy
-		nextAdapter, err := adapter.ParseProxy(nodeConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create chained adapter for node %d: %v", i, err)
-		}
-		
-		currentProxy = nextAdapter
-	}
-	
-	return currentProxy, nil
+	return buildChainAdapter(chain)
 }
 
 // testDelayWithChain tests latency through a proxy chain
@@ -401,29 +342,29 @@ func testDelayWithChain(chain []map[string]interface{}, testURL string, timeout 
 	if len(chain) == 0 {
 		return -1, fmt.Errorf("empty chain")
 	}
-	
+
 	// For chain testing, we need to manually build the connection chain
 	// Since mihomo's dialer-proxy requires proxies to be registered in a global map,
 	// we'll use a different approach: dial through each proxy sequentially
-	
+
 	if len(chain) == 1 {
 		return testDelayWithNode(chain[0], testURL, timeout)
 	}
-	
+
 	// Build the chain adapter
 	chainAdapter, err := buildChainAdapter(chain)
 	if err != nil {
 		return -1, err
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	
+
 	delay, err := chainAdapter.URLTest(ctx, testURL, nil)
 	if err != nil {
 		return -1, err
 	}
-	
+
 	return int(delay), nil
 }
 
@@ -432,16 +373,16 @@ func getExitIPWithChain(chain []map[string]interface{}, timeout time.Duration) (
 	if len(chain) == 0 {
 		return "", fmt.Errorf("empty chain")
 	}
-	
+
 	if len(chain) == 1 {
 		return getExitIPWithNode(chain[0], timeout)
 	}
-	
+
 	chainAdapter, err := buildChainAdapter(chain)
 	if err != nil {
 		return "", err
 	}
-	
+
 	return getExitIPWithAdapter(chainAdapter, timeout)
 }
 
@@ -450,16 +391,16 @@ func testSpeedWithChain(chain []map[string]interface{}, testURL string, timeout 
 	if len(chain) == 0 {
 		return 0, 0, 0, 0, fmt.Errorf("empty chain")
 	}
-	
+
 	if len(chain) == 1 {
 		return testSpeedWithNode(chain[0], testURL, timeout, mode, peakSampleInterval)
 	}
-	
+
 	chainAdapter, err := buildChainAdapter(chain)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	
+
 	return testSpeedWithAdapter(chainAdapter, testURL, timeout, mode, peakSampleInterval)
 }
 
@@ -469,55 +410,45 @@ func buildChainAdapter(chain []map[string]interface{}) (constant.Proxy, error) {
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("empty chain")
 	}
-	
+
 	if len(chain) == 1 {
 		return getProxyAdapterFromNode(chain[0])
 	}
-	
+
 	// Create the first proxy adapter
-	firstAdapter, err := getProxyAdapterFromNode(chain[0])
+	currentAdapter, err := getProxyAdapterFromNode(chain[0])
 	if err != nil {
 		return nil, fmt.Errorf("failed to create first adapter: %v", err)
 	}
-	
-	// For each subsequent node, we need to create a proxy that dials through the previous one
-	// We'll use mihomo's proxy chain support by setting up the dialer-proxy relationship
-	
-	// Register the first proxy in a temporary map
-	proxyMap := make(map[string]constant.Proxy)
-	proxyMap[firstAdapter.Name()] = firstAdapter
-	
-	currentProxyName := firstAdapter.Name()
-	
+
 	for i := 1; i < len(chain); i++ {
 		nodeConfig := make(map[string]interface{})
 		for k, v := range chain[i] {
 			nodeConfig[k] = v
 		}
-		
+
 		// Ensure unique name for intermediate proxies
 		if i < len(chain)-1 {
 			nodeConfig["name"] = fmt.Sprintf("chain_%d_%s", i, nodeConfig["name"])
 		}
-		
-		// Set dialer-proxy to chain through previous proxy
-		nodeConfig["dialer-proxy"] = currentProxyName
-		
-		// Create adapter with the dialer-proxy set
-		// Note: This requires the proxy to be findable by name
-		// We'll use a workaround by creating a wrapped dialer
-		
-		nextAdapter, err := adapter.ParseProxy(nodeConfig)
+
+		// Do not rely on dialer-proxy name lookup in tunnel.Proxies(); this
+		// speedtest service builds temporary adapters that are never registered
+		// globally. Inject the previous adapter as the API dialer instead.
+		delete(nodeConfig, "dialer-proxy")
+
+		nextAdapter, err := adapter.ParseProxy(
+			normalizeXHTTPNode(nodeConfig),
+			adapter.WithDialerForAPI(proxydialer.New(currentAdapter, true)),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create adapter %d: %v", i, err)
 		}
-		
-		proxyMap[nextAdapter.Name()] = nextAdapter
-		currentProxyName = nextAdapter.Name()
+
+		currentAdapter = nextAdapter
 	}
-	
-	// Return the last adapter in the chain
-	return proxyMap[currentProxyName], nil
+
+	return currentAdapter, nil
 }
 
 // fetchURL fetches a URL through a proxy and returns content, headers, and status code
@@ -567,15 +498,13 @@ func fetchURLWithAdapter(proxyAdapter constant.Proxy, targetURL string, timeout 
 				return nil, err
 			}
 
-			metadata := &constant.Metadata{
-				Host:    host,
-				DstPort: uint16(portNum),
-			}
+				metadata := &constant.Metadata{
+					Host:    host,
+					DstPort: uint16(portNum),
+					Type:    constant.HTTP,
+				}
 
 			return proxyAdapter.DialContext(ctx, metadata)
-		},
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: false,
 		},
 	}
 

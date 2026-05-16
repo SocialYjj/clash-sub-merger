@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 # Default test URLs
 DEFAULT_LATENCY_URL = "https://cp.cloudflare.com/generate_204"
-DEFAULT_SPEED_URL = "http://cachefly.cachefly.net/10mb.test"
+DEFAULT_SPEED_URL = "https://speed.cloudflare.com/__down?bytes=10000000"
 DEFAULT_LANDING_IP_URL = "https://api.ipify.org"
 
 # Alternative test URLs
@@ -24,8 +24,7 @@ ALTERNATIVE_LATENCY_URLS = [
 ]
 
 ALTERNATIVE_SPEED_URLS = [
-    "http://cachefly.cachefly.net/10mb.test",
-    "http://speed.cloudflare.com/__down?bytes=10000000",
+    "https://speed.cloudflare.com/__down?bytes=10000000",
 ]
 
 
@@ -73,7 +72,49 @@ class SpeedTestService:
     
     def __init__(self, config: SpeedTestConfig = None):
         self.config = config or SpeedTestConfig()
-        self._running_tests: Dict[str, bool] = {}  # Track running tests
+        self._running_tests: Dict[str, asyncio.Task] = {}  # Track running tests
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Return a reusable HTTPS-verifying aiohttp session for the current event loop."""
+        loop = asyncio.get_running_loop()
+        if (
+            self._session is None
+            or self._session.closed
+            or self._session_loop is not loop
+        ):
+            if self._session is not None and not self._session.closed and self._session_loop is loop:
+                await self._session.close()
+            # Do not disable SSL verification here. aiohttp verifies HTTPS certificates by
+            # default, which prevents MITM manipulation of latency/IP/speed probes.
+            connector = aiohttp.TCPConnector()
+            self._session = aiohttp.ClientSession(connector=connector)
+            self._session_loop = loop
+        return self._session
+
+    async def close(self):
+        """Close the reusable aiohttp session."""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+        self._session_loop = None
+
+    @staticmethod
+    def _running_test_key(node: Dict, proxy_url: str) -> str:
+        """Build a stable de-duplication key for concurrent tests of the same node."""
+        node_id = node.get('id') if isinstance(node, dict) else None
+        if node_id:
+            return f"id:{node_id}"
+        if not isinstance(node, dict):
+            return f"proxy:{proxy_url}"
+        return "|".join([
+            f"proxy:{proxy_url}",
+            str(node.get('name', '')),
+            str(node.get('type', '')),
+            str(node.get('server', '')),
+            str(node.get('port', '')),
+        ])
     
     async def test_latency(
         self,
@@ -97,21 +138,20 @@ class SpeedTestService:
         
         start = time.time()
         try:
-            connector = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(
-                    test_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                    allow_redirects=True
-                ) as resp:
-                    await resp.read()
-                    latency = int((time.time() - start) * 1000)
-                    return {
-                        "status": "success",
-                        "latency": latency,
-                        "status_code": resp.status
-                    }
+            session = await self._get_session()
+            async with session.get(
+                test_url,
+                proxy=proxy_url,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=True
+            ) as resp:
+                await resp.read()
+                latency = int((time.time() - start) * 1000)
+                return {
+                    "status": "success",
+                    "latency": latency,
+                    "status_code": resp.status
+                }
         except asyncio.TimeoutError:
             return {"status": "timeout", "latency": -1}
         except aiohttp.ClientProxyConnectionError as e:
@@ -145,29 +185,28 @@ class SpeedTestService:
         total_bytes = 0
         
         try:
-            connector = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(
-                    test_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                    allow_redirects=True
-                ) as resp:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        total_bytes += len(chunk)
-                    
-                    elapsed = time.time() - start
-                    if elapsed > 0:
-                        speed = total_bytes / elapsed / 1024 / 1024  # MB/s
-                    else:
-                        speed = 0
-                    
-                    return {
-                        "status": "success",
-                        "speed": round(speed, 2),
-                        "bytes": total_bytes,
-                        "elapsed": round(elapsed, 2)
-                    }
+            session = await self._get_session()
+            async with session.get(
+                test_url,
+                proxy=proxy_url,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=True
+            ) as resp:
+                async for chunk in resp.content.iter_chunked(8192):
+                    total_bytes += len(chunk)
+                
+                elapsed = time.time() - start
+                if elapsed > 0:
+                    speed = total_bytes / elapsed / 1024 / 1024  # MB/s
+                else:
+                    speed = 0
+                
+                return {
+                    "status": "success",
+                    "speed": round(speed, 2),
+                    "bytes": total_bytes,
+                    "elapsed": round(elapsed, 2)
+                }
         except asyncio.TimeoutError:
             elapsed = time.time() - start
             if total_bytes > 0 and elapsed > 0:
@@ -198,18 +237,17 @@ class SpeedTestService:
             IP address string or None
         """
         try:
-            connector = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(
-                    self.config.landing_ip_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as resp:
-                    ip = await resp.text()
-                    return ip.strip()
+            session = await self._get_session()
+            async with session.get(
+                self.config.landing_ip_url,
+                proxy=proxy_url,
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                ip = await resp.text()
+                return ip.strip()
         except Exception:
             return None
-    
+
     async def test_node(
         self,
         node: Dict,
@@ -229,6 +267,29 @@ class SpeedTestService:
         Returns:
             SpeedTestResult
         """
+        test_key = self._running_test_key(node, proxy_url)
+        existing_task = self._running_tests.get(test_key)
+        if existing_task and not existing_task.done():
+            return await asyncio.shield(existing_task)
+
+        task = asyncio.create_task(
+            self._test_node_uncached(node, proxy_url, test_speed, progress_callback)
+        )
+        self._running_tests[test_key] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if self._running_tests.get(test_key) is task:
+                self._running_tests.pop(test_key, None)
+
+    async def _test_node_uncached(
+        self,
+        node: Dict,
+        proxy_url: str,
+        test_speed: bool = None,
+        progress_callback: Callable = None
+    ) -> SpeedTestResult:
+        """Run the actual node test. Caller handles duplicate in-flight tests."""
         test_speed = test_speed if test_speed is not None else self.config.test_speed
         
         result = SpeedTestResult(
@@ -301,13 +362,19 @@ class SpeedTestService:
                     progress_callback(completed, total, result)
                 return result
         
-        tasks = [test_with_semaphore(node) for node in nodes]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [asyncio.create_task(test_with_semaphore(node)) for node in nodes]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         
         # Convert exceptions to error results
         final_results = []
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 final_results.append(SpeedTestResult(
                     node_id=nodes[i].get('id', ''),
                     node_name=nodes[i].get('name', ''),

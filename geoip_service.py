@@ -13,6 +13,7 @@ import asyncio
 import threading
 from typing import Optional, Dict
 from functools import lru_cache
+from core.config import env_int
 from logger_config import get_logger
 
 # Setup logger
@@ -21,6 +22,7 @@ logger = get_logger(__name__)
 # Persistent cache configuration
 GEOIP_CACHE_FILE = os.path.join(os.environ.get('DATA_DIR', 'data'), 'geoip_cache.json')
 GEOIP_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
+GEOIP_CACHE_VERSION = 1
 
 # Traditional to Simplified Chinese converter
 try:
@@ -690,7 +692,7 @@ COUNTRY_NAME_NORMALIZE.update({
 # Online GeoIP lookup cache (to avoid repeated requests)
 _online_geoip_cache: Dict[str, Dict] = {}
 _online_geoip_inflight: Dict[str, asyncio.Task] = {}
-_online_geoip_semaphore = asyncio.Semaphore(int(os.environ.get('GEOIP_MAX_CONCURRENCY', '8')))
+_online_geoip_semaphore = asyncio.Semaphore(env_int('GEOIP_MAX_CONCURRENCY', 8, minimum=1))
 _online_geoip_cache_lock = threading.RLock()
 _online_geoip_inflight_lock = asyncio.Lock()
 _online_geoip_save_lock = asyncio.Lock()
@@ -702,13 +704,32 @@ def load_geoip_cache_from_disk():
         if os.path.exists(GEOIP_CACHE_FILE):
             with open(GEOIP_CACHE_FILE, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
+
+            if not isinstance(cache_data, dict):
+                raise ValueError("GeoIP cache root must be an object")
+
+            if 'version' in cache_data or 'entries' in cache_data:
+                if cache_data.get('version') != GEOIP_CACHE_VERSION:
+                    logger.info(
+                        "Ignoring GeoIP cache with unsupported version %s",
+                        cache_data.get('version')
+                    )
+                    with _online_geoip_cache_lock:
+                        _online_geoip_cache = {}
+                    return
+                entries = cache_data.get('entries', {})
+                if not isinstance(entries, dict):
+                    raise ValueError("GeoIP cache entries must be an object")
+            else:
+                # Legacy v0 cache format was a raw mapping of cache_key -> entry.
+                entries = cache_data
             
             # Filter out expired entries
             current_time = time.time()
             valid_cache = {}
             expired_count = 0
             
-            for key, entry in cache_data.items():
+            for key, entry in entries.items():
                 if not isinstance(entry, dict):
                     expired_count += 1
                     continue
@@ -740,7 +761,15 @@ async def save_geoip_cache_to_disk():
             os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
             tmp_file = f"{GEOIP_CACHE_FILE}.tmp"
             with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_snapshot, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    {
+                        "version": GEOIP_CACHE_VERSION,
+                        "entries": cache_snapshot,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
             os.replace(tmp_file, GEOIP_CACHE_FILE)
             logger.debug(f"Saved {len(cache_snapshot)} GeoIP cache entries to disk")
         except Exception as e:

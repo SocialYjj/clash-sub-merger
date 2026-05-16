@@ -1,4 +1,4 @@
-// Complete mapping of country codes to Chinese names (236 codes covering 241 regions)
+// Complete mapping of country/region codes to Chinese names
 export const COUNTRY_CHINESE_NAMES = {
   'AD': '安道尔', 'AE': '阿联酋', 'AF': '阿富汗', 'AG': '安提瓜和巴布达',
   'AI': '安圭拉', 'AL': '阿尔巴尼亚', 'AM': '亚美尼亚', 'AO': '安哥拉',
@@ -18,7 +18,7 @@ export const COUNTRY_CHINESE_NAMES = {
   'EG': '埃及', 'EH': '西撒哈拉', 'ER': '厄立特里亚', 'ES': '西班牙',
   'ET': '埃塞俄比亚', 'FI': '芬兰', 'FJ': '斐济', 'FK': '福克兰群岛',
   'FM': '密克罗尼西亚', 'FO': '法罗群岛', 'FR': '法国', 'GA': '加蓬',
-  'GB': '英国', 'GD': '格林纳达', 'GE': '格鲁吉亚', 'GG': '根西岛',
+  'GB': '英国', 'GD': '格林纳达', 'GE': '格鲁吉亚', 'GF': '法属圭亚那', 'GG': '根西岛',
   'GH': '加纳', 'GL': '格陵兰岛（丹麦）', 'GM': '冈比亚', 'GN': '几内亚',
   'GQ': '赤道几内亚', 'GR': '希腊', 'GS': '南乔治亚和南桑威奇群岛', 'GT': '危地马拉',
   'GU': '关岛', 'GW': '几内亚比绍', 'GY': '圭亚那', 'HK': '中国香港',
@@ -44,7 +44,7 @@ export const COUNTRY_CHINESE_NAMES = {
   'PA': '巴拿马', 'PE': '秘鲁', 'PF': '法属波利尼西亚', 'PG': '巴布亚新几内亚',
   'PH': '菲律宾', 'PK': '巴基斯坦', 'PL': '波兰', 'PM': '圣皮埃尔和密克隆',
   'PN': '皮特凯恩群岛', 'PR': '波多黎各', 'PS': '巴勒斯坦', 'PT': '葡萄牙',
-  'PW': '帕劳', 'PY': '巴拉圭', 'QA': '卡塔尔', 'RO': '罗马尼亚',
+  'PW': '帕劳', 'PY': '巴拉圭', 'QA': '卡塔尔', 'RE': '留尼汪', 'RO': '罗马尼亚',
   'RS': '塞尔维亚', 'RU': '俄罗斯', 'RW': '卢旺达', 'SA': '沙特阿拉伯',
   'SB': '所罗门群岛', 'SC': '塞舌尔', 'SD': '苏丹', 'SE': '瑞典',
   'SG': '新加坡', 'SH': '圣赫勒拿', 'SI': '斯洛文尼亚', 'SK': '斯洛伐克',
@@ -284,7 +284,7 @@ export const COUNTRY_NAME_MAP = {
   'dominican rep.': 'DO', 'ecuador': 'EC', 'egypt': 'EG', 'el salvador': 'SV',
   'eq. guinea': 'GQ', 'eritrea': 'ER', 'estonia': 'EE', 'ethiopia': 'ET',
   'faeroe is.': 'FO', 'falkland is.': 'FK', 'fiji': 'FJ', 'finland': 'FI',
-  'fr. polynesia': 'PF', 'fr. s. antarctic lands': 'TF', 'france': 'FR', 'gabon': 'GA',
+  'fr. guiana': 'GF', 'french guiana': 'GF', 'fr. polynesia': 'PF', 'fr. s. antarctic lands': 'TF', 'france': 'FR', 'gabon': 'GA',
   'gambia': 'GM', 'georgia': 'GE', 'germany': 'DE', 'ghana': 'GH',
   'greece': 'GR', 'greenland': 'GL', 'grenada': 'GD', 'guam': 'GU',
   'guatemala': 'GT', 'guernsey': 'GG', 'guinea': 'GN', 'guinea-bissau': 'GW',
@@ -309,7 +309,7 @@ export const COUNTRY_NAME_MAP = {
   'pakistan': 'PK', 'palau': 'PW', 'palestine': 'PS', 'panama': 'PA',
   'papua new guinea': 'PG', 'paraguay': 'PY', 'peru': 'PE', 'philippines': 'PH',
   'pitcairn is.': 'PN', 'poland': 'PL', 'portugal': 'PT', 'puerto rico': 'PR',
-  'qatar': 'QA', 'romania': 'RO', 'russia': 'RU', 'rwanda': 'RW',
+  'qatar': 'QA', 'reunion': 'RE', 'réunion': 'RE', 'romania': 'RO', 'russia': 'RU', 'rwanda': 'RW',
   's. geo. and the is.': 'GS', 's. sudan': 'SS', 'saint helena': 'SH', 'saint lucia': 'LC',
   'samoa': 'WS', 'san marino': 'SM', 'saudi arabia': 'SA', 'senegal': 'SN',
   'serbia': 'RS', 'seychelles': 'SC', 'siachen glacier': 'IN', 'sierra leone': 'SL',

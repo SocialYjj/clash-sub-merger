@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestNormalizeXHTTPNodeMigratesLegacyFields(t *testing.T) {
 	node := map[string]interface{}{
@@ -58,5 +62,52 @@ func TestNormalizeXHTTPNodePreservesExistingXHTTPOpts(t *testing.T) {
 	}
 	if opts["path"] != "/current" {
 		t.Fatalf("path = %v, want existing /current", opts["path"])
+	}
+}
+
+func TestProxySourceDoesNotDisableTLSVerification(t *testing.T) {
+	source, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("read proxy.go: %v", err)
+	}
+
+	if strings.Contains(string(source), "InsecureSkipVerify: true") {
+		t.Fatal("proxy.go must not disable HTTPS certificate verification")
+	}
+}
+
+func TestFetchURLWithAdapterMetadataSetsHTTPType(t *testing.T) {
+	source, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("read proxy.go: %v", err)
+	}
+
+	content := string(source)
+	start := strings.Index(content, "func fetchURLWithAdapter")
+	if start == -1 {
+		t.Fatal("fetchURLWithAdapter function missing")
+	}
+	end := strings.Index(content[start:], "\n}\n")
+	if end == -1 {
+		t.Fatal("fetchURLWithAdapter function body not found")
+	}
+	body := content[start : start+end]
+	if !strings.Contains(body, "Type:    constant.HTTP") {
+		t.Fatal("fetchURLWithAdapter metadata should set Type: constant.HTTP")
+	}
+}
+
+func TestProxyChainUsesInjectedDialerInsteadOfGlobalNameLookup(t *testing.T) {
+	source, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("read proxy.go: %v", err)
+	}
+	content := string(source)
+
+	if !strings.Contains(content, "adapter.WithDialerForAPI(proxydialer.New(currentAdapter, true))") {
+		t.Fatal("proxy chain should inject previous adapter as dialer instead of relying on global proxy name lookup")
+	}
+	if strings.Contains(content, "nodeConfig[\"dialer-proxy\"] =") {
+		t.Fatal("proxy chain must not create temporary dialer-proxy name references")
 	}
 }

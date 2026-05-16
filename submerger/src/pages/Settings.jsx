@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Key, Globe, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
-import request from '../utils/request';
+import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
 
 const API_BASE = '/api';
+
+const shouldIgnoreRequest = (err, signal) => signal?.aborted || isRequestCanceled(err);
 
 // Proxy Node Settings Component
 const ProxyNodeSection = ({ showToast }) => {
@@ -15,22 +17,28 @@ const ProxyNodeSection = ({ showToast }) => {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    fetchData(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = async (signal) => {
     setLoading(true);
     try {
       const [settingRes, nodesRes] = await Promise.all([
-        request.get(`${API_BASE}/settings/proxy-node`),
-        request.get(`${API_BASE}/settings/available-proxy-nodes`)
+        request.get(`${API_BASE}/settings/proxy-node`, { signal }),
+        request.get(`${API_BASE}/settings/available-proxy-nodes`, { signal })
       ]);
+      if (signal?.aborted) return;
       setProxyNodeSetting(settingRes.data);
       setAvailableNodes(nodesRes.data.nodes || []);
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch proxy node settings', err);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 
@@ -160,22 +168,28 @@ const AdminTokenSection = ({ showToast }) => {
   const [showFormatSelector, setShowFormatSelector] = useState(null);  // Token ID for format selector
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    fetchData(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = async (signal) => {
     setLoading(true);
     try {
       const [tokensRes, templatesRes] = await Promise.all([
-        request.get(`${API_BASE}/admin-tokens`),
-        request.get(`${API_BASE}/templates`)
+        request.get(`${API_BASE}/admin-tokens`, { signal }),
+        request.get(`${API_BASE}/templates`, { signal })
       ]);
+      if (signal?.aborted) return;
       setTokens(tokensRes.data.tokens || []);
       setTemplates(templatesRes.data.templates || []);
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch data', err);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 
@@ -779,64 +793,85 @@ export default function Settings({
     sort: 'newest'
   });
   const [geoipAutoRefresh, setGeoipAutoRefresh] = useState('off');
+  const geoipFilterResetTimer = useRef(null);
 
   useEffect(() => {
-    fetchSpeedtestConfig();
-    fetchOnlineGeoipConfig();
-    fetchGeoipCacheStats();
+    const controller = new AbortController();
+    fetchSpeedtestConfig(controller.signal);
+    fetchOnlineGeoipConfig(controller.signal);
+    fetchGeoipCacheStats(controller.signal);
+    return () => {
+      controller.abort();
+      if (geoipFilterResetTimer.current) {
+        clearTimeout(geoipFilterResetTimer.current);
+      }
+    };
   }, []);
 
-  const fetchSpeedtestConfig = async () => {
+  const fetchSpeedtestConfig = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/speedtest/config`);
+      const res = await request.get(`${API_BASE}/speedtest/config`, { signal });
+      if (signal?.aborted) return;
       setSpeedtestConfig(res.data);
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch speedtest config', err);
     }
   };
 
-  const fetchOnlineGeoipConfig = async () => {
+  const fetchOnlineGeoipConfig = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/geoip/online-config`);
+      const res = await request.get(`${API_BASE}/geoip/online-config`, { signal });
+      if (signal?.aborted) return;
       setOnlineGeoipConfig(res.data);
       setIpinfoToken(res.data.ipinfo_token || '');
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch online GeoIP config', err);
     }
   };
 
-  const fetchGeoipCacheStats = async () => {
+  const fetchGeoipCacheStats = async (signal) => {
     try {
-      const res = await request.get(`${API_BASE}/geoip/cache/stats`);
+      const res = await request.get(`${API_BASE}/geoip/cache/stats`, { signal });
+      if (signal?.aborted) return;
       setGeoipCacheStats(res.data);
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch GeoIP cache stats', err);
     }
   };
 
-  const fetchGeoipCacheEntries = async () => {
-    setGeoipCacheLoading(true);
+  const fetchGeoipCacheEntries = async (signal, filters = geoipCacheFilters) => {
+    if (!signal?.aborted) {
+      setGeoipCacheLoading(true);
+    }
     try {
       const params = new URLSearchParams();
       params.set('limit', '200');
-      if (geoipCacheFilters.q) params.set('q', geoipCacheFilters.q);
-      if (geoipCacheFilters.api_id && geoipCacheFilters.api_id !== 'all') params.set('api_id', geoipCacheFilters.api_id);
-      if (geoipCacheFilters.status && geoipCacheFilters.status !== 'all') params.set('status', geoipCacheFilters.status);
-      if (geoipCacheFilters.max_age) params.set('max_age', geoipCacheFilters.max_age);
-      if (geoipCacheFilters.sort) params.set('sort', geoipCacheFilters.sort);
-      const res = await request.get(`${API_BASE}/geoip/cache/entries?${params.toString()}`);
+      if (filters.q) params.set('q', filters.q);
+      if (filters.api_id && filters.api_id !== 'all') params.set('api_id', filters.api_id);
+      if (filters.status && filters.status !== 'all') params.set('status', filters.status);
+      if (filters.max_age) params.set('max_age', filters.max_age);
+      if (filters.sort) params.set('sort', filters.sort);
+      const res = await request.get(`${API_BASE}/geoip/cache/entries?${params.toString()}`, { signal });
+      if (signal?.aborted) return;
       setGeoipCacheEntries(res.data.entries || []);
     } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch GeoIP cache entries', err);
     } finally {
-      setGeoipCacheLoading(false);
+      if (!signal?.aborted) {
+        setGeoipCacheLoading(false);
+      }
     }
   };
 
-  const refreshGeoipCache = async () => {
-    await fetchGeoipCacheStats();
-    if (geoipCacheExpanded) {
-      await fetchGeoipCacheEntries();
+  const refreshGeoipCache = async (signal, filters = geoipCacheFilters, expanded = geoipCacheExpanded) => {
+    await fetchGeoipCacheStats(signal);
+    if (signal?.aborted) return;
+    if (expanded) {
+      await fetchGeoipCacheEntries(signal, filters);
     }
   };
 
@@ -879,10 +914,15 @@ export default function Settings({
     if (!geoipCacheExpanded || geoipAutoRefresh === 'off') return;
     const intervalMs = parseInt(geoipAutoRefresh, 10);
     if (!intervalMs) return;
+    const controller = new AbortController();
+    const filtersSnapshot = { ...geoipCacheFilters };
     const timer = setInterval(() => {
-      refreshGeoipCache();
+      refreshGeoipCache(controller.signal, filtersSnapshot, true);
     }, intervalMs);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
   }, [geoipCacheExpanded, geoipAutoRefresh, geoipCacheFilters]);
 
   const saveOnlineGeoipConfig = async (preferredApi = null, token = null) => {
@@ -1166,7 +1206,7 @@ export default function Settings({
                   导出 JSON
                 </button>
                 <button
-                  onClick={refreshGeoipCache}
+                  onClick={() => refreshGeoipCache()}
                   className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
                 >
                   刷新
@@ -1251,15 +1291,19 @@ export default function Settings({
                   </div>
                   <div className="mt-2 flex items-center gap-2">
                     <button
-                      onClick={fetchGeoipCacheEntries}
+                      onClick={() => fetchGeoipCacheEntries()}
                       className="px-2 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30"
                     >
                       筛选
                     </button>
                     <button
                       onClick={() => {
-                        setGeoipCacheFilters({ q: '', api_id: 'all', status: 'all', max_age: '', sort: 'newest' });
-                        setTimeout(fetchGeoipCacheEntries, 0);
+                        const resetFilters = { q: '', api_id: 'all', status: 'all', max_age: '', sort: 'newest' };
+                        setGeoipCacheFilters(resetFilters);
+                        if (geoipFilterResetTimer.current) {
+                          clearTimeout(geoipFilterResetTimer.current);
+                        }
+                        geoipFilterResetTimer.current = setTimeout(() => fetchGeoipCacheEntries(undefined, resetFilters), 0);
                       }}
                       className="px-2 py-1 text-xs bg-gray-700 text-gray-200 rounded hover:bg-gray-600"
                     >
