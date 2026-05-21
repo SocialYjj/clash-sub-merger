@@ -668,7 +668,7 @@ def refresh_subscription_job(sub_id: str):
             logger.info("Skipping scheduled refresh for %s because another refresh is already running", sub_id)
             return
 
-        # Run the async refresh in a new event loop
+        # Run the async refresh in a new event loop with overall timeout
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -680,8 +680,13 @@ def refresh_subscription_job(sub_id: str):
             except Exception:
                 existing_nodes = []
 
+            # Wrap in wait_for to prevent indefinite blocking if Go service hangs
+            refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10  # extra grace for proxy path
             content, sub_info, node_count = loop.run_until_complete(
-                fetch_subscription_async(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy)
+                asyncio.wait_for(
+                    fetch_subscription_async(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy),
+                    timeout=refresh_timeout,
+                )
             )
             content, remembered, inherited = apply_region_history_to_yaml_content(
                 content,
@@ -735,8 +740,15 @@ def refresh_subscription_job(sub_id: str):
             logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
             update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
         finally:
-            loop.close()
-            refresh_lock.release()
+            # Always release the lock first, even if loop.close() fails
+            try:
+                refresh_lock.release()
+            except Exception:
+                logger.debug("Failed to release refresh lock for %s (may already be released)", sub_id)
+            try:
+                loop.close()
+            except Exception:
+                logger.debug("Failed to close event loop for %s", sub_id)
     except Exception as e:
         logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
 
@@ -891,6 +903,21 @@ migrate_old_config()
 migrate_legacy_sub_token()
 migrate_subscription_fields()
 migrate_proxy_chain_group_ids()
+
+
+def _cleanup_stale_refresh_locks():
+    """Remove leftover lock files from crashed processes."""
+    try:
+        if os.path.exists(REFRESH_LOCK_DIR):
+            for f in os.listdir(REFRESH_LOCK_DIR):
+                if f.endswith('.lock'):
+                    os.remove(os.path.join(REFRESH_LOCK_DIR, f))
+            logger.info("Cleaned up stale refresh lock files")
+    except Exception as e:
+        logger.warning("Failed to cleanup stale refresh locks: %s", e)
+
+
+_cleanup_stale_refresh_locks()
 
 # Initialize GeoIP config from saved config
 def init_geoip_config():
