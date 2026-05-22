@@ -27,14 +27,16 @@ class ProxyFilter:
         '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
         '使用说明', '教程', '更新订阅', '公告', '通知', '客服',
         '续费', '购买', '工单', '咨询', '合作', '邀请', '返利',
-        '免注册', '免费节点', '变动较大'
+        '免注册', '免费节点', '变动较大', '全超时', '更换客户端',
+        '关注', '版本', '须知', '频道', '维护', '公众号'
     ]
 
     # These keywords are common in info nodes, but some providers also put them
     # in real node names such as "节点商城xx美国 --01". Those need extra checks.
     SOFT_INVALID_KEYWORDS = [
         '建议', '剩余', '到期', '重置', '流量', '过期', '订阅',
-        '网址', '群组', 'Telegram', 'TG', '会员', '商城', '账号'
+        '网址', '群组', 'Telegram', 'TG', '会员', '商城', '账号',
+        '套餐', '优惠', '试用', '用户', '说明'
     ]
     
     # Region keywords for valid nodes starting with "Website"
