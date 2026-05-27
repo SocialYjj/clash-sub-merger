@@ -10,11 +10,18 @@ const API_BASE = '/api';
 const shouldIgnoreRequest = (err, signal) => signal?.aborted || isRequestCanceled(err);
 
 // Proxy Node Settings Component
-const ProxyNodeSection = ({ showToast }) => {
-  const [proxyNodeSetting, setProxyNodeSetting] = useState({ proxy_node_id: null, proxy_node_name: null });
-  const [availableNodes, setAvailableNodes] = useState([]);
+// IPv6 Proxy Settings Component
+const IPv6ProxySection = ({ showToast }) => {
+  const [ipv6ProxySetting, setIpv6ProxySetting] = useState({
+    enabled: false,
+    proxy_url: '',
+    ipv6_only: true,
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [connectivityResult, setConnectivityResult] = useState(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -25,16 +32,12 @@ const ProxyNodeSection = ({ showToast }) => {
   const fetchData = async (signal) => {
     setLoading(true);
     try {
-      const [settingRes, nodesRes] = await Promise.all([
-        request.get(`${API_BASE}/settings/proxy-node`, { signal }),
-        request.get(`${API_BASE}/settings/available-proxy-nodes`, { signal })
-      ]);
+      const res = await request.get(`${API_BASE}/settings/ipv6-proxy`, { signal });
       if (signal?.aborted) return;
-      setProxyNodeSetting(settingRes.data);
-      setAvailableNodes(nodesRes.data.nodes || []);
+      setIpv6ProxySetting(res.data);
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
-      console.error('Failed to fetch proxy node settings', err);
+      console.error('Failed to fetch IPv6 proxy settings', err);
     } finally {
       if (!signal?.aborted) {
         setLoading(false);
@@ -42,15 +45,11 @@ const ProxyNodeSection = ({ showToast }) => {
     }
   };
 
-  const saveProxyNode = async (nodeId, nodeName) => {
+  const saveSetting = async () => {
     setSaving(true);
     try {
-      await request.put(`${API_BASE}/settings/proxy-node`, {
-        proxy_node_id: nodeId,
-        proxy_node_name: nodeName
-      });
-      setProxyNodeSetting({ proxy_node_id: nodeId, proxy_node_name: nodeName });
-      showToast?.('代理节点设置已保存');
+      await request.put(`${API_BASE}/settings/ipv6-proxy`, ipv6ProxySetting);
+      showToast?.('IPv6 代理设置已保存');
     } catch (err) {
       showToast?.('保存失败', 'error');
     } finally {
@@ -58,89 +57,184 @@ const ProxyNodeSection = ({ showToast }) => {
     }
   };
 
-  const handleNodeChange = (e) => {
-    const nodeId = e.target.value;
-    if (nodeId === '') {
-      saveProxyNode(null, null);
-    } else {
-      const node = availableNodes.find(n => n.id === nodeId);
-      if (node) {
-        saveProxyNode(nodeId, node.name);
-      }
+  const testProxy = async () => {
+    if (!ipv6ProxySetting.proxy_url) {
+      showToast?.('请先填写代理地址', 'error');
+      return;
+    }
+
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await request.post(`${API_BASE}/settings/ipv6-proxy/test`, {
+        proxy_url: ipv6ProxySetting.proxy_url,
+      });
+      setTestResult(res.data);
+      showToast?.('代理测试成功');
+    } catch (err) {
+      const detail = err.response?.data?.detail || '测试失败';
+      setTestResult({ status: 'error', message: detail });
+      showToast?.(detail, 'error');
+    } finally {
+      setTesting(false);
     }
   };
 
-  // Group nodes by source
-  const groupedNodes = availableNodes.reduce((acc, node) => {
-    const source = node.source === 'custom' ? '自建节点' : node.source.replace('subscription:', '订阅: ');
-    if (!acc[source]) acc[source] = [];
-    acc[source].push(node);
-    return acc;
-  }, {});
+  const testConnectivity = async () => {
+    setTesting(true);
+    setConnectivityResult(null);
+    try {
+      const res = await request.post(`${API_BASE}/settings/ipv6-proxy/test-connectivity`);
+      setConnectivityResult(res.data);
+    } catch (err) {
+      setConnectivityResult({ has_ipv6: false, message: '检测失败' });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Shield size={20} />
-          订阅获取代理设置
+          <Globe size={20} />
+          IPv6 节点测试代理
         </h2>
       </div>
 
       <p className="text-xs text-gray-400 mb-4">
-        当订阅直连失败时，自动使用此节点作为代理获取订阅内容
+        当服务器没有 IPv6 网络时，通过代理测试 IPv6 节点的连通性
       </p>
 
       {loading ? (
         <div className="text-center py-4 text-gray-500">加载中...</div>
       ) : (
-        <div>
-          <label className="block text-sm text-gray-400 mb-2">代理节点</label>
-          <select
-            value={proxyNodeSetting.proxy_node_id || ''}
-            onChange={handleNodeChange}
-            disabled={saving}
-            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
-          >
-            <option value="">不使用代理</option>
-            {Object.entries(groupedNodes).map(([source, nodes]) => (
-              <optgroup key={source} label={source}>
-                {nodes.map(node => (
-                  <option key={node.id} value={node.id}>
-                    {node.display_name || node.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+        <div className="space-y-4">
+          {/* IPv6 Connectivity Check */}
+          <div className="p-4 bg-gray-900/40 border border-gray-700 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-gray-300">当前服务器 IPv6 状态</span>
+              <button
+                onClick={testConnectivity}
+                disabled={testing}
+                className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded disabled:opacity-50"
+              >
+                {testing ? '检测中...' : '检测'}
+              </button>
+            </div>
+            {connectivityResult && (
+              <div className={`text-sm ${connectivityResult.has_ipv6 ? 'text-green-400' : 'text-yellow-400'}`}>
+                {connectivityResult.has_ipv6 ? (
+                  <span>✓ IPv6 可用，IP: {connectivityResult.ip}</span>
+                ) : (
+                  <span>✗ IPv6 不可用 {connectivityResult.ip ? `(当前IP: ${connectivityResult.ip})` : ''}</span>
+                )}
+              </div>
+            )}
+          </div>
 
-          {proxyNodeSetting.proxy_node_id && (
-            <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-              <div className="flex items-start gap-2">
-                <CheckCircle size={16} className="text-blue-400 mt-0.5 flex-shrink-0" />
-                <div className="text-sm text-blue-300">
-                  <p className="font-medium">当前使用: {proxyNodeSetting.proxy_node_name}</p>
-                  <p className="text-xs text-blue-400 mt-1">
-                    订阅刷新时会先尝试直连，失败后自动切换到此代理节点
-                  </p>
-                </div>
+          {/* Enable Toggle */}
+          <div className="flex items-center justify-between">
+            <label className="text-sm text-gray-300">启用代理</label>
+            <button
+              onClick={() => setIpv6ProxySetting(prev => ({ ...prev, enabled: !prev.enabled }))}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                ipv6ProxySetting.enabled ? 'bg-blue-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  ipv6ProxySetting.enabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* IPv6 Only Toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm text-gray-300">仅 IPv6 节点</label>
+              <p className="text-xs text-gray-500">开启后只对 IPv6 节点使用代理测试，关闭则所有节点都走代理</p>
+            </div>
+            <button
+              onClick={() => setIpv6ProxySetting(prev => ({ ...prev, ipv6_only: !prev.ipv6_only }))}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                ipv6ProxySetting.ipv6_only ? 'bg-blue-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  ipv6ProxySetting.ipv6_only ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Proxy URL */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">代理地址</label>
+            <input
+              type="text"
+              value={ipv6ProxySetting.proxy_url || ''}
+              onChange={(e) => setIpv6ProxySetting(prev => ({ ...prev, proxy_url: e.target.value }))}
+              placeholder="socks5://warp:1080 或 http://proxy:8080"
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              支持 socks5://, http://, https:// 协议
+            </p>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-3">
+            <button
+              onClick={saveSetting}
+              disabled={saving}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存设置'}
+            </button>
+            <button
+              onClick={testProxy}
+              disabled={testing || !ipv6ProxySetting.proxy_url}
+              className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {testing ? '测试中...' : '测试代理'}
+            </button>
+          </div>
+
+          {/* Test Result */}
+          {testResult && (
+            <div className={`p-3 rounded-lg ${
+              testResult.status === 'success' ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'
+            }`}>
+              <div className="text-sm font-mono">
+                {testResult.status === 'success' ? (
+                  <div className="text-green-300">
+                    <div>✓ Proxy working</div>
+                    <div className="mt-1">
+                      {testResult.ipv4 && <div>出口 IP: {testResult.ipv4} (IPv4)</div>}
+                      {testResult.ipv6 && <div>        {testResult.ipv6} (IPv6)</div>}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-red-300">✗ {testResult.message}</div>
+                )}
               </div>
             </div>
           )}
 
-          {availableNodes.length === 0 && (
-            <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-              <div className="flex items-start gap-2">
-                <AlertCircle size={16} className="text-yellow-400 mt-0.5 flex-shrink-0" />
-                <div className="text-sm text-yellow-300">
-                  <p>没有可用的节点</p>
-                  <p className="text-xs text-yellow-400 mt-1">
-                    请先添加自建节点或订阅，然后才能选择代理节点
-                  </p>
-                </div>
-              </div>
+          {/* Usage Tips */}
+          <div className="p-3 bg-blue-900/20 border border-blue-800 rounded-lg">
+            <div className="text-xs text-blue-300">
+              <div className="font-medium mb-1">使用说明：</div>
+              <ul className="list-disc list-inside space-y-1 text-blue-400">
+                <li>配置后，测试 IPv6 节点时会自动通过代理进行</li>
+                <li>常见代理地址：socks5://warp:1080（Cloudflare WARP）</li>
+                <li>确保代理容器与 submerger 在同一网络</li>
+              </ul>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>
@@ -1128,6 +1222,9 @@ export default function Settings({
       {/* Admin Token Management */}
       <AdminTokenSection showToast={showToast} />
 
+      {/* IPv6 Proxy Settings */}
+      <IPv6ProxySection showToast={showToast} />
+
       {/* Online GeoIP API Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
         <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -1544,9 +1641,6 @@ export default function Settings({
           type="danger"
         />
       )}
-
-      {/* Proxy Node Settings */}
-      <ProxyNodeSection showToast={showToast} />
 
       {/* Password Settings */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">

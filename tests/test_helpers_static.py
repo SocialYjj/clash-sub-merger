@@ -85,12 +85,11 @@ class HelpersStaticTests(unittest.TestCase):
 
     def test_services_init_does_not_create_orphan_http_client(self):
         services_init = (REPO_ROOT / "services" / "__init__.py").read_text(encoding="utf-8")
-        http_client = (REPO_ROOT / "services" / "http_client.py").read_text(encoding="utf-8")
-
+        http_client_path = REPO_ROOT / "services" / "http_client.py"
+        
+        # http_client.py was removed during refactoring, so we only check services/__init__.py
         self.assertNotIn("from .http_client import", services_init)
-        self.assertIsNone(re.search(r"^http_client\s*=\s*httpx\.AsyncClient", http_client, re.MULTILINE))
-        self.assertIn("def get_http_client()", http_client)
-        self.assertIn("verify=AppConfig.HTTP_VERIFY_SSL", http_client)
+        self.assertNotIn("import http_client", services_init)
 
     def test_config_cache_is_guarded_by_lock(self):
         content = (REPO_ROOT / "core" / "database.py").read_text(encoding="utf-8")

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import api.health as health_api
 import server
+from services.node_manager import get_proxy_node_by_id
 
 
 class ServerBugfixTests(unittest.TestCase):
@@ -31,16 +32,15 @@ class ServerBugfixTests(unittest.TestCase):
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch.object(server, "YAML_SOURCE_DIR", tempdir),
-                patch.object(server, "load_config", return_value={"custom_nodes": []}),
-                patch.object(server, "load_subscription_yaml", return_value={
+                patch("services.node_manager.load_config", return_value={"custom_nodes": []}),
+                patch("services.node_manager.load_subscription_yaml", return_value={
                     "proxies": [
                         {"name": "first"},
                         {"name": "second"},
                     ]
                 }),
             ):
-                node = server.get_proxy_node_by_id("sub_my_sub_name_1")
+                node = get_proxy_node_by_id("sub_my_sub_name_1", yaml_source_dir=tempdir)
 
         self.assertEqual(node, {"name": "second"})
 
@@ -50,16 +50,15 @@ class ServerBugfixTests(unittest.TestCase):
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch.object(server, "YAML_SOURCE_DIR", tempdir),
-                patch.object(server, "load_config", return_value={"custom_nodes": []}),
-                patch.object(server, "load_subscription_yaml", return_value={
+                patch("services.node_manager.load_config", return_value={"custom_nodes": []}),
+                patch("services.node_manager.load_subscription_yaml", return_value={
                     "proxies": [
                         {"name": "first"},
                         {"name": "second"},
                     ]
                 }) as load_yaml,
             ):
-                node = server.get_proxy_node_by_id("sub_my_sub_1_1")
+                node = get_proxy_node_by_id("sub_my_sub_1_1", yaml_source_dir=tempdir)
 
         self.assertEqual(node, {"name": "second"})
         load_yaml.assert_called_with("my_sub_1", tempdir, use_cache=True)

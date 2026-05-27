@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
-from helpers import handle_api_errors, load_subscription_yaml
+from helpers import handle_api_errors
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_chain_utils import unique_group_name, unique_name
@@ -35,95 +35,7 @@ def _get_server():
     return _server_module
 
 
-# ==================== Data Models ====================
-
-class ProxyNodeSetting(BaseModel):
-    proxy_node_id: Optional[str] = None
-    proxy_node_name: Optional[str] = None
-
-
 # ==================== API Endpoints ====================
-
-@router.get("/proxy-node")
-@handle_api_errors
-def get_proxy_node_setting(_: bool = Depends(verify_session)):
-    """Get proxy node setting for subscription fetching"""
-    config = load_config()
-    settings = config.get('settings', {})
-    return {
-        "proxy_node_id": settings.get('proxy_node_id'),
-        "proxy_node_name": settings.get('proxy_node_name')
-    }
-
-
-@router.put("/proxy-node")
-@handle_api_errors
-def update_proxy_node_setting(data: ProxyNodeSetting, _: bool = Depends(verify_session)):
-    """Update proxy node setting"""
-    def set_proxy_node(config: dict):
-        settings = config.setdefault('settings', {})
-        settings['proxy_node_id'] = data.proxy_node_id
-        settings['proxy_node_name'] = data.proxy_node_name
-
-    update_config(set_proxy_node)
-    return {"status": "success"}
-
-
-@router.get("/available-proxy-nodes")
-@handle_api_errors
-def get_available_proxy_nodes(_: bool = Depends(verify_session)):
-    """Get all available nodes that can be used as proxy"""
-    config = load_config()
-    nodes = []
-    
-    # Add custom nodes
-    custom_nodes = config.get('custom_nodes', [])
-    for i, node in enumerate(custom_nodes):
-        if not is_node_enabled(node):
-            continue
-        transformed = NameTransformer.transform_name(node, 'Custom')
-        final_name = transformed.get('name', node.get('name', 'Unknown'))
-        
-        nodes.append({
-            "id": f"custom_{i}",
-            "name": node.get('name', 'Unknown'),
-            "display_name": final_name,
-            "type": node.get('type', 'unknown'),
-            "server": node.get('server', ''),
-            "source": "custom"
-        })
-    
-    # Add subscription nodes
-    for sub in config.get('subscriptions', []):
-        sub_id = sub.get('id')
-        if not sub.get('enabled', True):
-            continue
-        
-        try:
-            sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
-            sub_nodes = sub_data.get('proxies', []) if sub_data else []
-            
-            for i, node in enumerate(sub_nodes):
-                if not is_node_enabled(node):
-                    continue
-                if not node.get('server'):
-                    continue
-                transformed = NameTransformer.transform_name(node, sub['name'])
-                final_name = transformed.get('name', node.get('name', 'Unknown'))
-                
-                nodes.append({
-                    "id": f"{sub_id}_{i}",
-                    "name": node.get('name', 'Unknown'),
-                    "display_name": final_name,
-                    "type": node.get('type', 'unknown'),
-                    "server": node.get('server', ''),
-                    "source": sub['name']
-                })
-        except Exception as e:
-            logger.warning(f"Failed to load subscription {sub_id}: {e}")
-    
-    return {"nodes": nodes, "count": len(nodes)}
-
 
 @router.get("/source-order")
 @handle_api_errors
@@ -283,3 +195,144 @@ def delete_port_mapping(port: int, _: bool = Depends(verify_session)):
 
     update_config(remove_port_mapping)
     return {"status": "success"}
+
+
+# ==================== IPv6 Test Proxy API ====================
+
+class IPv6ProxySetting(BaseModel):
+    enabled: bool = False
+    proxy_url: Optional[str] = None
+    ipv6_only: bool = True
+
+
+class IPv6ProxyTest(BaseModel):
+    proxy_url: str
+
+
+@router.get("/ipv6-proxy")
+@handle_api_errors
+def get_ipv6_proxy_setting(_: bool = Depends(verify_session)):
+    """Get IPv6 test proxy setting"""
+    config = load_config()
+    settings = config.get('settings', {})
+    ipv6_proxy = settings.get('ipv6_proxy', {})
+    return {
+        "enabled": ipv6_proxy.get('enabled', False),
+        "proxy_url": ipv6_proxy.get('proxy_url'),
+        "ipv6_only": ipv6_proxy.get('ipv6_only', True),
+    }
+
+
+@router.put("/ipv6-proxy")
+@handle_api_errors
+def update_ipv6_proxy_setting(data: IPv6ProxySetting, _: bool = Depends(verify_session)):
+    """Update IPv6 test proxy setting"""
+    def set_ipv6_proxy(config: dict):
+        settings = config.setdefault('settings', {})
+        settings['ipv6_proxy'] = {
+            'enabled': data.enabled,
+            'proxy_url': data.proxy_url,
+            'ipv6_only': data.ipv6_only,
+        }
+
+    update_config(set_ipv6_proxy)
+    return {"status": "success"}
+
+
+@router.post("/ipv6-proxy/test")
+@handle_api_errors
+async def test_ipv6_proxy(data: IPv6ProxyTest, _: bool = Depends(verify_session)):
+    """Test IPv6 proxy and return both IPv4 and IPv6 addresses"""
+    import httpx
+    import asyncio
+    
+    proxy_url = data.proxy_url
+    
+    if not proxy_url:
+        raise HTTPException(status_code=400, detail="Proxy URL is required")
+    
+    headers = {"Accept": "text/plain"}
+    ipv4_ip = None
+    ipv6_ip = None
+    errors = []
+    
+    async def fetch_ipv4(client):
+        nonlocal ipv4_ip
+        try:
+            resp = await client.get("http://ifconfig.co/ip", headers=headers)
+            resp.raise_for_status()
+            ipv4_ip = resp.text.strip()
+        except Exception as e:
+            errors.append(f"IPv4: {e}")
+    
+    async def fetch_ipv6(client):
+        # IPv6 test through proxy - proxy may not support IPv6
+        nonlocal ipv6_ip
+        try:
+            resp = await client.get("http://ifconfig.co/ip", headers=headers)
+            resp.raise_for_status()
+            ip = resp.text.strip()
+            if ':' in ip:
+                ipv6_ip = ip
+        except Exception:
+            pass  # IPv6 not available through proxy
+    
+    try:
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=httpx.Timeout(10),
+            follow_redirects=True
+        ) as client:
+            await asyncio.gather(fetch_ipv4(client), fetch_ipv6(client))
+        
+        if not ipv4_ip and not ipv6_ip:
+            raise HTTPException(status_code=502, detail=f"Proxy connection failed")
+        
+        return {
+            "status": "success",
+            "ipv4": ipv4_ip,
+            "ipv6": ipv6_ip,
+        }
+    except HTTPException:
+        raise
+    except httpx.ConnectError as e:
+        raise HTTPException(status_code=502, detail=f"Connection failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+
+@router.post("/ipv6-proxy/test-connectivity")
+@handle_api_errors
+async def test_ipv6_connectivity(_: bool = Depends(verify_session)):
+    """Test if the server has IPv6 connectivity"""
+    import httpx
+    import asyncio
+    
+    async def check_ipv6():
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(5),
+            follow_redirects=True
+        ) as client:
+            try:
+                response = await client.get("http://ifconfig.co", headers={"Accept": "text/plain"})
+                ip = response.text.strip()
+                is_ipv6 = ':' in ip
+                return {"has_ipv6": is_ipv6, "ip": ip}
+            except Exception:
+                return {"has_ipv6": False, "ip": None}
+    
+    try:
+        result = await asyncio.wait_for(check_ipv6(), timeout=10)
+        return {
+            "status": "success",
+            "has_ipv6": result["has_ipv6"],
+            "ip": result["ip"],
+            "message": "IPv6 available" if result["has_ipv6"] else "IPv6 not available"
+        }
+    except Exception as e:
+        return {
+            "status": "success",
+            "has_ipv6": False,
+            "ip": None,
+            "message": f"IPv6 check failed: {str(e)}"
+        }

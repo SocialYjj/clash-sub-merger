@@ -77,6 +77,97 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _is_ipv6_address(server: str) -> bool:
+    """Check if server address is IPv6."""
+    if not server:
+        return False
+    # IPv6 addresses contain colons
+    return ':' in server and not server.startswith('[')
+
+
+def _get_ipv6_proxy() -> tuple:
+    """Get IPv6 proxy URL and ipv6_only flag from settings if enabled.
+    
+    Returns:
+        (proxy_url, ipv6_only) or (None, True) if not enabled
+    """
+    try:
+        config = load_config()
+        settings = config.get('settings', {})
+        ipv6_proxy = settings.get('ipv6_proxy', {})
+        if ipv6_proxy.get('enabled') and ipv6_proxy.get('proxy_url'):
+            return ipv6_proxy['proxy_url'], ipv6_proxy.get('ipv6_only', True)
+    except Exception:
+        pass
+    return None, True
+
+
+async def _test_node_latency_via_proxy(node: dict, proxy_url: str, timeout_ms: int) -> dict:
+    """Test node latency through a proxy (for IPv6 nodes on IPv4-only servers).
+    
+    This connects to the node's actual server through the proxy and measures TCP latency.
+    It does NOT go through the proxy protocol (vmess/vless/etc), it just uses the proxy
+    as a network gateway to reach the IPv6 server.
+    """
+    import httpx
+    import time
+    
+    server = node.get('server', '')
+    port = node.get('port', 443)
+    node_type = node.get('type', '')
+    
+    if not server:
+        return {"success": False, "error": "Node has no server address"}
+    
+    # For nodes that need protocol-level testing, we can only do a TCP connect test
+    # through the proxy. Measure the time to connect to the node's server:port.
+    
+    try:
+        start = time.monotonic()
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=httpx.Timeout(timeout_ms / 1000),
+            follow_redirects=False,
+        ) as client:
+            # Try to connect to the node's server directly via proxy
+            # This measures TCP latency to the node through the proxy
+            try:
+                response = await client.get(
+                    f"http://{server}:{port}",
+                    headers={"Accept": "text/plain"},
+                )
+            except httpx.ConnectError as e:
+                # Connection refused is expected (node server isn't HTTP)
+                # but it means we CAN reach the server, just wrong protocol
+                if "Connection refused" in str(e) or "10054" in str(e) or "forcibly closed" in str(e):
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    return {
+                        "success": True,
+                        "latency": latency_ms,
+                        "message": "Node reachable (connection refused = server alive)",
+                    }
+                raise
+            except httpx.ReadError as e:
+                # Read error after connection means server is alive but not HTTP
+                latency_ms = int((time.monotonic() - start) * 1000)
+                return {
+                    "success": True,
+                    "latency": latency_ms,
+                    "message": "Node reachable (protocol mismatch = server alive)",
+                }
+            except httpx.ConnectTimeout:
+                return {"success": False, "error": "Connection timeout to node server"}
+            
+            latency_ms = int((time.monotonic() - start) * 1000)
+            return {
+                "success": True,
+                "latency": latency_ms,
+                "message": f"Node reachable, latency: {latency_ms}ms",
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int = 10):
     """Test a single node"""
     timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
@@ -123,22 +214,53 @@ async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int =
         "bytes_downloaded": 0,
     }
 
-    latency_result = await _go_speedtest_request(
-        "/api/delay",
-        {
-            "node": node,
-            "url": "https://cp.cloudflare.com/generate_204",
-            "timeout": timeout_ms,
-        },
-        timeout + 2,
-    )
-    if latency_result.get("success"):
-        result["latency"] = latency_result.get("latency", -1)
-        result["latency_status"] = "success"
-    else:
-        result["latency_status"] = "error"
-        result["error"] = latency_result.get("error", "Latency test failed")
+    # Check if we should use proxy for this node
+    server = node.get('server', '')
+    is_ipv6 = _is_ipv6_address(server)
+    ipv6_proxy, ipv6_only = _get_ipv6_proxy()
+    
+    # Determine if this node should use proxy
+    use_proxy = ipv6_proxy and (not ipv6_only or is_ipv6)
+    
+    if use_proxy:
+        # Use proxy for this node
+        logger.info(f"Testing node {node.get('name')} via proxy: {ipv6_proxy}")
+        result["using_proxy"] = True
+        
+        # Test through proxy
+        proxy_result = await _test_node_latency_via_proxy(node, ipv6_proxy, timeout_ms)
+        if proxy_result.get("success"):
+            result["latency"] = proxy_result.get("latency", -1)
+            result["latency_status"] = "success"
+            result["note"] = "IPv6 node tested via proxy"
+        else:
+            result["latency_status"] = "error"
+            result["error"] = proxy_result.get("error", "Proxy test failed")
+        
+        # Go service can't reach IPv6 nodes, skip IP and speed tests
+        result["landing_ip"] = "(IPv6 - tested via proxy, Go service cannot reach)"
+        if test_speed:
+            result["speed_status"] = "skipped"
+            result["note"] = "Speed test not available for IPv6 nodes via proxy"
         return result
+    else:
+        # Normal testing (direct or via configured proxy node)
+        latency_result = await _go_speedtest_request(
+            "/api/delay",
+            {
+                "node": node,
+                "url": "https://cp.cloudflare.com/generate_204",
+                "timeout": timeout_ms,
+            },
+            timeout + 2,
+        )
+        if latency_result.get("success"):
+            result["latency"] = latency_result.get("latency", -1)
+            result["latency_status"] = "success"
+        else:
+            result["latency_status"] = "error"
+            result["error"] = latency_result.get("error", "Latency test failed")
+            return result
 
     ip_result = await _go_speedtest_request(
         "/api/ip",

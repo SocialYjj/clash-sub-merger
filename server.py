@@ -22,8 +22,8 @@ try:
     from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
 except ImportError:
     from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
-from typing import Optional, Tuple, Dict, List
-from fastapi import FastAPI, HTTPException, Request
+from typing import Optional, Tuple, Dict, List, Callable, AsyncGenerator
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -77,7 +77,7 @@ AppConfig = CoreAppConfig
 limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await startup_event()
     try:
         yield
@@ -109,7 +109,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Global exception handler to log all unhandled exceptions
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     import traceback
     error_detail = f"Unhandled exception: {str(exc)}\n{traceback.format_exc()}"
     logger.error(error_detail)
@@ -121,7 +121,7 @@ async def global_exception_handler(request, exc):
 
 
 @app.middleware("http")
-async def security_headers_middleware(request: Request, call_next):
+async def security_headers_middleware(request: Request, call_next: Callable) -> Response:
     """Add conservative browser security headers for the built-in UI."""
     response = await call_next(request)
     response.headers.setdefault(
@@ -168,35 +168,17 @@ app.add_middleware(GZipMiddleware, minimum_size=AppConfig.GZIP_MIN_SIZE)
 
 # ==================== Startup/Shutdown Events ====================
 
-async def startup_event():
-    """Initialize services on startup"""
-    logger.info("Starting up application...")
-
-    # Start Go speedtest service
-    if AppConfig.GO_SPEEDTEST_ENABLED:
-        if await asyncio.to_thread(start_go_speedtest_service):
-            logger.info("Go speedtest service started successfully")
-        else:
-            logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
-    else:
-        logger.info("Go speedtest service disabled")
-
-    # Initialize scheduler
-    init_scheduler()
-    logger.info("Scheduler initialized")
-
-    # Restore scheduled jobs from config
+def _restore_scheduled_jobs():
+    """Restore scheduled jobs from config."""
     try:
-        from core.database import load_config
-
         config = load_config()
         scheduler = get_scheduler()
         restored_count = 0
-
+        
         for sub in config.get('subscriptions', []):
             if sub.get('type') == 'local':
                 continue
-
+            
             cron_expr = sub.get('cron_expr')
             if cron_expr:
                 try:
@@ -207,7 +189,7 @@ async def startup_event():
                         refresh_subscription_job,
                         sub['id']
                     )
-
+                    
                     # Update next_update timestamp
                     job_info = scheduler.get_job_info(task_id)
                     if job_id and job_info and job_info.get("next_run"):
@@ -219,59 +201,86 @@ async def startup_event():
                 except Exception as e:
                     logger.error(f"Failed to restore schedule for subscription '{sub.get('name')}': {e}")
                     sub['next_update'] = None
-
+        
         if restored_count > 0:
-            from core.database import save_config
             save_config(config)
             logger.info(f"Restored {restored_count} scheduled job(s)")
     except Exception as e:
         logger.error(f"Failed to restore scheduled jobs: {e}")
 
-    # Schedule FlClash version check (only if using flclash mode)
+
+def _schedule_flclash_version_check():
+    """Schedule FlClash version check if using flclash mode."""
     try:
         ua_mode = os.getenv('SUBSCRIPTION_UA_MODE', 'flclash').strip().lower()
-        if ua_mode == 'flclash':
-            from helpers_ua import refresh_version_cache
-            from apscheduler.triggers.cron import CronTrigger
-
-            # Get cron expression from env, default to daily at 3 AM
-            cron_expr = os.getenv('FLCLASH_VERSION_UPDATE_CRON', '0 3 * * *').strip()
-
-            try:
-                trigger = CronTrigger.from_crontab(cron_expr)
-                scheduler.scheduler.add_job(
-                    refresh_version_cache,
-                    trigger=trigger,
-                    id="flclash_version_refresh",
-                    replace_existing=True
-                )
-                logger.info(f"Scheduled FlClash version check with cron: {cron_expr}")
-            except Exception as e:
-                logger.warning(f"Invalid FLCLASH_VERSION_UPDATE_CRON '{cron_expr}': {e}, using default")
-                # Fallback to default
-                scheduler.scheduler.add_job(
-                    refresh_version_cache,
-                    trigger=CronTrigger(hour=3, minute=0),
-                    id="flclash_version_refresh",
-                    replace_existing=True
-                )
-                logger.info("Scheduled FlClash version check at 3:00 AM (default)")
-        else:
+        if ua_mode != 'flclash':
             logger.info(f"FlClash version check disabled (UA mode: {ua_mode})")
+            return
+        
+        from helpers_ua import refresh_version_cache
+        from apscheduler.triggers.cron import CronTrigger
+        
+        scheduler = get_scheduler()
+        cron_expr = os.getenv('FLCLASH_VERSION_UPDATE_CRON', '0 3 * * *').strip()
+        
+        try:
+            trigger = CronTrigger.from_crontab(cron_expr)
+            scheduler.scheduler.add_job(
+                refresh_version_cache,
+                trigger=trigger,
+                id="flclash_version_refresh",
+                replace_existing=True
+            )
+            logger.info(f"Scheduled FlClash version check with cron: {cron_expr}")
+        except Exception as e:
+            logger.warning(f"Invalid FLCLASH_VERSION_UPDATE_CRON '{cron_expr}': {e}, using default")
+            scheduler.scheduler.add_job(
+                refresh_version_cache,
+                trigger=CronTrigger(hour=3, minute=0),
+                id="flclash_version_refresh",
+                replace_existing=True
+            )
+            logger.info("Scheduled FlClash version check at 3:00 AM (default)")
     except Exception as e:
         logger.warning(f"Failed to schedule FlClash version check: {e}")
 
 
-async def shutdown_event():
+async def startup_event() -> None:
+    """Initialize services on startup"""
+    logger.info("Starting up application...")
+    
+    # Start Go speedtest service
+    if AppConfig.GO_SPEEDTEST_ENABLED:
+        if await asyncio.to_thread(start_go_speedtest_service):
+            logger.info("Go speedtest service started successfully")
+        else:
+            logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
+    else:
+        logger.info("Go speedtest service disabled")
+    
+    # Initialize scheduler
+    init_scheduler()
+    logger.info("Scheduler initialized")
+    
+    # Restore scheduled jobs
+    _restore_scheduled_jobs()
+    
+    # Schedule FlClash version check
+    _schedule_flclash_version_check()
+
+
+async def shutdown_event() -> None:
     """Cleanup on shutdown"""
     logger.info("Shutting down application...")
     stop_go_speedtest_service()
     if http_client:
         await http_client.aclose()
     logger.info("Application shutdown complete")
+
+
 # Security headers middleware
 @app.middleware("http")
-async def add_security_headers(request: Request, call_next):
+async def add_security_headers(request: Request, call_next: Callable) -> Response:
     """Add security headers to all responses"""
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -283,7 +292,7 @@ async def add_security_headers(request: Request, call_next):
 # Request ID middleware
 
 @app.middleware("http")
-async def add_request_id(request: Request, call_next):
+async def add_request_id(request: Request, call_next: Callable) -> Response:
     """Add unique request ID to each request"""
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
@@ -294,7 +303,7 @@ async def add_request_id(request: Request, call_next):
 
 # Request size limit middleware
 @app.middleware("http")
-async def limit_request_size(request: Request, call_next):
+async def limit_request_size(request: Request, call_next: Callable) -> Response:
     """Limit request body size"""
     if request.headers.get("content-length"):
         content_length = int(request.headers["content-length"])
@@ -305,7 +314,7 @@ async def limit_request_size(request: Request, call_next):
 
 # Slow request logging middleware
 @app.middleware("http")
-async def log_slow_requests(request: Request, call_next):
+async def log_slow_requests(request: Request, call_next: Callable) -> Response:
     """Log slow requests"""
     start_time = time.time()
     response = await call_next(request)
@@ -388,49 +397,54 @@ set_health_http_client(http_client)
 
 # ==================== Config Helper Functions ====================
 
-def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name: str | None = None) -> Optional[dict]:
-    """Get a proxy node by reference (sub_id + node_name/node_index) with transformed name.
+# Fields to exclude from proxy config (metadata fields)
+NODE_METADATA_FIELDS = {
+    'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
+    'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
+}
 
-    Returns a proxy dict aligned with ConfigMerger naming, or None if not found/invalid.
-    """
-    config = load_config()
 
-    # Custom nodes
-    if sub_id == 'custom':
-        custom_nodes = config.get('custom_nodes', [])
-        if node_name:
-            for node in custom_nodes:
-                if not is_node_enabled(node):
-                    continue
-                exclude_fields = {
-                    'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                    'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
-                }
-                proxy = {k: v for k, v in node.items() if k not in exclude_fields}
-                proxy = ProxyFilter.sanitize_proxy(proxy)
-                transformed = NameTransformer.transform_name(proxy, 'Custom')
-                if transformed.get('name') == node_name:
-                    return transformed
-        if node_index is not None and 0 <= node_index < len(custom_nodes):
-            node = custom_nodes[node_index]
+def _find_custom_node_by_reference(
+    custom_nodes: list,
+    node_index: int = None,
+    node_name: str = None
+) -> Optional[dict]:
+    """Find custom node by name or index with transformed name."""
+    # Search by name
+    if node_name:
+        for node in custom_nodes:
             if not is_node_enabled(node):
-                return None
-            # Strip metadata fields not part of Clash proxy config
-            exclude_fields = {
-                'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
-            }
-            proxy = {k: v for k, v in node.items() if k not in exclude_fields}
+                continue
+            proxy = {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS}
             proxy = ProxyFilter.sanitize_proxy(proxy)
-            return NameTransformer.transform_name(proxy, 'Custom')
-        return None
+            transformed = NameTransformer.transform_name(proxy, 'Custom')
+            if transformed.get('name') == node_name:
+                return transformed
+    
+    # Search by index
+    if node_index is not None and 0 <= node_index < len(custom_nodes):
+        node = custom_nodes[node_index]
+        if not is_node_enabled(node):
+            return None
+        proxy = {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS}
+        proxy = ProxyFilter.sanitize_proxy(proxy)
+        return NameTransformer.transform_name(proxy, 'Custom')
+    
+    return None
 
-    # Subscription nodes
-    sub = find_subscription_by_id(config, sub_id)
-    source_name = sub['name'] if sub else sub_id
+
+def _find_subscription_node_by_reference(
+    sub_id: str,
+    source_name: str,
+    node_index: int = None,
+    node_name: str = None
+) -> Optional[dict]:
+    """Find subscription node by name or index with transformed name."""
     try:
         cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
         proxies = cfg.get('proxies', []) if cfg else []
+        
+        # Search by name
         if node_name:
             for proxy in proxies:
                 if not is_node_enabled(proxy):
@@ -442,6 +456,8 @@ def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name
                 transformed = NameTransformer.transform_name(proxy, source_name)
                 if transformed.get('name') == node_name:
                     return transformed
+        
+        # Search by index
         if node_index is not None and 0 <= node_index < len(proxies):
             proxy = proxies[node_index]
             if not is_node_enabled(proxy):
@@ -453,7 +469,33 @@ def find_node_by_reference(sub_id: str, node_index: int | None = None, node_name
             return NameTransformer.transform_name(proxy, source_name)
     except Exception as e:
         logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
+    
     return None
+
+
+def find_node_by_reference(
+    sub_id: str,
+    node_index: int = None,
+    node_name: str = None
+) -> Optional[dict]:
+    """Get a proxy node by reference (sub_id + node_name/node_index) with transformed name.
+
+    Returns a proxy dict aligned with ConfigMerger naming, or None if not found/invalid.
+    """
+    config = load_config()
+    
+    # Custom nodes
+    if sub_id == 'custom':
+        return _find_custom_node_by_reference(
+            config.get('custom_nodes', []),
+            node_index,
+            node_name
+        )
+    
+    # Subscription nodes
+    sub = find_subscription_by_id(config, sub_id)
+    source_name = sub['name'] if sub else sub_id
+    return _find_subscription_node_by_reference(sub_id, source_name, node_index, node_name)
 
 def normalize_alloc_name(name: str) -> str:
     """Normalize node name for allocation matching (remove flags and trim)."""
@@ -541,19 +583,8 @@ def subscription_refresh_lock_sync(sub_id: str):
         lock.release()
 
 # ==================== Stats Cache ====================
-# Cache stats data to improve dashboard performance
-STATS_CACHE = {
-    'overview': None,
-    'countries': None,
-    'last_update': 0,
-    'cache_duration': AppConfig.STATS_CACHE_DURATION
-}
-
-def invalidate_stats_cache():
-    """Invalidate stats cache when data changes"""
-    STATS_CACHE['overview'] = None
-    STATS_CACHE['countries'] = None
-    STATS_CACHE['last_update'] = 0
+# Use unified stats cache from services module
+from services.stats_cache import invalidate as invalidate_stats_cache
 
 # ==================== Go Speedtest Service Management ====================
 
@@ -640,115 +671,131 @@ atexit.register(stop_go_speedtest_service)
 
 # ==================== Scheduled Job Functions ====================
 
+def _load_existing_nodes(sub_id: str) -> list:
+    """Load existing nodes for history preservation."""
+    try:
+        existing_cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
+        return existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
+    except Exception:
+        return []
+
+
+def _fetch_and_process_subscription(sub: dict) -> tuple:
+    """Fetch subscription and apply history/visibility processing."""
+    sub_id = sub['id']
+    existing_nodes = _load_existing_nodes(sub_id)
+    
+    # Fetch subscription
+    refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        content, sub_info, node_count = loop.run_until_complete(
+            asyncio.wait_for(
+                fetch_subscription_async(sub['url']),
+                timeout=refresh_timeout,
+            )
+        )
+    finally:
+        loop.close()
+    
+    # Apply region history
+    content, remembered, inherited = apply_region_history_to_yaml_content(
+        content,
+        existing_nodes=existing_nodes,
+        source=f'sub:scheduled-refresh:{sub_id}',
+    )
+    
+    # Apply node visibility
+    content, visibility_inherited = apply_node_visibility_to_yaml_content(
+        content,
+        existing_nodes=existing_nodes,
+    )
+    
+    return content, sub_info, node_count, remembered, inherited, visibility_inherited
+
+
+def _build_success_updates(sub_info: dict, node_count: int, sub_id: str) -> dict:
+    """Build success updates dict for subscription."""
+    updates = {
+        'upload': sub_info.get('upload', 0),
+        'download': sub_info.get('download', 0),
+        'total': sub_info.get('total', 0),
+        'expire': sub_info.get('expire', 0),
+        'node_count': node_count,
+        'last_update': int(time.time()),
+        'update_status': 'success'
+    }
+    
+    # Get next scheduled run time
+    try:
+        task_id = f"sub_refresh_{sub_id}"
+        scheduler = get_scheduler()
+        job_info = scheduler.get_job_info(task_id)
+        if job_info and job_info.get('next_run'):
+            updates['next_update'] = int(job_info['next_run'].timestamp())
+        else:
+            job = scheduler.scheduler.get_job(f"task_{task_id}") or scheduler.scheduler.get_job(task_id)
+            updates['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
+    except Exception as e:
+        logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
+        updates['next_update'] = None
+    
+    return updates
+
+
 def refresh_subscription_job(sub_id: str):
     """
     Job function for scheduled subscription refresh.
     This is called by the scheduler and runs in a background thread.
     """
     try:
-        from core.database import load_config, update_subscription_fields
-        import asyncio
-
         logger.info(f"Scheduled refresh triggered for subscription {sub_id}")
-
+        
         config = load_config()
         sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
-
+        
         if not sub:
             logger.error(f"Subscription {sub_id} not found for scheduled refresh")
             return
-
+        
         if sub.get('type') == 'local':
             logger.warning(f"Skipping scheduled refresh for local subscription {sub_id}")
             return
-
+        
         try:
             refresh_lock = _acquire_refresh_file_lock(sub_id, wait=False)
         except RefreshAlreadyInProgress:
             logger.info("Skipping scheduled refresh for %s because another refresh is already running", sub_id)
             return
-
-        # Run the async refresh in a new event loop with overall timeout
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        
         try:
-            proxy_node = get_configured_proxy_node()
-            force_proxy = sub.get('force_proxy', False)
-            try:
-                existing_cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
-                existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
-            except Exception:
-                existing_nodes = []
-
-            # Wrap in wait_for to prevent indefinite blocking if Go service hangs
-            refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10  # extra grace for proxy path
-            content, sub_info, node_count = loop.run_until_complete(
-                asyncio.wait_for(
-                    fetch_subscription_async(sub['url'], proxy_node=proxy_node, force_proxy=force_proxy),
-                    timeout=refresh_timeout,
-                )
-            )
-            content, remembered, inherited = apply_region_history_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-                source=f'sub:scheduled-refresh:{sub_id}',
-            )
-            content, visibility_inherited = apply_node_visibility_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-            )
-
-            success_updates = {
-                'upload': sub_info.get('upload', 0),
-                'download': sub_info.get('download', 0),
-                'total': sub_info.get('total', 0),
-                'expire': sub_info.get('expire', 0),
-                'node_count': node_count,
-                'last_update': int(time.time()),
-                'update_status': 'success'
-            }
-
-            try:
-                task_id = f"sub_refresh_{sub_id}"
-                scheduler = get_scheduler()
-                job_info = scheduler.get_job_info(task_id)
-                if job_info and job_info.get('next_run'):
-                    success_updates['next_update'] = int(job_info['next_run'].timestamp())
-                else:
-                    job = scheduler.scheduler.get_job(f"task_{task_id}") or scheduler.scheduler.get_job(task_id)
-                    success_updates['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
-            except Exception as e:
-                logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
-                success_updates['next_update'] = None
-
+            content, sub_info, node_count, remembered, inherited, visibility_inherited = \
+                _fetch_and_process_subscription(sub)
+            
+            success_updates = _build_success_updates(sub_info, node_count, sub_id)
+            
             if remembered or inherited or visibility_inherited:
                 logger.info(
                     "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
-                    sub_id,
-                    remembered,
-                    inherited,
-                    visibility_inherited,
+                    sub_id, remembered, inherited, visibility_inherited,
                 )
-
+            
             save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
             update_subscription_fields(sub_id, success_updates)
             invalidate_stats_cache()
-
+            
             logger.info(f"Scheduled refresh completed for subscription {sub_id}, got {node_count} nodes")
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
             update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
         finally:
-            # Always release the lock first, even if loop.close() fails
             try:
                 refresh_lock.release()
             except Exception:
                 logger.debug("Failed to release refresh lock for %s (may already be released)", sub_id)
-            try:
-                loop.close()
-            except Exception:
-                logger.debug("Failed to close event loop for %s", sub_id)
     except Exception as e:
         logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
 
@@ -1067,129 +1114,64 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
 # Auth API moved to api/auth.py
 
 # ==================== Proxy Node Settings ====================
-def get_proxy_node_by_id(node_id: str) -> dict:
-    """Get proxy node config by ID"""
-    if not node_id:
-        return None
 
-    config = load_config()
-
-    # Check custom nodes
-    if node_id.startswith('custom_'):
-        try:
-            idx = int(node_id.rsplit('_', 1)[1])
-            custom_nodes = config.get('custom_nodes', [])
-            if 0 <= idx < len(custom_nodes):
-                node = custom_nodes[idx]
-                if not is_node_enabled(node):
-                    return None
-                node = dict(node)
-                node.pop('enabled', None)
-                return node
-        except (ValueError, IndexError) as e:
-            logger.warning(f"Invalid custom node ID format: {node_id}, error: {e}")
-        except Exception as e:
-            logger.error(f"Error getting custom node {node_id}: {e}", exc_info=True)
-
-    # Check subscription nodes
-    if node_id.startswith('sub_'):
-        sub_id = None
-        try:
-            node_ref, node_idx_text = node_id.rsplit('_', 1)
-            if not node_ref or node_ref == 'sub':
-                raise ValueError("missing subscription id")
-            node_idx = int(node_idx_text)
-
-            # Canonical node ids are sub_<subscription_id>_<index>. Older UI
-            # paths emitted <subscription_id>_<index> when subscription_id
-            # already started with "sub_". Support both forms so ids with
-            # underscores remain resolvable.
-            raw_sub_id = node_ref[4:] if node_ref.startswith('sub_') else node_ref
-            candidate_sub_ids = []
-            for candidate in (raw_sub_id, f"sub_{raw_sub_id}", node_ref):
-                if candidate and candidate not in candidate_sub_ids:
-                    candidate_sub_ids.append(candidate)
-
-            for sub_id in candidate_sub_ids:
-                sub_file = os.path.join(YAML_SOURCE_DIR, f"{sub_id}.yaml")
-                if not os.path.exists(sub_file):
-                    continue
-                # Use cached load for better performance
-                sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
-                proxies = sub_data.get('proxies', [])
-                if 0 <= node_idx < len(proxies):
-                    proxy = proxies[node_idx]
-                    if not is_node_enabled(proxy):
-                        return None
-                    proxy = dict(proxy)
-                    proxy.pop('enabled', None)
-                    return proxy
-                logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
-                break
-        except (ValueError, IndexError) as e:
-            logger.warning(f"Invalid subscription node ID format: {node_id}, error: {e}")
-        except yaml.YAMLError as e:
-            logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
-        except Exception as e:
-            logger.error(f"Error getting subscription node {node_id}: {e}", exc_info=True)
-
-    return None
-
-def get_proxy_node_by_name(node_name: str) -> dict:
-    """Get proxy node config by transformed display name."""
-    if not node_name:
-        return None
-    config = load_config()
-
-    # Custom nodes
-    for node in config.get('custom_nodes', []):
-        if not is_node_enabled(node):
-            continue
-        exclude_fields = {
-            'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-            'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
-        }
-        proxy = {k: v for k, v in node.items() if k not in exclude_fields}
-        proxy = ProxyFilter.sanitize_proxy(proxy)
-        transformed = NameTransformer.transform_name(proxy, 'Custom')
-        if transformed.get('name') == node_name:
-            return transformed
-
-    # Subscription nodes
-    for sub in config.get('subscriptions', []):
-        if not sub.get('enabled', True):
-            continue
-        try:
-            cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
-            proxies = cfg.get('proxies', []) if cfg else []
-            for proxy in proxies:
-                if not is_node_enabled(proxy):
-                    continue
-                if not ProxyFilter.is_valid_proxy(proxy):
-                    continue
-                proxy = ProxyFilter.sanitize_proxy(proxy)
-                proxy.pop('enabled', None)
-                transformed = NameTransformer.transform_name(proxy, sub['name'])
-                if transformed.get('name') == node_name:
-                    return transformed
-        except Exception as e:
-            logger.warning("Failed to load node by name from %s: %s", sub.get('id'), e)
-    return None
-
-
-def get_configured_proxy_node() -> dict:
-    """Get the configured proxy node from settings"""
-    config = load_config()
-    settings = config.get('settings', {})
-    proxy_node_id = settings.get('proxy_node_id')
-    if proxy_node_id:
-        node = get_proxy_node_by_id(proxy_node_id)
-        if node:
+def _get_custom_node_by_id(node_id: str, custom_nodes: list) -> Optional[dict]:
+    """Get custom node by ID."""
+    try:
+        idx = int(node_id.rsplit('_', 1)[1])
+        if 0 <= idx < len(custom_nodes):
+            node = custom_nodes[idx]
+            if not is_node_enabled(node):
+                return None
+            node = dict(node)
+            node.pop('enabled', None)
             return node
-    proxy_node_name = settings.get('proxy_node_name')
-    if proxy_node_name:
-        return get_proxy_node_by_name(proxy_node_name)
+    except (ValueError, IndexError) as e:
+        logger.warning(f"Invalid custom node ID format: {node_id}, error: {e}")
+    except Exception as e:
+        logger.error(f"Error getting custom node {node_id}: {e}", exc_info=True)
     return None
+
+
+def _get_subscription_node_by_id(node_id: str, yaml_source_dir: str) -> Optional[dict]:
+    """Get subscription node by ID."""
+    sub_id = None
+    try:
+        node_ref, node_idx_text = node_id.rsplit('_', 1)
+        if not node_ref or node_ref == 'sub':
+            raise ValueError("missing subscription id")
+        node_idx = int(node_idx_text)
+        
+        # Support both sub_<id>_<index> and <id>_<index> formats
+        raw_sub_id = node_ref[4:] if node_ref.startswith('sub_') else node_ref
+        candidate_sub_ids = []
+        for candidate in (raw_sub_id, f"sub_{raw_sub_id}", node_ref):
+            if candidate and candidate not in candidate_sub_ids:
+                candidate_sub_ids.append(candidate)
+        
+        for sub_id in candidate_sub_ids:
+            sub_file = os.path.join(yaml_source_dir, f"{sub_id}.yaml")
+            if not os.path.exists(sub_file):
+                continue
+            sub_data = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=True)
+            proxies = sub_data.get('proxies', [])
+            if 0 <= node_idx < len(proxies):
+                proxy = proxies[node_idx]
+                if not is_node_enabled(proxy):
+                    return None
+                proxy = dict(proxy)
+                proxy.pop('enabled', None)
+                return proxy
+            logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
+            break
+    except (ValueError, IndexError) as e:
+        logger.warning(f"Invalid subscription node ID format: {node_id}, error: {e}")
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error getting subscription node {node_id}: {e}", exc_info=True)
+    return None
+
 
 # Node Parsing moved to services/node_parser.py
 
@@ -1211,85 +1193,11 @@ def parse_subscription_info(headers: dict) -> dict:
                     logger.warning(f"Error parsing subscription info: {e}")
     return info
 
-def fetch_subscription(url: str, proxy_node: dict = None, force_proxy: bool = False) -> Tuple[str, dict, int]:
-    """
-    Fetch subscription content from URL (synchronous wrapper for async call)
-    """
+
+def fetch_subscription(url: str) -> Tuple[str, dict, int]:
+    """Fetch subscription content from URL (synchronous wrapper for async call)"""
     _ensure_sync_context("fetch_subscription", "fetch_subscription_async")
-    return asyncio.run(fetch_subscription_async(url, proxy_node, force_proxy))
-
-
-async def fetch_subscription_async(url: str, proxy_node: dict = None, force_proxy: bool = False) -> Tuple[str, dict, int]:
-    """
-    Fetch subscription content from URL
-
-    Args:
-        url: Subscription URL
-        proxy_node: Optional proxy node config to use for fetching
-        force_proxy: If True, always use proxy; if False, try direct first then fallback to proxy
-
-    Returns:
-        Tuple of (content, subscription_info, node_count)
-    """
-    # Use helpers_ua to choose subscription User-Agent.
-    # SUBSCRIPTION_UA_MODE=flclash auto-generates FlClash/v{version} clash-verge Platform/{os};
-    # SUBSCRIPTION_UA_MODE=custom uses SUBSCRIPTION_CUSTOM_UA.
-    from helpers_ua import get_subscription_user_agent
-    user_agent = get_subscription_user_agent()
-    headers = {
-        'User-Agent': user_agent,
-    }
-
-    # Try direct connection first (unless force_proxy is True)
-    if not force_proxy:
-        try:
-            logger.info(f"Fetching subscription directly from: {url}")
-            response = await http_client.get(url, headers=headers, timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
-            response.raise_for_status()
-
-            sub_info = parse_subscription_info(dict(response.headers))
-            content = _process_subscription_content(response)
-            node_count = _count_nodes(content)
-            logger.info(f"Successfully fetched subscription, got {node_count} nodes")
-            return content, sub_info, node_count
-        except httpx.HTTPStatusError as e:
-            # If 403, 418, 429 or other HTTP error and proxy is available, try with proxy
-            logger.warning(f"Direct connection failed with HTTP {e.response.status_code}: {e}")
-            if proxy_node and e.response.status_code in [403, 418, 429]:
-                logger.info(f"Trying with proxy due to HTTP {e.response.status_code}...")
-            else:
-                raise Exception(f"HTTP {e.response.status_code}: {e}")
-        except httpx.TimeoutException as e:
-            logger.warning(f"Direct connection timeout: {e}")
-            if proxy_node:
-                logger.info("Trying with proxy due to timeout...")
-            else:
-                raise Exception(f"Connection timeout: {e}")
-        except Exception as e:
-            # If other error and proxy is available, try with proxy
-            logger.warning(f"Direct connection failed: {type(e).__name__}: {e}")
-            if proxy_node:
-                logger.info("Trying with proxy...")
-            else:
-                raise Exception(f"Connection failed: {e}")
-
-    # Use proxy if available
-    if proxy_node:
-        try:
-            logger.info(f"Fetching subscription via proxy node: {proxy_node.get('name', 'Unknown')}")
-            return await _fetch_via_proxy_async(url, proxy_node)
-        except Exception as e:
-            logger.error(f"Proxy fetch failed: {e}", exc_info=True)
-            raise Exception(f"Proxy fetch failed: {e}")
-
-    # No proxy available and direct failed
-    raise Exception("Direct connection failed and no proxy configured")
-
-
-def _fetch_via_proxy(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
-    """Fetch subscription via speedtest service proxy (synchronous wrapper)"""
-    _ensure_sync_context("_fetch_via_proxy", "_fetch_via_proxy_async")
-    return asyncio.run(_fetch_via_proxy_async(url, proxy_node))
+    return asyncio.run(fetch_subscription_async(url))
 
 
 def _ensure_sync_context(sync_name: str, async_name: str) -> None:
@@ -1301,45 +1209,46 @@ def _ensure_sync_context(sync_name: str, async_name: str) -> None:
     raise RuntimeError(f"{sync_name}() cannot be called from an async context; use await {async_name}() instead.")
 
 
-async def _fetch_via_proxy_async(url: str, proxy_node: dict) -> Tuple[str, dict, int]:
-    """Fetch subscription via speedtest service proxy"""
+async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
+    """
+    Fetch subscription content from URL.
+
+    Args:
+        url: Subscription URL
+
+    Returns:
+        Tuple of (content, subscription_info, node_count)
+    """
+    from helpers_ua import get_subscription_user_agent
+    user_agent = get_subscription_user_agent()
+    headers = {'User-Agent': user_agent}
+    
     try:
-        payload = {
-            "node": proxy_node,
-            "url": url,
-            "timeout": 30
-        }
-
-        resp = await http_client.post(f"{AppConfig.GO_SPEEDTEST_URL}/api/fetch-url", json=payload, timeout=Constants.TIMEOUT_SPEEDTEST_PROXY)
-        result = resp.json()
-
-        if not result.get("success"):
-            raise Exception(result.get("error", "Unknown error"))
-
-        content = result.get("content", "")
-        headers = result.get("headers", {})
-
-        # Parse subscription info from headers
-        sub_info = {}
-        if "subscription-userinfo" in headers:
-            sub_info = parse_subscription_info({"subscription-userinfo": headers["subscription-userinfo"]})
-
-        # Process content
-        processed_content = _process_subscription_content_str(content)
-        node_count = _count_nodes(processed_content)
-
-        return processed_content, sub_info, node_count
-
+        logger.info(f"Fetching subscription from: {url}")
+        response = await http_client.get(url, headers=headers, timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
+        response.raise_for_status()
+        
+        sub_info = parse_subscription_info(dict(response.headers))
+        content = _process_subscription_content(response)
+        node_count = _count_nodes(content)
+        
+        logger.info(f"Successfully fetched subscription, got {node_count} nodes")
+        return content, sub_info, node_count
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"HTTP {e.response.status_code}: {e}")
+    except httpx.TimeoutException as e:
+        raise Exception(f"Connection timeout: {e}")
     except Exception as e:
-        raise Exception(f"Proxy service error: {e}")
+        raise Exception(f"Connection failed: {e}")
 
 
 def _process_subscription_content(response) -> str:
     """Process subscription content from response object"""
+    from services.subscription_parser import parse_subscription_content
+    
     try:
         content = response.content.decode('utf-8', errors='ignore').strip()
     except AttributeError:
-        # Response object doesn't have content attribute, try text
         try:
             content = response.text.strip()
         except Exception as e:
@@ -1348,88 +1257,29 @@ def _process_subscription_content(response) -> str:
     except Exception as e:
         logger.error(f"Failed to decode response content: {e}")
         content = ""
-
-    return _process_subscription_content_str(content)
+    
+    if not content:
+        return ""
+    
+    try:
+        return parse_subscription_content(content)
+    except Exception as e:
+        logger.warning(f"Failed to parse subscription content: {e}")
+        return content
 
 
 def _process_subscription_content_str(content: str) -> str:
     """Process subscription content string and return YAML format"""
-
-    # Try to parse as YAML first
+    from services.subscription_parser import parse_subscription_content
+    
+    if not content:
+        return ""
+    
     try:
-        cfg = yaml.load(content, Loader=YAMLLoader)
-        if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-            logger.debug("Subscription content is valid YAML format")
-            return content
-    except yaml.YAMLError as e:
-        logger.debug(f"Content is not YAML format: {e}")
+        return parse_subscription_content(content)
     except Exception as e:
-        logger.warning(f"Unexpected error parsing YAML: {e}")
-
-    # If not YAML, try Base64 decode
-    try:
-        # Try to decode as Base64
-        padded = _pad_base64(content)
-        # Ensure content is ASCII before decoding
-        padded_bytes = padded.encode('ascii')
-        decoded = base64.b64decode(padded_bytes).decode('utf-8', errors='ignore').strip()
-
-        # Check if decoded content is YAML
-        try:
-            cfg = yaml.load(decoded, Loader=YAMLLoader)
-            if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-                logger.debug("Decoded Base64 content is valid YAML")
-                return decoded
-        except yaml.YAMLError as e:
-            logger.debug(f"Decoded content is not YAML: {e}")
-        except Exception as e:
-            logger.warning(f"Error parsing decoded YAML: {e}")
-
-        # If not YAML, parse as URI list (ss://, vmess://, vless://, etc.)
-        proxies = []
-        lines = decoded.split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            # Parse node link
-            proxy = parse_node_link(line)
-            if proxy:
-                proxies.append(proxy)
-
-        if proxies:
-            # Convert to YAML format
-            yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
-            logger.debug(f"Parsed {len(proxies)} nodes from Base64 URI list")
-            return yaml_content
-    except base64.binascii.Error as e:
-        logger.debug(f"Content is not valid Base64: {e}")
-    except UnicodeEncodeError as e:
-        logger.debug(f"Content contains non-ASCII characters, not Base64: {e}")
-    except UnicodeDecodeError as e:
-        logger.warning(f"Base64 decoded content is not valid UTF-8: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to process Base64 content: {e}")
-
-    # Try parsing as plain URI list (not Base64 encoded)
-    proxies = []
-    lines = content.split('\n')
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-
-        proxy = parse_node_link(line)
-        if proxy:
-            proxies.append(proxy)
-
-    if proxies:
-        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
-        return yaml_content
-
-    # If all parsing failed, return original content
-    return content
+        logger.warning(f"Failed to parse subscription content: {e}")
+        return content
 
 
 def _count_nodes(content: str) -> int:
@@ -1604,7 +1454,6 @@ app.include_router(create_subscription_output_router(
     update_config=update_config,
     fetch_subscription=fetch_subscription,
     fetch_subscription_async=fetch_subscription_async,
-    get_configured_proxy_node=get_configured_proxy_node,
     find_node_by_reference=find_node_by_reference,
     is_name_allocated=is_name_allocated,
     filter_underscore_fields=filter_underscore_fields,

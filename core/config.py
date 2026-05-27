@@ -59,6 +59,9 @@ class AppConfig:
     # Directories
     BASE_DIR = BASE_DIR
     DATA_DIR = DATA_DIR
+    YAML_SOURCE_DIR = YAML_SOURCE_DIR
+    CONFIG_FILE = CONFIG_FILE
+    BACKUP_DIR = BACKUP_DIR
     
     # Go Speedtest Service
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')

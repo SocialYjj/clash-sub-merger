@@ -29,7 +29,6 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             load_config=load_config,
             update_config=update_config,
             fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
-            get_configured_proxy_node=lambda: {},
             find_node_by_reference=lambda *args, **kwargs: None,
             is_name_allocated=lambda name, allocated_nodes: False,
             filter_underscore_fields=lambda data: {k: v for k, v in data.items() if not str(k).startswith("_")},
@@ -101,7 +100,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
 
             response = client.get("/sub?token=admin-token&format=yaml")
 
-            self.assertEqual(calls, [("https://example.test/sub", {}, False)])
+            self.assertEqual(calls, [("https://example.test/sub", None, False)])
             self.assertEqual(config["subscriptions"][0]["update_status"], "success")
             self.assertTrue((Path(tempdir) / "sub_demo.yaml").exists())
             self.assertNotEqual(response.status_code, 500)

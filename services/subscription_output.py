@@ -43,7 +43,6 @@ def create_subscription_output_router(
     load_config: Callable[[], dict],
     update_config: Callable[[Callable[[dict], object]], object],
     fetch_subscription: Callable[..., tuple],
-    get_configured_proxy_node: Callable[[], dict],
     find_node_by_reference: Callable[..., Optional[dict]],
     is_name_allocated: Callable[[str, Optional[list]], bool],
     filter_underscore_fields: Callable[[dict], dict],
@@ -191,12 +190,10 @@ def create_subscription_output_router(
         # If there are missing subscription files, fetch them now
         if missing_subs:
             logger.info(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
-            proxy_node = get_configured_proxy_node()
             for sub in missing_subs:
                 try:
                     lock_factory = subscription_refresh_lock or _noop_refresh_lock
                     async with lock_factory(sub['id']):
-                        force_proxy = sub.get('force_proxy', False)
                         try:
                             existing_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=False)
                             existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
@@ -205,15 +202,11 @@ def create_subscription_output_router(
                         if fetch_subscription_async is not None:
                             content, sub_info, node_count = await fetch_subscription_async(
                                 sub['url'],
-                                proxy_node=proxy_node,
-                                force_proxy=force_proxy,
                             )
                         else:
                             content, sub_info, node_count = await asyncio.to_thread(
                                 fetch_subscription,
                                 sub['url'],
-                                proxy_node=proxy_node,
-                                force_proxy=force_proxy,
                             )
                         content, remembered, inherited = apply_region_history_to_yaml_content(
                             content,
