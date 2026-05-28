@@ -242,7 +242,7 @@ def update_ipv6_proxy_setting(data: IPv6ProxySetting, _: bool = Depends(verify_s
 @router.post("/ipv6-proxy/test")
 @handle_api_errors
 async def test_ipv6_proxy(data: IPv6ProxyTest, _: bool = Depends(verify_session)):
-    """Test IPv6 proxy and return both IPv4 and IPv6 addresses"""
+    """Test IPv6 proxy and return IP addresses"""
     import httpx
     import asyncio
     
@@ -252,30 +252,16 @@ async def test_ipv6_proxy(data: IPv6ProxyTest, _: bool = Depends(verify_session)
         raise HTTPException(status_code=400, detail="Proxy URL is required")
     
     headers = {"Accept": "text/plain"}
-    ipv4_ip = None
-    ipv6_ip = None
-    errors = []
+    ip = None
     
-    async def fetch_ipv4(client):
-        nonlocal ipv4_ip
-        try:
-            resp = await client.get("http://ifconfig.co/ip", headers=headers)
-            resp.raise_for_status()
-            ipv4_ip = resp.text.strip()
-        except Exception as e:
-            errors.append(f"IPv4: {e}")
-    
-    async def fetch_ipv6(client):
-        # IPv6 test through proxy - proxy may not support IPv6
-        nonlocal ipv6_ip
+    async def fetch_ip(client):
+        nonlocal ip
         try:
             resp = await client.get("http://ifconfig.co/ip", headers=headers)
             resp.raise_for_status()
             ip = resp.text.strip()
-            if ':' in ip:
-                ipv6_ip = ip
-        except Exception:
-            pass  # IPv6 not available through proxy
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Proxy connection failed: {e}")
     
     try:
         async with httpx.AsyncClient(
@@ -283,15 +269,17 @@ async def test_ipv6_proxy(data: IPv6ProxyTest, _: bool = Depends(verify_session)
             timeout=httpx.Timeout(10),
             follow_redirects=True
         ) as client:
-            await asyncio.gather(fetch_ipv4(client), fetch_ipv6(client))
+            await fetch_ip(client)
         
-        if not ipv4_ip and not ipv6_ip:
-            raise HTTPException(status_code=502, detail=f"Proxy connection failed")
+        if not ip:
+            raise HTTPException(status_code=502, detail="Proxy connection failed")
         
+        is_ipv6 = ':' in ip
         return {
             "status": "success",
-            "ipv4": ipv4_ip,
-            "ipv6": ipv6_ip,
+            "ip": ip,
+            "ipv4": ip if not is_ipv6 else None,
+            "ipv6": ip if is_ipv6 else None,
         }
     except HTTPException:
         raise
@@ -336,3 +324,32 @@ async def test_ipv6_connectivity(_: bool = Depends(verify_session)):
             "ip": None,
             "message": f"IPv6 check failed: {str(e)}"
         }
+
+
+# ==================== Subscription Proxy API ====================
+
+class SubscriptionProxySetting(BaseModel):
+    proxy_url: Optional[str] = None
+
+
+@router.get("/subscription-proxy")
+@handle_api_errors
+def get_subscription_proxy_setting(_: bool = Depends(verify_session)):
+    """Get subscription proxy URL"""
+    config = load_config()
+    settings = config.get('settings', {})
+    return {
+        "proxy_url": settings.get('subscription_proxy_url'),
+    }
+
+
+@router.put("/subscription-proxy")
+@handle_api_errors
+def update_subscription_proxy_setting(data: SubscriptionProxySetting, _: bool = Depends(verify_session)):
+    """Update subscription proxy URL"""
+    def set_proxy(config: dict):
+        settings = config.setdefault('settings', {})
+        settings['subscription_proxy_url'] = data.proxy_url
+
+    update_config(set_proxy)
+    return {"status": "success"}

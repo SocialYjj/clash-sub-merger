@@ -10,11 +10,11 @@ import (
 
 // Request/Response structures
 type DelayRequest struct {
-	Link    string                 `json:"link"`
-	Node    map[string]interface{} `json:"node"`    // Direct node config
-	Chain   []map[string]interface{} `json:"chain"` // Chain of nodes for proxy chain testing
-	URL     string                 `json:"url"`
-	Timeout int                    `json:"timeout"` // milliseconds
+	Link    string                   `json:"link"`
+	Node    map[string]interface{}   `json:"node"`
+	Chain   []map[string]interface{} `json:"chain"`
+	URL     string                   `json:"url"`
+	Timeout int                      `json:"timeout"` // milliseconds
 }
 
 type DelayResponse struct {
@@ -24,10 +24,10 @@ type DelayResponse struct {
 }
 
 type IPRequest struct {
-	Link    string                 `json:"link"`
-	Node    map[string]interface{} `json:"node"`
-	Chain   []map[string]interface{} `json:"chain"` // Chain of nodes
-	Timeout int                    `json:"timeout"`
+	Link    string                   `json:"link"`
+	Node    map[string]interface{}   `json:"node"`
+	Chain   []map[string]interface{} `json:"chain"`
+	Timeout int                      `json:"timeout"`
 }
 
 type IPResponse struct {
@@ -37,13 +37,13 @@ type IPResponse struct {
 }
 
 type SpeedRequest struct {
-	Link               string                 `json:"link"`
-	Node               map[string]interface{} `json:"node"`
-	Chain              []map[string]interface{} `json:"chain"` // Chain of nodes
-	URL                string                 `json:"url"`
-	Timeout            int                    `json:"timeout"`            // seconds
-	Mode               string                 `json:"mode"`               // "average" or "peak", default "average"
-	PeakSampleInterval int                    `json:"peakSampleInterval"` // milliseconds, 50-200, default 100
+	Link               string                   `json:"link"`
+	Node               map[string]interface{}   `json:"node"`
+	Chain              []map[string]interface{} `json:"chain"`
+	URL                string                   `json:"url"`
+	Timeout            int                      `json:"timeout"`            // seconds
+	Mode               string                   `json:"mode"`               // "average" or "peak", default "average"
+	PeakSampleInterval int                      `json:"peakSampleInterval"` // milliseconds, 50-200, default 100
 }
 
 type SpeedResponse struct {
@@ -120,7 +120,6 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		// Chain proxy test
 		latency, err = testDelayWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Millisecond)
 	} else if req.Node != nil {
 		latency, err = testDelayWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Millisecond)
@@ -161,7 +160,6 @@ func handleIP(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		// Chain proxy test
 		ip, err = getExitIPWithChain(req.Chain, time.Duration(req.Timeout)*time.Millisecond)
 	} else if req.Node != nil {
 		ip, err = getExitIPWithNode(req.Node, time.Duration(req.Timeout)*time.Millisecond)
@@ -213,7 +211,6 @@ func handleSpeed(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		// Chain proxy test
 		speed, peakSpeed, latency, bytes, err = testSpeedWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval)
 	} else if req.Node != nil {
 		speed, peakSpeed, latency, bytes, err = testSpeedWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval)

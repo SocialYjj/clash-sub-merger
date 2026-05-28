@@ -1,9 +1,9 @@
 """
 Subscription Fetcher Service
-Handles fetching subscriptions from URLs
+Handles fetching subscriptions from URLs with proxy fallback
 """
 import httpx
-from typing import Tuple
+from typing import Tuple, Optional
 
 from logger_config import get_logger
 from core.config import AppConfig
@@ -22,66 +22,12 @@ class FetchError(Exception):
     pass
 
 
-class DirectFetchError(FetchError):
-    """Raised when direct fetch fails"""
-    pass
-
-
 class SubscriptionFetcher:
-    """Fetches subscription content from URLs"""
+    """Fetches subscription content from URLs with optional proxy fallback"""
     
-    def __init__(self, http_client: httpx.AsyncClient):
+    def __init__(self, http_client: httpx.AsyncClient, proxy_url: Optional[str] = None):
         self._http_client = http_client
-    
-    async def fetch_direct(
-        self,
-        url: str,
-        user_agent: str,
-        timeout: float = None
-    ) -> Tuple[str, dict, int]:
-        """
-        Fetch subscription directly.
-        
-        Args:
-            url: Subscription URL
-            user_agent: User-Agent header value
-            timeout: Request timeout in seconds
-            
-        Returns:
-            Tuple of (content, subscription_info, node_count)
-            
-        Raises:
-            DirectFetchError: If fetch fails
-        """
-        if timeout is None:
-            timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH
-        
-        headers = {'User-Agent': user_agent}
-        
-        try:
-            logger.info(f"Fetching subscription directly from: {url}")
-            response = await self._http_client.get(
-                url,
-                headers=headers,
-                timeout=timeout
-            )
-            response.raise_for_status()
-            
-            sub_info = parse_subscription_info(dict(response.headers))
-            content = self._extract_content(response)
-            node_count = count_nodes(content)
-            
-            logger.info(f"Successfully fetched subscription, got {node_count} nodes")
-            return content, sub_info, node_count
-            
-        except httpx.HTTPStatusError as e:
-            raise DirectFetchError(
-                f"HTTP {e.response.status_code}: {e}"
-            ) from e
-        except httpx.TimeoutException as e:
-            raise DirectFetchError(f"Connection timeout: {e}") from e
-        except httpx.RequestError as e:
-            raise DirectFetchError(f"Request failed: {e}") from e
+        self._proxy_url = proxy_url
     
     async def fetch(
         self,
@@ -89,7 +35,7 @@ class SubscriptionFetcher:
         user_agent: str
     ) -> Tuple[str, dict, int]:
         """
-        Fetch subscription.
+        Fetch subscription: try direct first, fallback to proxy if configured.
         
         Args:
             url: Subscription URL
@@ -99,9 +45,45 @@ class SubscriptionFetcher:
             Tuple of (content, subscription_info, node_count)
             
         Raises:
-            FetchError: If fetch fails
+            FetchError: If all attempts fail
         """
-        return await self.fetch_direct(url, user_agent)
+        headers = {'User-Agent': user_agent}
+        timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH
+        
+        # Step 1: Try direct connection
+        try:
+            logger.info(f"Fetching subscription directly: {url}")
+            response = await self._http_client.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return self._process_response(response)
+        except Exception as e:
+            logger.warning(f"Direct fetch failed: {e}")
+            
+            # Step 2: Try proxy if configured
+            if self._proxy_url:
+                try:
+                    logger.info(f"Fetching via proxy: {url}")
+                    async with httpx.AsyncClient(
+                        proxy=self._proxy_url,
+                        timeout=httpx.Timeout(timeout),
+                        follow_redirects=True,
+                    ) as proxy_client:
+                        response = await proxy_client.get(url, headers=headers)
+                        response.raise_for_status()
+                        return self._process_response(response)
+                except Exception as proxy_err:
+                    logger.error(f"Proxy fetch also failed: {proxy_err}")
+                    raise FetchError(f"Direct and proxy fetch both failed: {e}; {proxy_err}")
+            
+            raise FetchError(f"Fetch failed: {e}")
+    
+    def _process_response(self, response: httpx.Response) -> Tuple[str, dict, int]:
+        """Process response into content, info, and node count."""
+        sub_info = parse_subscription_info(dict(response.headers))
+        content = self._extract_content(response)
+        node_count = count_nodes(content)
+        logger.info(f"Successfully fetched subscription, got {node_count} nodes")
+        return content, sub_info, node_count
     
     def _extract_content(self, response: httpx.Response) -> str:
         """Extract content from response"""

@@ -29,12 +29,19 @@ limiter = Limiter(key_func=get_remote_address)
 
 # Lazy-initialized fetcher
 _fetcher: Optional[SubscriptionFetcher] = None
+_fetcher_proxy_url: Optional[str] = None
 
 
 def _get_fetcher() -> SubscriptionFetcher:
-    """Get or create subscription fetcher instance"""
-    global _fetcher
-    if _fetcher is None:
+    """Get or create subscription fetcher instance, recreating if proxy config changed."""
+    global _fetcher, _fetcher_proxy_url
+    
+    # Read current proxy URL from config
+    config = load_config()
+    proxy_url = config.get('settings', {}).get('subscription_proxy_url')
+    
+    # Recreate fetcher if proxy config changed
+    if _fetcher is None or _fetcher_proxy_url != proxy_url:
         import httpx
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -50,7 +57,9 @@ def _get_fetcher() -> SubscriptionFetcher:
             ),
             verify=AppConfig.HTTP_VERIFY_SSL,
         )
-        _fetcher = SubscriptionFetcher(http_client)
+        _fetcher = SubscriptionFetcher(http_client, proxy_url=proxy_url)
+        _fetcher_proxy_url = proxy_url
+    
     return _fetcher
 
 
