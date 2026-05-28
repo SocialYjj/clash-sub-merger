@@ -72,6 +72,8 @@ type FetchURLResponse struct {
 }
 
 func main() {
+	initDNS()
+
 	port := os.Getenv("GO_SPEEDTEST_PORT")
 	if port == "" {
 		port = "9876"

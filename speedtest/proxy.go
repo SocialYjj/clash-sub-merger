@@ -12,8 +12,33 @@ import (
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/proxydialer"
+	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/dns"
 )
+
+// initDNS initializes mihomo's DNS resolver with IPv6 support.
+// Without this, IPv6 proxy server addresses cause "dns resolve failed: ip version error".
+func initDNS() {
+	resolver.DisableIPv6 = false
+
+	rs := dns.NewResolver(dns.Config{
+		IPv6: true,
+		Main: []dns.NameServer{
+			{Addr: "114.114.114.114:53"},
+			{Addr: "8.8.8.8:53"},
+			{Addr: "[2001:4860:4860::8888]:53"},
+			{Addr: "[2606:4700:4700::1111]:53"},
+		},
+	})
+
+	resolver.DefaultResolver = rs.Resolver
+	if rs.ProxyResolver.Invalid() {
+		resolver.ProxyServerHostResolver = rs.ProxyResolver
+	} else {
+		resolver.ProxyServerHostResolver = rs.Resolver
+	}
+}
 
 // getProxyAdapter creates a mihomo proxy adapter from a node link
 func getProxyAdapter(link string) (constant.Proxy, error) {
