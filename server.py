@@ -765,12 +765,6 @@ def refresh_subscription_job(sub_id: str):
             return
         
         try:
-            refresh_lock = _acquire_refresh_file_lock(sub_id, wait=False)
-        except RefreshAlreadyInProgress:
-            logger.info("Skipping scheduled refresh for %s because another refresh is already running", sub_id)
-            return
-        
-        try:
             content, sub_info, node_count, remembered, inherited, visibility_inherited = \
                 _fetch_and_process_subscription(sub)
             
@@ -791,11 +785,6 @@ def refresh_subscription_job(sub_id: str):
             error_msg = str(e)
             logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
             update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-        finally:
-            try:
-                refresh_lock.release()
-            except Exception:
-                logger.debug("Failed to release refresh lock for %s (may already be released)", sub_id)
     except Exception as e:
         logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
 

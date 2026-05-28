@@ -19,7 +19,6 @@ from services.node_visibility import apply_node_visibility_to_yaml_content
 from services.region_history import apply_region_history_to_yaml_content
 from services.subscription_parser import parse_local_subscription, InvalidContentError
 from services.subscription_fetcher import SubscriptionFetcher, FetchError
-from services.lock_manager import async_lock
 from services.stats_cache import invalidate as invalidate_stats_cache
 from logger_config import get_logger
 
@@ -403,69 +402,68 @@ async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(
     if sub.get('type') == 'local':
         raise HTTPException(status_code=400, detail="Local subscriptions cannot be refreshed")
     
-    async with async_lock(sub_id):
-        try:
-            fetcher = _get_fetcher()
-            user_agent = _get_user_agent()
-            
-            logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
-            existing_nodes = _load_existing_subscription_nodes(sub_id)
-            
-            content, sub_info, node_count = await fetcher.fetch(
-                sub['url'],
-                user_agent=user_agent
+    try:
+        fetcher = _get_fetcher()
+        user_agent = _get_user_agent()
+        
+        logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
+        existing_nodes = _load_existing_subscription_nodes(sub_id)
+        
+        content, sub_info, node_count = await fetcher.fetch(
+            sub['url'],
+            user_agent=user_agent
+        )
+        
+        content, remembered, inherited = apply_region_history_to_yaml_content(
+            content,
+            existing_nodes=existing_nodes,
+            source=f'sub:refresh:{sub_id}',
+        )
+        content, visibility_inherited = apply_node_visibility_to_yaml_content(
+            content,
+            existing_nodes=existing_nodes,
+        )
+        
+        updates = {
+            'upload': sub_info.get('upload', 0),
+            'download': sub_info.get('download', 0),
+            'total': sub_info.get('total', 0),
+            'expire': sub_info.get('expire', 0),
+            'node_count': node_count,
+            'last_update': int(time.time()),
+            'update_status': 'success'
+        }
+        
+        if remembered or inherited or visibility_inherited:
+            logger.info(
+                "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
+                sub_id,
+                remembered,
+                inherited,
+                visibility_inherited,
             )
-            
-            content, remembered, inherited = apply_region_history_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-                source=f'sub:refresh:{sub_id}',
-            )
-            content, visibility_inherited = apply_node_visibility_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-            )
-            
-            updates = {
-                'upload': sub_info.get('upload', 0),
-                'download': sub_info.get('download', 0),
-                'total': sub_info.get('total', 0),
-                'expire': sub_info.get('expire', 0),
-                'node_count': node_count,
-                'last_update': int(time.time()),
-                'update_status': 'success'
-            }
-            
-            if remembered or inherited or visibility_inherited:
-                logger.info(
-                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
-                    sub_id,
-                    remembered,
-                    inherited,
-                    visibility_inherited,
-                )
-            
-            save_subscription_content(sub_id, content, AppConfig.YAML_SOURCE_DIR)
-            updated_sub = update_subscription_fields(sub_id, updates)
-            if not updated_sub:
-                raise HTTPException(status_code=404, detail="Subscription not found")
-            invalidate_stats_cache()
-            
-            logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
-            return {"status": "success", "subscription": updated_sub}
-            
-        except HTTPException:
-            raise
-        except FetchError as e:
-            error_msg = str(e)
-            logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-            raise HTTPException(status_code=400, detail=error_msg)
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-            raise HTTPException(status_code=400, detail=error_msg)
+        
+        save_subscription_content(sub_id, content, AppConfig.YAML_SOURCE_DIR)
+        updated_sub = update_subscription_fields(sub_id, updates)
+        if not updated_sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        invalidate_stats_cache()
+        
+        logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
+        return {"status": "success", "subscription": updated_sub}
+        
+    except HTTPException:
+        raise
+    except FetchError as e:
+        error_msg = str(e)
+        logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
+        update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
+        update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
+        raise HTTPException(status_code=400, detail=error_msg)
 
 
 @router.post("/refresh-all")
@@ -485,46 +483,45 @@ async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_s
     
     for sub in url_subs:
         try:
-            async with async_lock(sub['id']):
-                existing_nodes = _load_existing_subscription_nodes(sub['id'])
-                
-                content, sub_info, node_count = await fetcher.fetch(
-                    sub['url'],
-                    user_agent=user_agent
+            existing_nodes = _load_existing_subscription_nodes(sub['id'])
+            
+            content, sub_info, node_count = await fetcher.fetch(
+                sub['url'],
+                user_agent=user_agent
+            )
+            
+            content, remembered, inherited = apply_region_history_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f"sub:refresh-all:{sub['id']}",
+            )
+            content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+            )
+            
+            updates = {
+                'upload': sub_info.get('upload', 0),
+                'download': sub_info.get('download', 0),
+                'total': sub_info.get('total', 0),
+                'expire': sub_info.get('expire', 0),
+                'node_count': node_count,
+                'last_update': int(time.time()),
+                'update_status': 'success'
+            }
+            
+            if remembered or inherited or visibility_inherited:
+                logger.info(
+                    "Subscription %s history in refresh-all: remembered=%s inherited_region=%s inherited_disabled=%s",
+                    sub['id'],
+                    remembered,
+                    inherited,
+                    visibility_inherited,
                 )
-                
-                content, remembered, inherited = apply_region_history_to_yaml_content(
-                    content,
-                    existing_nodes=existing_nodes,
-                    source=f"sub:refresh-all:{sub['id']}",
-                )
-                content, visibility_inherited = apply_node_visibility_to_yaml_content(
-                    content,
-                    existing_nodes=existing_nodes,
-                )
-                
-                updates = {
-                    'upload': sub_info.get('upload', 0),
-                    'download': sub_info.get('download', 0),
-                    'total': sub_info.get('total', 0),
-                    'expire': sub_info.get('expire', 0),
-                    'node_count': node_count,
-                    'last_update': int(time.time()),
-                    'update_status': 'success'
-                }
-                
-                if remembered or inherited or visibility_inherited:
-                    logger.info(
-                        "Subscription %s history in refresh-all: remembered=%s inherited_region=%s inherited_disabled=%s",
-                        sub['id'],
-                        remembered,
-                        inherited,
-                        visibility_inherited,
-                    )
-                
-                save_subscription_content(sub['id'], content, AppConfig.YAML_SOURCE_DIR)
-                update_subscription_fields(sub['id'], updates)
-                results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
+            
+            save_subscription_content(sub['id'], content, AppConfig.YAML_SOURCE_DIR)
+            update_subscription_fields(sub['id'], updates)
+            results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
                 
         except HTTPException as e:
             detail = e.detail if isinstance(e.detail, str) else str(e.detail)
