@@ -8,6 +8,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
@@ -19,10 +20,7 @@ from logger_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Get YAML_SOURCE_DIR from environment or default
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
+YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 
 
 # ==================== Data Models ====================

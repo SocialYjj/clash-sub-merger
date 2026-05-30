@@ -9,10 +9,10 @@ from speedtest_service import SpeedTestConfig, SpeedTestResult, SpeedTestService
 
 
 class SpeedtestServiceHardeningTests(unittest.TestCase):
-    def test_source_does_not_disable_aiohttp_tls_verification(self):
+    def test_source_does_not_disable_tls_verification(self):
         source = pathlib.Path("speedtest_service.py").read_text(encoding="utf-8")
 
-        self.assertNotIn("TCPConnector(ssl=False", source)
+        self.assertNotIn("verify=False", source)
         self.assertNotIn("ssl=False", source)
 
     def test_concurrent_duplicate_node_tests_share_single_task(self):
@@ -39,11 +39,11 @@ class SpeedtestServiceHardeningTests(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertIs(first, second)
 
-    def test_requests_reuse_single_aiohttp_session(self):
+    def test_requests_reuse_single_httpx_client(self):
         async def run_test():
             service = SpeedTestService()
-            first = await service._get_session()
-            second = await service._get_session()
+            first = await service._get_client()
+            second = await service._get_client()
             reused = first is second
             await service.close()
             return reused

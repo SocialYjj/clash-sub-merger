@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors
@@ -18,10 +19,7 @@ from logger_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Get YAML_SOURCE_DIR from environment or default
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
+YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 
 # Lazy import server module (only for functions that truly need it)
 _server_module = None

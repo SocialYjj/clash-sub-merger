@@ -8,6 +8,7 @@ import { copyToClipboard } from './utils/clipboard';
 import Layout from './components/Layout';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // Lazy load pages for code splitting (reduces initial bundle size by ~800KB)
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -455,27 +456,28 @@ export default function App() {
 
   // Main app
   return (
-    <BrowserRouter>
-      <Layout>
-        <Suspense fallback={
-          <div className="flex items-center justify-center h-screen">
-            <div className="text-gray-400">加载中...</div>
-          </div>
-        }>
-          <Routes>
-            <Route path="/" element={
-              <Dashboard subscriptions={subscriptions} customNodes={customNodes} showToast={showToast} />
-            } />
-            <Route path="/subscriptions" element={
-              <Subscriptions
-                subscriptions={subscriptions}
-                onAdd={addSubscription}
-                onDelete={deleteSubscription}
-                onRefresh={refreshSubscription}
-                onRefreshAll={refreshAllSubscriptions}
-                onRefreshList={fetchSubscriptions}
-                onToggle={toggleSubscription}
-                loading={loading}
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Layout>
+          <Suspense fallback={
+            <div className="flex items-center justify-center h-screen">
+              <div className="text-gray-400">加载中...</div>
+            </div>
+          }>
+            <Routes>
+              <Route path="/" element={
+                <Dashboard subscriptions={subscriptions} customNodes={customNodes} showToast={showToast} />
+              } />
+              <Route path="/subscriptions" element={
+                <Subscriptions
+                  subscriptions={subscriptions}
+                  onAdd={addSubscription}
+                  onDelete={deleteSubscription}
+                  onRefresh={refreshSubscription}
+                  onRefreshAll={refreshAllSubscriptions}
+                  onRefreshList={fetchSubscriptions}
+                  onToggle={toggleSubscription}
+                  loading={loading}
                 showToast={showToast}
               />
             } />
@@ -572,6 +574,7 @@ export default function App() {
           </div>
         </div>
       )}
-    </BrowserRouter>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

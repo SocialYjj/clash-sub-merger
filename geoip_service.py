@@ -8,7 +8,7 @@ import re
 import time
 import json
 import unicodedata
-import aiohttp
+import httpx
 import asyncio
 import threading
 from typing import Optional, Dict
@@ -961,17 +961,17 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
         method = api_config.get("method", "GET").upper()
         headers = api_config.get("headers", {})
         
-        async with aiohttp.ClientSession() as session:
+        async with httpx.AsyncClient() as client:
             if method == "GET":
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json()
+                resp = await client.get(url, headers=headers, timeout=timeout)
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
             else:
-                async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json()
+                resp = await client.post(url, headers=headers, timeout=timeout)
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
             
             # Check success condition if specified
             success_check = api_config.get("success_check", "")
@@ -1082,19 +1082,19 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
 async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup using ip-api.com (free, 45 req/min, supports Chinese)"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
                 f"http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,countryCode,city",
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("status") == "success":
-                        return {
-                            "countryCode": data.get("countryCode", ""),
-                            "country": data.get("country", ""),
-                            "city": data.get("city", "")
-                        }
+                timeout=timeout
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "success":
+                    return {
+                        "countryCode": data.get("countryCode", ""),
+                        "country": data.get("country", ""),
+                        "city": data.get("city", "")
+                    }
     except Exception as e:
         logger.debug("ip-api.com lookup error for %s: %s", ip, e)
     return None
@@ -1102,22 +1102,22 @@ async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
 async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup using ipwhois.app (free, 10k/month, supports Chinese)"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
                 f"https://ipwhois.app/json/{ip}?lang=zh-CN",
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("success"):
-                        country_name = data.get("country", "")
-                        # Normalize "Republic of Korea" -> "South Korea"
-                        country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
-                        return {
-                            "countryCode": data.get("country_code", ""),
-                            "country": country_name,
-                            "city": data.get("city", "")
-                        }
+                timeout=timeout
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    country_name = data.get("country", "")
+                    # Normalize "Republic of Korea" -> "South Korea"
+                    country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
+                    return {
+                        "countryCode": data.get("country_code", ""),
+                        "country": country_name,
+                        "city": data.get("city", "")
+                    }
     except Exception as e:
         logger.debug("ipwhois.app lookup error for %s: %s", ip, e)
     return None
@@ -1130,21 +1130,21 @@ async def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
         if token:
             url += f"?token={token}"
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    country_code = data.get("country", "")
-                    city = data.get("city", "")
-                    
-                    # ipinfo doesn't return country name in Chinese, need to map it
-                    country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
-                    
-                    return {
-                        "countryCode": country_code,
-                        "country": country_name,
-                        "city": city
-                    }
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                country_code = data.get("country", "")
+                city = data.get("city", "")
+                
+                # ipinfo doesn't return country name in Chinese, need to map it
+                country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
+                
+                return {
+                    "countryCode": country_code,
+                    "country": country_name,
+                    "city": city
+                }
     except Exception as e:
         logger.debug("ipinfo.io lookup error for %s: %s", ip, e)
     return None

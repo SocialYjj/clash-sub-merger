@@ -4,7 +4,7 @@ Provides node latency and speed testing functionality.
 """
 
 import asyncio
-import aiohttp
+import httpx
 import time
 from datetime import datetime
 from typing import Optional, Dict, List, Callable
@@ -73,31 +73,28 @@ class SpeedTestService:
     def __init__(self, config: SpeedTestConfig = None):
         self.config = config or SpeedTestConfig()
         self._running_tests: Dict[str, asyncio.Task] = {}  # Track running tests
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._client: Optional[httpx.AsyncClient] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Return a reusable HTTPS-verifying aiohttp session for the current event loop."""
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return a reusable httpx client for the current event loop."""
         loop = asyncio.get_running_loop()
         if (
-            self._session is None
-            or self._session.closed
-            or self._session_loop is not loop
+            self._client is None
+            or self._client.is_closed
+            or self._client_loop is not loop
         ):
-            if self._session is not None and not self._session.closed and self._session_loop is loop:
-                await self._session.close()
-            # Do not disable SSL verification here. aiohttp verifies HTTPS certificates by
-            # default, which prevents MITM manipulation of latency/IP/speed probes.
-            connector = aiohttp.TCPConnector()
-            self._session = aiohttp.ClientSession(connector=connector)
-            self._session_loop = loop
-        return self._session
+            if self._client is not None and not self._client.is_closed and self._client_loop is loop:
+                await self._client.aclose()
+            self._client = httpx.AsyncClient(follow_redirects=True)
+            self._client_loop = loop
+        return self._client
 
     async def close(self):
-        """Close the reusable aiohttp session."""
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        """Close the reusable httpx client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
         self._session_loop = None
 
     @staticmethod
@@ -138,25 +135,23 @@ class SpeedTestService:
         
         start = time.time()
         try:
-            session = await self._get_session()
-            async with session.get(
+            client = await self._get_client()
+            resp = await client.get(
                 test_url,
                 proxy=proxy_url,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=True
-            ) as resp:
-                await resp.read()
-                latency = int((time.time() - start) * 1000)
-                return {
-                    "status": "success",
-                    "latency": latency,
-                    "status_code": resp.status
-                }
-        except asyncio.TimeoutError:
+                timeout=timeout,
+            )
+            latency = int((time.time() - start) * 1000)
+            return {
+                "status": "success",
+                "latency": latency,
+                "status_code": resp.status_code
+            }
+        except httpx.TimeoutException:
             return {"status": "timeout", "latency": -1}
-        except aiohttp.ClientProxyConnectionError as e:
+        except httpx.ProxyError as e:
             return {"status": "error", "latency": -1, "error": f"Proxy connection failed: {e}"}
-        except aiohttp.ClientError as e:
+        except httpx.HTTPError as e:
             return {"status": "error", "latency": -1, "error": str(e)}
         except Exception as e:
             return {"status": "error", "latency": -1, "error": str(e)}
@@ -185,14 +180,14 @@ class SpeedTestService:
         total_bytes = 0
         
         try:
-            session = await self._get_session()
-            async with session.get(
+            client = await self._get_client()
+            async with client.stream(
+                "GET",
                 test_url,
                 proxy=proxy_url,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=True
+                timeout=timeout,
             ) as resp:
-                async for chunk in resp.content.iter_chunked(8192):
+                async for chunk in resp.aiter_bytes(8192):
                     total_bytes += len(chunk)
                 
                 elapsed = time.time() - start
@@ -207,7 +202,7 @@ class SpeedTestService:
                     "bytes": total_bytes,
                     "elapsed": round(elapsed, 2)
                 }
-        except asyncio.TimeoutError:
+        except httpx.TimeoutException:
             elapsed = time.time() - start
             if total_bytes > 0 and elapsed > 0:
                 speed = total_bytes / elapsed / 1024 / 1024
@@ -237,14 +232,13 @@ class SpeedTestService:
             IP address string or None
         """
         try:
-            session = await self._get_session()
-            async with session.get(
+            client = await self._get_client()
+            resp = await client.get(
                 self.config.landing_ip_url,
                 proxy=proxy_url,
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                ip = await resp.text()
-                return ip.strip()
+                timeout=timeout
+            )
+            return resp.text.strip()
         except Exception:
             return None
 

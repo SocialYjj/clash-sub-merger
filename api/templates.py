@@ -9,6 +9,7 @@ from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id
@@ -17,11 +18,8 @@ from logger_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Get paths from environment or default
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
-OUTPUT_FILE = os.path.join(DATA_DIR, 'myconfig.yaml')
+YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
+OUTPUT_FILE = os.path.join(AppConfig.DATA_DIR, 'myconfig.yaml')
 
 
 # ==================== Built-in Template ====================

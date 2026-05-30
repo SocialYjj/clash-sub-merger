@@ -7,6 +7,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import (
@@ -26,10 +27,7 @@ from logger_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Get YAML_SOURCE_DIR from environment or default
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
+YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 
 # Lazy import server module (only for functions that truly need it)
 _server_module = None
@@ -104,6 +102,18 @@ class UpdateNodeName(BaseModel):
 
 class UpdateNodeFull(BaseModel):
     node: dict
+    
+    @field_validator('node')
+    @classmethod
+    def validate_node(cls, v):
+        if not isinstance(v, dict):
+            raise ValueError('Node must be a dictionary')
+        # Ensure required fields exist
+        if 'name' not in v or not v['name']:
+            raise ValueError('Node must have a name')
+        if 'type' not in v or not v['type']:
+            raise ValueError('Node must have a type')
+        return v
 
 
 class UpdateSubNode(BaseModel):
@@ -661,7 +671,7 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
 @handle_api_errors
 async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: bool = Depends(verify_session)):
     """Test latency/speed/region for any node (subscription or custom)"""
-    import aiohttp
+    import httpx
     import asyncio
     from datetime import datetime
     
@@ -707,73 +717,73 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
     need_save = normalization_changed
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with httpx.AsyncClient() as client:
             # Test latency
             if data.test_latency:
-                async with session.post(
+                resp = await client.post(
                     f"http://127.0.0.1:{go_port}/api/delay",
                     json={
                         "node": node,
                         "url": "https://cp.cloudflare.com/generate_204",
                         "timeout": 5000
                     },
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    latency_result = await resp.json()
-                    latency = latency_result.get('latency', -1)
-                    result['latency'] = latency
-                    if not latency_result.get('success'):
-                        result['error'] = latency_result.get('error', 'Latency test failed')
-                    else:
-                        # Save latency to node
-                        node['last_latency'] = latency
-                        node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        need_save = True
+                    timeout=10
+                )
+                latency_result = resp.json()
+                latency = latency_result.get('latency', -1)
+                result['latency'] = latency
+                if not latency_result.get('success'):
+                    result['error'] = latency_result.get('error', 'Latency test failed')
+                else:
+                    # Save latency to node
+                    node['last_latency'] = latency
+                    node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    need_save = True
             
             # Test region (get exit IP)
             if data.test_region:
-                async with session.post(
+                resp = await client.post(
                     f"http://127.0.0.1:{go_port}/api/ip",
                     json={
                         "node": node,
                         "timeout": 5000
                     },
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    ip_result = await resp.json()
-                    if ip_result.get('success'):
-                        exit_ip = ip_result.get('ip')
-                        result['exit_ip'] = exit_ip
-                        
-                        # Lookup region for the exit IP
-                        if exit_ip:
-                            from geoip_service import lookup_ip_online
-                            geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
-                            if geo_result:
-                                result['region'] = {
-                                    'country': geo_result.get('country_name'),
-                                    'country_code': geo_result.get('iso_code'),
-                                    'flag': geo_result.get('flag'),
-                                    'display': geo_result.get('country_name')
-                                }
-                                result['city'] = geo_result.get('city')
-                                
-                                # Save region info to node
-                                node['exit_ip'] = exit_ip
-                                node['region'] = {
-                                    'country': geo_result.get('country_name'),
-                                    'country_code': geo_result.get('iso_code'),
-                                    'flag': geo_result.get('flag')
-                                }
-                                node['city'] = geo_result.get('city')
-                                remember_nodes_region([node], source=f'speedtest:single:{source_id}')
-                                need_save = True
-                    else:
-                        result['error'] = ip_result.get('error', 'IP lookup failed')
+                    timeout=10
+                )
+                ip_result = resp.json()
+                if ip_result.get('success'):
+                    exit_ip = ip_result.get('ip')
+                    result['exit_ip'] = exit_ip
+                    
+                    # Lookup region for the exit IP
+                    if exit_ip:
+                        from geoip_service import lookup_ip_online
+                        geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
+                        if geo_result:
+                            result['region'] = {
+                                'country': geo_result.get('country_name'),
+                                'country_code': geo_result.get('iso_code'),
+                                'flag': geo_result.get('flag'),
+                                'display': geo_result.get('country_name')
+                            }
+                            result['city'] = geo_result.get('city')
+                            
+                            # Save region info to node
+                            node['exit_ip'] = exit_ip
+                            node['region'] = {
+                                'country': geo_result.get('country_name'),
+                                'country_code': geo_result.get('iso_code'),
+                                'flag': geo_result.get('flag')
+                            }
+                            node['city'] = geo_result.get('city')
+                            remember_nodes_region([node], source=f'speedtest:single:{source_id}')
+                            need_save = True
+                else:
+                    result['error'] = ip_result.get('error', 'IP lookup failed')
             
             # Test speed
             if data.test_speed:
-                async with session.post(
+                resp = await client.post(
                     f"http://127.0.0.1:{go_port}/api/speed",
                     json={
                         "node": node,
@@ -781,20 +791,20 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
                         "timeout": 10,
                         "mode": "average"
                     },
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    speed_result = await resp.json()
-                    if speed_result.get('success'):
-                        speed = speed_result.get('speed', 0)
-                        result['speed'] = speed
-                        result['bytes'] = speed_result.get('bytes', 0)
-                        
-                        # Save speed to node
-                        node['last_speed'] = speed
-                        node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        need_save = True
-                    else:
-                        result['error'] = speed_result.get('error', 'Speed test failed')
+                    timeout=15
+                )
+                speed_result = resp.json()
+                if speed_result.get('success'):
+                    speed = speed_result.get('speed', 0)
+                    result['speed'] = speed
+                    result['bytes'] = speed_result.get('bytes', 0)
+                    
+                    # Save speed to node
+                    node['last_speed'] = speed
+                    node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    need_save = True
+                else:
+                    result['error'] = speed_result.get('error', 'Speed test failed')
         
         # Async save in background (don't block response)
         if need_save and not data.batch_mode:

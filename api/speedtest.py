@@ -4,6 +4,7 @@ Speed test endpoints
 """
 import os
 import secrets
+import httpx
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,10 +26,7 @@ MAX_SPEEDTEST_TIMEOUT = 60
 MAX_SPEEDTEST_CONCURRENCY = 100
 MAX_SPEEDTEST_NODES = 500
 
-# Get YAML_SOURCE_DIR from environment or default
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
+YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 
 # Lazy import server module (only for functions that truly need it)
 _server_module = None
@@ -122,16 +120,14 @@ async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int
 
 async def _go_speedtest_request(endpoint: str, payload: dict, timeout: int) -> dict:
     """Call the bundled Go speedtest service."""
-    import aiohttp
-
     go_port = os.environ.get('GO_SPEEDTEST_PORT', str(AppConfig.GO_SPEEDTEST_PORT))
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
             f"http://127.0.0.1:{go_port}{endpoint}",
             json=payload,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as resp:
-            return await resp.json()
+            timeout=timeout,
+        )
+        return response.json()
 
 
 async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int = 10) -> dict:
@@ -304,6 +300,7 @@ def get_speedtest_config(_: bool = Depends(verify_session)):
 # ==================== Speed Test Profiles ====================
 
 @router.get("/profiles")
+@handle_api_errors
 def get_speedtest_profiles(_: bool = Depends(verify_session)):
     """Get all speed test profiles"""
     config = load_config()

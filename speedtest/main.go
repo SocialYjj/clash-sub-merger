@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -85,8 +88,27 @@ func main() {
 	http.HandleFunc("/api/fetch-url", handleFetchURL)
 	http.HandleFunc("/health", handleHealth)
 
+	server := &http.Server{
+		Addr:    "127.0.0.1:" + port,
+		Handler: nil,
+	}
+
+	// Graceful shutdown
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+		<-sigChan
+		log.Println("Shutting down speedtest service...")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
+
 	log.Printf("Speedtest service starting on localhost:%s", port)
-	log.Fatal(http.ListenAndServe("127.0.0.1:"+port, nil))
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+	log.Println("Speedtest service stopped")
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

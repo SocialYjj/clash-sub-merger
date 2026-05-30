@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -543,8 +544,12 @@ func fetchURLWithAdapter(proxyAdapter constant.Proxy, targetURL string, timeout 
 		return "", nil, 0, fmt.Errorf("create request error: %v", err)
 	}
 
-	// Set User-Agent to mimic FlClash
-	req.Header.Set("User-Agent", "FlClash/v0.8.91 clash-verge Platform/windows")
+	// Set User-Agent
+	userAgent := os.Getenv("SUBSCRIPTION_USER_AGENT")
+	if userAgent == "" {
+		userAgent = "FlClash/v0.8.91 clash-verge Platform/windows"
+	}
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "*/*")
 
 	resp, err := client.Do(req)

@@ -7,7 +7,7 @@ import httpx
 import subprocess
 import sys
 import atexit
-import base64  # Used for node parsing
+import base64  # Used for local subscription parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
 import re
@@ -116,7 +116,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     print(f"GLOBAL ERROR: {error_detail}", file=sys.stderr)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)}
+        content={"detail": "Internal server error"}
     )
 
 
@@ -247,7 +247,26 @@ def _schedule_flclash_version_check():
 
 async def startup_event() -> None:
     """Initialize services on startup"""
+    global http_client
     logger.info("Starting up application...")
+    
+    # Initialize HTTP client
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            connect=AppConfig.CONNECT_TIMEOUT,
+            read=AppConfig.READ_TIMEOUT,
+            write=AppConfig.WRITE_TIMEOUT,
+            pool=AppConfig.CONNECT_TIMEOUT
+        ),
+        follow_redirects=True,
+        limits=httpx.Limits(
+            max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
+            max_connections=AppConfig.HTTP_MAX_CONNECTIONS
+        ),
+        verify=AppConfig.HTTP_VERIFY_SSL,
+    )
+    set_health_http_client(http_client)
+    logger.info("HTTP client initialized")
     
     # Start Go speedtest service
     if AppConfig.GO_SPEEDTEST_ENABLED:
@@ -277,17 +296,6 @@ async def shutdown_event() -> None:
         await http_client.aclose()
     logger.info("Application shutdown complete")
 
-
-# Security headers middleware
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next: Callable) -> Response:
-    """Add security headers to all responses"""
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
 
 # Request ID middleware
 
@@ -377,23 +385,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
 
 # ==================== HTTP Client ====================
-# Create global async HTTP client for better performance
-# Connection pool optimized for concurrent subscription refreshes
-http_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(
-        connect=AppConfig.CONNECT_TIMEOUT,
-        read=AppConfig.READ_TIMEOUT,
-        write=AppConfig.WRITE_TIMEOUT,
-        pool=AppConfig.CONNECT_TIMEOUT
-    ),
-    follow_redirects=True,
-    limits=httpx.Limits(
-        max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
-        max_connections=AppConfig.HTTP_MAX_CONNECTIONS
-    ),
-    verify=AppConfig.HTTP_VERIFY_SSL,
-)
-set_health_http_client(http_client)
+# Global async HTTP client - initialized in startup_event()
+http_client = None
 
 # ==================== Config Helper Functions ====================
 
@@ -687,18 +680,16 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
     
     # Fetch subscription
     refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     
     try:
-        content, sub_info, node_count = loop.run_until_complete(
+        content, sub_info, node_count = asyncio.run(
             asyncio.wait_for(
                 fetch_subscription_async(sub['url']),
                 timeout=refresh_timeout,
             )
         )
-    finally:
-        loop.close()
+    except Exception as e:
+        raise Exception(f"Failed to fetch subscription: {e}")
     
     # Apply region history
     content, remembered, inherited = apply_region_history_to_yaml_content(
