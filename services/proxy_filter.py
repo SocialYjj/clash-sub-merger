@@ -17,10 +17,14 @@ class ProxyFilter:
         re.IGNORECASE
     )
     INFO_DOMAIN_HINT_RE = re.compile(
-        r'^\s*(?:最强备用|备用网址|备用地址|官网地址?)\s*[:：]?\s*'
+        r'^\s*(?:最强备用|备用网址|备用地址|官网地址?|防丢失官网?|防失联官网?|'
+        r'永久官网|永久地址|最新官网|最新地址|网址发布|域名发布|防丢失|防失联)\s*[:：]?\s*'
         r'(?:https?://)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:/\S*)?\s*$',
         re.IGNORECASE
     )
+
+    # 用于检测节点名中是否携带 URL（结合"官网"关键词识别信息节点）。
+    _OFFICIAL_URL_RE = re.compile(r'https?://', re.IGNORECASE)
 
     # Always treat these as info nodes.
     HARD_INVALID_KEYWORDS = [
@@ -129,6 +133,12 @@ class ProxyFilter:
 
         if name.startswith('官网'):
             return None if ProxyFilter._has_region_hint(name) else 'official-website'
+
+        # 名称含"官网"且携带 URL，通常为机场信息节点（如"防丢失官网:https://xxx"）。
+        # 要求无真实节点身份（地区/序号/线路关键词），避免误伤"官网香港01"类节点。
+        if '官网' in name and ProxyFilter._OFFICIAL_URL_RE.search(name) \
+                and not ProxyFilter._has_node_identity(name):
+            return 'official-website-with-url'
 
         for keyword in ProxyFilter.HARD_INVALID_KEYWORDS:
             if keyword in name:
