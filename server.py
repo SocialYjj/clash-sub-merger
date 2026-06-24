@@ -55,8 +55,9 @@ from helpers import (
 
 # Import refactored modules
 from core.config import AppConfig as CoreAppConfig, env_int
-from core.database import load_config, save_config, update_config, find_subscription_by_id
+from core.database import load_config, save_config, update_config, find_subscription_by_id, update_subscription_fields
 from services.subscription_output import create_subscription_output_router
+from services.subscription_fetcher import SubscriptionFetcher
 
 # Import API routers
 from api import api_router
@@ -678,15 +679,22 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
     sub_id = sub['id']
     existing_nodes = _load_existing_nodes(sub_id)
     
-    # Fetch subscription
+    # Fetch subscription using SubscriptionFetcher (supports proxy fallback, consistent with manual refresh)
     refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10
     
     try:
+        from helpers_ua import get_subscription_user_agent
+        
+        config = load_config()
+        proxy_url = config.get('settings', {}).get('subscription_proxy_url')
+        user_agent = get_subscription_user_agent()
+        
+        async def _do_fetch():
+            fetcher = SubscriptionFetcher(http_client, proxy_url=proxy_url)
+            return await fetcher.fetch(sub['url'], user_agent=user_agent)
+        
         content, sub_info, node_count = asyncio.run(
-            asyncio.wait_for(
-                fetch_subscription_async(sub['url']),
-                timeout=refresh_timeout,
-            )
+            asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
         )
     except Exception as e:
         raise Exception(f"Failed to fetch subscription: {e}")

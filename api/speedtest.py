@@ -17,6 +17,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors, load_subscription_yaml
 from logger_config import get_logger
+from services.node_manager import get_proxy_node_by_id
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -27,17 +28,6 @@ MAX_SPEEDTEST_CONCURRENCY = 100
 MAX_SPEEDTEST_NODES = 500
 
 YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
-
-# Lazy import server module (only for functions that truly need it)
-_server_module = None
-
-
-def _get_server():
-    global _server_module
-    if _server_module is None:
-        import server as srv
-        _server_module = srv
-    return _server_module
 
 
 # ==================== Data Models ====================
@@ -103,9 +93,8 @@ def _get_ipv6_proxy() -> tuple:
 async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int = 10):
     """Test a single node"""
     timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
-    srv = _get_server()
-    
-    node = srv.get_proxy_node_by_id(node_id)
+
+    node = get_proxy_node_by_id(node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     

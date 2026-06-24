@@ -62,11 +62,7 @@ class SpeedtestValidationTests(unittest.TestCase):
         )
 
     def test_single_speedtest_calls_go_service_with_node_payload(self):
-        class FakeServer:
-            @staticmethod
-            def get_proxy_node_by_id(node_id):
-                self.assertEqual(node_id, "sub_demo_0")
-                return {"name": "Demo", "type": "http", "server": "127.0.0.1", "port": 8080}
+        fake_node = {"name": "Demo", "type": "http", "server": "127.0.0.1", "port": 8080}
 
         calls = []
 
@@ -82,7 +78,7 @@ class SpeedtestValidationTests(unittest.TestCase):
 
         async def run_test():
             with (
-                patch.object(speedtest_api, "_get_server", return_value=FakeServer()),
+                patch.object(speedtest_api, "get_proxy_node_by_id", return_value=fake_node),
                 patch.object(speedtest_api, "_go_speedtest_request", side_effect=fake_go_request),
             ):
                 return await speedtest_api._speedtest_single("sub_demo_0", test_speed=True, timeout=5)

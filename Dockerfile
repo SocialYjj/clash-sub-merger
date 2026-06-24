@@ -56,8 +56,9 @@ COPY api/ ./api/
 COPY services/ ./services/
 COPY core/ ./core/
 
-# Copy Go speedtest binary
-COPY --from=go-builder /app/speedtest/speedtest /app/speedtest
+# Copy Go speedtest binary (into speedtest/ dir so server.py finds it at /app/speedtest/speedtest)
+RUN mkdir -p /app/speedtest
+COPY --from=go-builder /app/speedtest/speedtest /app/speedtest/speedtest
 
 # Copy frontend build
 COPY --from=frontend-builder /app/submerger/dist ./submerger/dist
@@ -69,8 +70,7 @@ RUN mkdir -p /app/data/uploads /app/data/logs /app/data/backups
 RUN echo '#!/bin/sh\n\
 # Ensure data subdirectories exist\n\
 mkdir -p /app/data/uploads /app/data/logs /app/data/backups\n\
-# Start services\n\
-/app/speedtest &\n\
+# Go speedtest service is started by Python server.py\n\
 exec python server.py' > /app/start.sh \
     && chmod +x /app/start.sh \
     && chown -R appuser:appuser /app
