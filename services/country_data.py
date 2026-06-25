@@ -67,6 +67,11 @@ COUNTRY_KEYWORDS: Dict[str, List[str]] = {
     'BD': ['bangladesh', 'bd', '孟加拉', 'dhaka', '达卡'],
     'CL': ['chile', 'cl', '智利', 'santiago', '圣地亚哥'],
     'AQ': ['antarctica', 'aq', '南极'],
+    # CN placed after HK/TW so "中国香港"/"中国台湾" resolve correctly
+    'CN': ['china', 'cn', '中国', '大陆', '上海', 'shanghai', '北京', 'beijing',
+           '广州', 'guangzhou', '深圳', 'shenzhen', '成都', 'chengdu',
+           '杭州', 'hangzhou', '南京', 'nanjing', '武汉', 'wuhan',
+           '重庆', 'chongqing', '青岛', 'qingdao'],
 }
 
 # Additional less common countries
