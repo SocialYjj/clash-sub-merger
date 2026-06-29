@@ -146,7 +146,7 @@ def create_subscription_output_router(
                 )
 
         subs = config.get('subscriptions', [])
-        enabled_subs = [s for s in subs if s['enabled']]
+        enabled_subs = [s for s in subs if s.get('enabled', True)]
         custom_nodes = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]
 
         # Filter subscriptions based on user allocations

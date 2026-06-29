@@ -295,6 +295,19 @@ async def shutdown_event() -> None:
     stop_go_speedtest_service()
     if http_client:
         await http_client.aclose()
+    # Close the subscription fetcher's dedicated HTTP client
+    try:
+        from api.subscriptions import close_fetcher
+        await close_fetcher()
+    except Exception:
+        pass
+    # Close the shared speedtest HTTP client
+    try:
+        from api.speedtest import _speedtest_client
+        if _speedtest_client is not None:
+            await _speedtest_client.aclose()
+    except Exception:
+        pass
     logger.info("Application shutdown complete")
 
 
@@ -690,8 +703,29 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         user_agent = get_subscription_user_agent()
         
         async def _do_fetch():
-            fetcher = SubscriptionFetcher(http_client, proxy_url=proxy_url)
-            return await fetcher.fetch(sub['url'], user_agent=user_agent)
+            # Create a dedicated client for this thread's event loop.
+            # The global http_client is bound to the main event loop and
+            # cannot be used from asyncio.run() in a scheduler thread.
+            import httpx as _httpx
+            client = _httpx.AsyncClient(
+                timeout=_httpx.Timeout(
+                    connect=AppConfig.CONNECT_TIMEOUT,
+                    read=AppConfig.READ_TIMEOUT,
+                    write=AppConfig.WRITE_TIMEOUT,
+                    pool=AppConfig.CONNECT_TIMEOUT
+                ),
+                follow_redirects=True,
+                limits=_httpx.Limits(
+                    max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
+                    max_connections=AppConfig.HTTP_MAX_CONNECTIONS
+                ),
+                verify=AppConfig.HTTP_VERIFY_SSL,
+            )
+            try:
+                fetcher = SubscriptionFetcher(client, proxy_url=proxy_url)
+                return await fetcher.fetch(sub['url'], user_agent=user_agent)
+            finally:
+                await client.aclose()
         
         content, sub_info, node_count = asyncio.run(
             asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
@@ -1199,7 +1233,7 @@ def _ensure_sync_context(sync_name: str, async_name: str) -> None:
 
 async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
     """
-    Fetch subscription content from URL.
+    Fetch subscription content from URL using SubscriptionFetcher (with proxy fallback).
 
     Args:
         url: Subscription URL
@@ -1208,26 +1242,20 @@ async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
         Tuple of (content, subscription_info, node_count)
     """
     from helpers_ua import get_subscription_user_agent
-    user_agent = get_subscription_user_agent()
-    headers = {'User-Agent': user_agent}
-    
+    from services.subscription_fetcher import SubscriptionFetcher
+
     try:
-        logger.info(f"Fetching subscription from: {url}")
-        response = await http_client.get(url, headers=headers, timeout=Constants.TIMEOUT_SUBSCRIPTION_FETCH)
-        response.raise_for_status()
-        
-        sub_info = parse_subscription_info(dict(response.headers))
-        content = _process_subscription_content(response)
-        node_count = _count_nodes(content)
-        
+        config = load_config()
+        proxy_url = config.get('settings', {}).get('subscription_proxy_url')
+        user_agent = get_subscription_user_agent()
+
+        fetcher = SubscriptionFetcher(http_client, proxy_url=proxy_url)
+        content, sub_info, node_count = await fetcher.fetch(url, user_agent=user_agent)
+
         logger.info(f"Successfully fetched subscription, got {node_count} nodes")
         return content, sub_info, node_count
-    except httpx.HTTPStatusError as e:
-        raise Exception(f"HTTP {e.response.status_code}: {e}")
-    except httpx.TimeoutException as e:
-        raise Exception(f"Connection timeout: {e}")
     except Exception as e:
-        raise Exception(f"Connection failed: {e}")
+        raise Exception(f"Failed to fetch subscription: {e}")
 
 
 def _process_subscription_content(response) -> str:

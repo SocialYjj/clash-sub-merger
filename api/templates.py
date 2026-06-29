@@ -252,7 +252,7 @@ def update_template(template_id: str, data: UpdateTemplate, _: bool = Depends(ve
                 data.header = header
                 data.suffix = suffix
                 data.proxy_groups = proxy_groups
-        except:
+        except Exception:
             # If parsing fails, treat as plain header
             data.header = data.content
             data.suffix = ''

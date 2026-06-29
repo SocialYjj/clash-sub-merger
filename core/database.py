@@ -6,6 +6,7 @@ import json
 import os
 import time
 import copy
+import shutil
 import threading
 from typing import Callable, Optional, TypeVar
 from filelock import FileLock, Timeout
@@ -66,10 +67,11 @@ def _write_config_locked(config: dict):
     temp_file = f"{CONFIG_FILE}.tmp"
     with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
     if os.path.exists(CONFIG_FILE):
         backup_file = f"{CONFIG_FILE}.backup"
-        import shutil
         shutil.copy(CONFIG_FILE, backup_file)
 
     os.replace(temp_file, CONFIG_FILE)
@@ -107,7 +109,6 @@ def load_config() -> dict:
         logger.error("Config file is corrupted (invalid JSON): %s, error: %s", CONFIG_FILE, e)
         backup_file = f"{CONFIG_FILE}.corrupted.{int(time.time())}"
         try:
-            import shutil
             shutil.copy(CONFIG_FILE, backup_file)
             logger.info("Corrupted config backed up to: %s", backup_file)
         except Exception as backup_error:

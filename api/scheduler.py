@@ -32,6 +32,10 @@ class ScheduleUpdate(BaseModel):
     cron_expr: Optional[str] = None
 
 
+class CronValidationRequest(BaseModel):
+    cron_expr: str = ''
+
+
 # ==================== API Endpoints ====================
 
 @router.get("/presets")
@@ -44,9 +48,9 @@ def get_cron_presets(_: bool = Depends(verify_session)):
 
 @router.post("/validate-cron")
 @handle_api_errors
-def validate_cron_expression(data: dict, _: bool = Depends(verify_session)):
+def validate_cron_expression(data: CronValidationRequest, _: bool = Depends(verify_session)):
     """Validate cron expression and return next run time"""
-    cron_expr = data.get('cron_expr', '').strip()
+    cron_expr = data.cron_expr.strip()
     
     if not cron_expr:
         return {"valid": False, "error": "Cron expression is empty"}
@@ -101,6 +105,12 @@ def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = De
     scheduler = get_scheduler()
     task_id = f"sub_refresh_{sub_id}"
 
+    # Validate cron expression BEFORE saving config or touching scheduler
+    if data.cron_expr:
+        from apscheduler.triggers.cron import CronTrigger
+        CronTrigger.from_crontab(data.cron_expr)  # raises on invalid
+
+    # Save config first (scheduler ops happen after, so config and scheduler stay consistent)
     def apply_schedule_update(config: dict) -> dict:
         sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
         if not sub:
@@ -109,39 +119,44 @@ def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = De
         if sub.get('type') == 'local':
             raise HTTPException(status_code=400, detail="Local subscriptions cannot be scheduled")
 
-        # Remove existing job if any
-        scheduler.remove_job(task_id)
-
-        if data.cron_expr:
-            # Validate and add new job
-            try:
-                from apscheduler.triggers.cron import CronTrigger
-                CronTrigger.from_crontab(data.cron_expr)
-
-                scheduler.add_job(
-                    task_id,
-                    data.cron_expr,
-                    srv.refresh_subscription_job,
-                    sub_id
-                )
-
-                job_info = scheduler.get_job_info(task_id)
-                next_run = job_info["next_run"].timestamp() if job_info and job_info.get("next_run") else None
-
-                sub['cron_expr'] = data.cron_expr
-                sub['next_update'] = int(next_run) if next_run else None
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Invalid cron expression: {str(e)}")
-        else:
-            sub['cron_expr'] = None
-            sub['next_update'] = None
-
+        sub['cron_expr'] = data.cron_expr or None
+        sub['next_update'] = None  # will be filled after scheduler add_job
         return {
             "cron_expr": sub.get('cron_expr'),
-            "next_update": sub.get('next_update')
+            "next_update": None
         }
 
     result = update_config(apply_schedule_update)
+
+    # Now update the scheduler (config is already saved)
+    try:
+        scheduler.remove_job(task_id)
+    except Exception:
+        pass  # job may not exist
+
+    if data.cron_expr:
+        try:
+            scheduler.add_job(
+                task_id,
+                data.cron_expr,
+                srv.refresh_subscription_job,
+                sub_id
+            )
+            job_info = scheduler.get_job_info(task_id)
+            next_run = job_info["next_run"].timestamp() if job_info and job_info.get("next_run") else None
+
+            # Update next_update in config
+            if next_run:
+                def update_next_run(config: dict) -> dict:
+                    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+                    if sub:
+                        sub['next_update'] = int(next_run)
+                        return {"next_update": int(next_run)}
+                    return {}
+                update_config(update_next_run)
+                result['next_update'] = int(next_run)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Scheduler error: {str(e)}")
 
     return {
         "status": "success",

@@ -107,16 +107,32 @@ async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int
     }
 
 
+_speedtest_client: Optional[httpx.AsyncClient] = None
+
+
+async def _get_speedtest_client() -> httpx.AsyncClient:
+    """Get or create a shared httpx.AsyncClient for Go speedtest requests."""
+    global _speedtest_client
+    if _speedtest_client is None or _speedtest_client.is_closed:
+        _speedtest_client = httpx.AsyncClient()
+    return _speedtest_client
+
+
 async def _go_speedtest_request(endpoint: str, payload: dict, timeout: int) -> dict:
     """Call the bundled Go speedtest service."""
     go_port = os.environ.get('GO_SPEEDTEST_PORT', str(AppConfig.GO_SPEEDTEST_PORT))
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"http://127.0.0.1:{go_port}{endpoint}",
-            json=payload,
-            timeout=timeout,
-        )
+    client = await _get_speedtest_client()
+    response = await client.post(
+        f"http://127.0.0.1:{go_port}{endpoint}",
+        json=payload,
+        timeout=timeout,
+    )
+    if response.status_code != 200:
+        return {"success": False, "error": f"Go service returned HTTP {response.status_code}"}
+    try:
         return response.json()
+    except Exception:
+        return {"success": False, "error": "Go service returned non-JSON response"}
 
 
 async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int = 10) -> dict:
@@ -298,6 +314,7 @@ def get_speedtest_profiles(_: bool = Depends(verify_session)):
 
 
 @router.post("/profiles")
+@handle_api_errors
 def create_speedtest_profile(data: SpeedTestProfile, _: bool = Depends(verify_session)):
     """Create a new speed test profile"""
     profile = {
@@ -320,6 +337,7 @@ def create_speedtest_profile(data: SpeedTestProfile, _: bool = Depends(verify_se
 
 
 @router.get("/profiles/{profile_id}")
+@handle_api_errors
 def get_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
     """Get a specific speed test profile"""
     config = load_config()
@@ -333,6 +351,7 @@ def get_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
 
 
 @router.put("/profiles/{profile_id}")
+@handle_api_errors
 def update_speedtest_profile(profile_id: str, data: SpeedTestProfile, _: bool = Depends(verify_session)):
     """Update a speed test profile"""
     def apply_profile_update(config: dict) -> dict:
@@ -355,6 +374,7 @@ def update_speedtest_profile(profile_id: str, data: SpeedTestProfile, _: bool = 
 
 
 @router.delete("/profiles/{profile_id}")
+@handle_api_errors
 def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session)):
     """Delete a speed test profile"""
     def remove_speedtest_profile(config: dict):
@@ -366,6 +386,7 @@ def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session))
 
 
 @router.post("/profiles/{profile_id}/run")
+@handle_api_errors
 async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Depends(verify_session)):
     """Run a speed test profile"""
     def mark_profile_run(config: dict) -> dict:
