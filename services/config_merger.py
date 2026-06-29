@@ -286,7 +286,13 @@ rule-providers:
         for file_name in files:
             if file_name in excludes:
                 continue
-                
+
+            # When file_aliases is provided, only process files for enabled
+            # subscriptions. Files not in file_aliases belong to disabled or
+            # deleted subscriptions and must be skipped.
+            if self.file_aliases and file_name not in self.file_aliases:
+                continue
+
             file_path = os.path.join(self.yaml_dir, file_name)
             default_name = os.path.splitext(file_name)[0]
             source_name = self.file_aliases.get(file_name, default_name)
