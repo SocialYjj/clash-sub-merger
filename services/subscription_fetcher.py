@@ -218,16 +218,17 @@ class SubscriptionFetcher:
             raise FetchError("Subscription response is empty; existing data was kept")
 
         content_type = headers.get('content-type', '').lower()
-        content_prefix = content[:512].lower()
-        if 'text/html' in content_type or any(
-            marker in content_prefix
-            for marker in ('<!doctype html', '<html', '<body', '<head')
-        ):
+        content_prefix = content[:2048].lstrip('\ufeff \t\r\n').lower()
+        if content_prefix.startswith(('<!doctype html', '<html', '<body', '<head')):
             raise FetchError("Subscription endpoint returned an HTML page; existing data was kept")
 
         try:
             return parse_subscription_content(content)
         except Exception:
+            if 'text/html' in content_type:
+                raise FetchError(
+                    "Subscription endpoint returned an HTML page; existing data was kept"
+                ) from None
             raise FetchError(
                 "Subscription response could not be parsed; existing data was kept"
             ) from None

@@ -1,6 +1,7 @@
 """Regression tests for subscription refresh, scheduling, and public auth hardening."""
 
 import asyncio
+import base64
 import copy
 import inspect
 import tempfile
@@ -204,6 +205,12 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
                 headers={"content-type": "text/html"},
                 text="<html><body>upstream error</body></html>",
             ),
+            httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "application/octet-stream"},
+                text="<!doctype html><html><body>upstream error</body></html>",
+            ),
             httpx.Response(200, request=request, text="proxies: []\n"),
         ]
 
@@ -211,6 +218,28 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
             with self.subTest(content=response.text[:20]):
                 with self.assertRaises(FetchError):
                     fetcher._process_response(response)
+
+    def test_valid_base64_response_with_html_content_type_is_accepted(self):
+        fetcher = SubscriptionFetcher(Mock())
+        yaml_content = (
+            "proxies:\n"
+            "  - name: Test Node\n"
+            "    type: http\n"
+            "    server: 127.0.0.1\n"
+            "    port: 8080\n"
+        )
+        encoded_content = base64.b64encode(yaml_content.encode()).decode()
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "https://provider.example/redacted"),
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=encoded_content,
+        )
+
+        parsed_content, _usage, node_count = fetcher._process_response(response)
+
+        self.assertEqual(node_count, 1)
+        self.assertIn("Test Node", parsed_content)
 
     def test_fetch_failure_message_does_not_expose_subscription_url(self):
         secret_url = "https://provider.example/account-secret?token=query-secret"
