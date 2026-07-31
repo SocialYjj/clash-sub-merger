@@ -6,7 +6,7 @@ import time
 from typing import Optional
 from fastapi import Header, HTTPException
 
-from .database import load_config, update_config
+from .database import ConfigLoadError, load_config, update_config
 from .security import session_storage_key, verify_session_token_signature
 from .token_utils import constant_time_equal
 from logger_config import get_logger
@@ -19,12 +19,15 @@ def verify_session(authorization: Optional[str] = Header(None)) -> bool:
     Verify user session from Authorization header.
     Returns True if session is valid, raises HTTPException otherwise.
     """
-    config = load_config()
+    try:
+        config = load_config()
+    except ConfigLoadError as exc:
+        raise HTTPException(status_code=503, detail="Configuration is unavailable") from exc
     auth = config.get('auth', {})
     
-    # If no password set, allow access
+    # An uninitialized or damaged instance must never expose the admin API.
     if not auth.get('password_hash'):
-        return True
+        raise HTTPException(status_code=503, detail="Administrator password is not initialized")
     
     # Require authorization header
     if not authorization:

@@ -13,6 +13,7 @@ const shouldIgnoreRequest = (err, signal) => signal?.aborted || isRequestCancele
 // Subscription Proxy Settings Component
 const SubscriptionProxySection = ({ showToast }) => {
   const [proxyUrl, setProxyUrl] = useState('');
+  const [hasStoredProxy, setHasStoredProxy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -29,7 +30,8 @@ const SubscriptionProxySection = ({ showToast }) => {
     try {
       const res = await request.get(`${API_BASE}/settings/subscription-proxy`, { signal });
       if (signal?.aborted) return;
-      setProxyUrl(res.data.proxy_url || '');
+      setHasStoredProxy(Boolean(res.data.has_proxy_url));
+      setProxyUrl('');
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
     } finally {
@@ -38,12 +40,33 @@ const SubscriptionProxySection = ({ showToast }) => {
   };
 
   const saveSetting = async () => {
+    if (!proxyUrl.trim()) {
+      showToast?.('请输入新的代理地址；清除已有配置请使用“清除”按钮', 'error');
+      return;
+    }
     setSaving(true);
     try {
-      await request.put(`${API_BASE}/settings/subscription-proxy`, { proxy_url: proxyUrl || null });
+      await request.put(`${API_BASE}/settings/subscription-proxy`, { proxy_url: proxyUrl.trim() });
+      setHasStoredProxy(true);
+      setProxyUrl('');
       showToast?.('代理设置已保存');
     } catch (err) {
       showToast?.('保存失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearSetting = async () => {
+    setSaving(true);
+    try {
+      await request.put(`${API_BASE}/settings/subscription-proxy`, { proxy_url: null });
+      setHasStoredProxy(false);
+      setProxyUrl('');
+      setTestResult(null);
+      showToast?.('代理设置已清除');
+    } catch (err) {
+      showToast?.('清除失败', 'error');
     } finally {
       setSaving(false);
     }
@@ -84,13 +107,15 @@ const SubscriptionProxySection = ({ showToast }) => {
           <div>
             <label className="block text-sm text-gray-400 mb-2">代理地址</label>
             <input
-              type="text"
+              type="password"
               value={proxyUrl}
               onChange={(e) => setProxyUrl(e.target.value)}
-              placeholder="socks5://warp:1080 或 http://proxy:8080"
+              placeholder={hasStoredProxy ? '已配置；输入新地址可替换' : 'socks5://warp:1080 或 http://proxy:8080'}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
             />
-            <p className="text-xs text-gray-500 mt-1">留空则不使用代理，支持 socks5:// 和 http://</p>
+            <p className="text-xs text-gray-500 mt-1">
+              {hasStoredProxy ? '已有代理凭据已隐藏；支持 socks5://、http:// 和 https://' : '支持 socks5://、http:// 和 https://'}
+            </p>
           </div>
 
           <div className="flex gap-3">
@@ -101,6 +126,15 @@ const SubscriptionProxySection = ({ showToast }) => {
             >
               {saving ? '保存中...' : '保存'}
             </button>
+            {hasStoredProxy && (
+              <button
+                onClick={clearSetting}
+                disabled={saving}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                清除
+              </button>
+            )}
             <button
               onClick={testProxy}
               disabled={testing || !proxyUrl}
@@ -746,10 +780,9 @@ export default function Settings({
   // Online GeoIP API config
   const [onlineGeoipConfig, setOnlineGeoipConfig] = useState({
     preferred_api: 'ip-api.com',
-    ipinfo_token: '',
+    has_ipinfo_token: false,
     apis: []
   });
-  const [ipinfoToken, setIpinfoToken] = useState('');
   const [savingOnlineConfig, setSavingOnlineConfig] = useState(false);
   const [showAddApiModal, setShowAddApiModal] = useState(false);
   const [editingApi, setEditingApi] = useState(null);
@@ -765,7 +798,6 @@ export default function Settings({
     city_path: '',
     success_check: ''
   });
-  const [configApiId, setConfigApiId] = useState(null);  // For builtin API config modal (e.g., ipinfo token)
   const [customApiTestResult, setCustomApiTestResult] = useState(null);  // Test result for custom API
   const [testingCustomApi, setTestingCustomApi] = useState(false);  // Testing custom API in progress
   const [geoipCacheStats, setGeoipCacheStats] = useState(null);
@@ -811,7 +843,6 @@ export default function Settings({
       const res = await request.get(`${API_BASE}/geoip/online-config`, { signal });
       if (signal?.aborted) return;
       setOnlineGeoipConfig(res.data);
-      setIpinfoToken(res.data.ipinfo_token || '');
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch online GeoIP config', err);
@@ -971,9 +1002,8 @@ export default function Settings({
     setCustomApiForm({
       name: api.name || '',
       url: url,
-      // Don't load token for security - user can enter new one if needed
-      // For ipinfo builtin, load from global config; for custom APIs, leave empty
-      token: api.id === 'ipinfo' ? (onlineGeoipConfig.ipinfo_token || '') : '',
+      // Secret values are never returned by the backend. Empty means unchanged.
+      token: '',
       test_ip: '8.8.8.8',
       country_code_path: api.country_code_path || '',
       country_name_path: api.country_name_path || '',
@@ -1013,14 +1043,10 @@ export default function Settings({
     try {
       // For builtin APIs, use the existing test endpoint
       if (editingApi?.builtin) {
-        // For ipinfo, save token first if changed
-        if (editingApi.id === 'ipinfo' && customApiForm.token !== onlineGeoipConfig.ipinfo_token) {
-          await saveOnlineGeoipConfig(null, customApiForm.token);
-        }
-        
-        const res = await request.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, {
-          test_ip: customApiForm.test_ip || '8.8.8.8'
-        });
+        const testPayload = editingApi.id === 'ipinfo' && customApiForm.token
+          ? { token: customApiForm.token }
+          : {};
+        const res = await request.post(`${API_BASE}/geoip/apis/${editingApi.id}/test`, testPayload);
         setCustomApiTestResult(res.data);
       } else if (editingApi && !customApiForm.token && editingApi.has_token) {
         // Editing existing custom API without new token - use saved API's token via API ID
@@ -1088,17 +1114,6 @@ export default function Settings({
     setDeleteApiConfirm(null);
   };
 
-  const copySubUrl = async () => {
-    const url = `${window.location.origin}/sub?token=${subToken}`;
-    const copied = await copyToClipboard(url);
-    if (copied) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } else {
-      showToast('复制失败', 'error');
-    }
-  };
-
   const formatFileSize = (bytes) => {
     if (!bytes) return '-';
     const mb = bytes / 1024 / 1024;
@@ -1129,6 +1144,21 @@ export default function Settings({
           <p className="text-sm text-gray-400">
             节点地区检测时使用在线 API 查询出口 IP 的地理位置
           </p>
+
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-gray-300" htmlFor="preferred-geoip-api">首选 API</label>
+            <select
+              id="preferred-geoip-api"
+              value={onlineGeoipConfig.preferred_api || 'ip-api.com'}
+              onChange={(event) => saveOnlineGeoipConfig(event.target.value)}
+              disabled={savingOnlineConfig}
+              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+            >
+              {(onlineGeoipConfig.apis || [])
+                .filter(api => api.enabled !== false)
+                .map(api => <option key={api.id} value={api.id}>{api.name}</option>)}
+            </select>
+          </div>
           
           {/* API List */}
           <div className="space-y-2">
@@ -1163,6 +1193,18 @@ export default function Settings({
                 </div>
                 
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => testGeoipApi(api.id)}
+                    className="px-2 py-1 text-xs text-blue-300 hover:bg-gray-600 rounded transition-colors"
+                  >
+                    测试
+                  </button>
+                  <button
+                    onClick={() => toggleApiEnabled(api.id, api.enabled !== false)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${api.enabled !== false ? 'text-green-300 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-700'}`}
+                  >
+                    {api.enabled !== false ? '已启用' : '已禁用'}
+                  </button>
                   {/* Delete button for custom APIs */}
                   {!api.builtin && (
                     <button
@@ -1416,7 +1458,8 @@ export default function Settings({
                     <span className="text-gray-500 ml-1">（可选，如不需要留空）</span>
                   </label>
                   <input
-                    type="text"
+                    type="password"
+                    autoComplete="new-password"
                     value={customApiForm.token || ''}
                     onChange={(e) => setCustomApiForm({...customApiForm, token: e.target.value})}
                     placeholder={editingApi?.has_token ? '已配置，留空则不修改' : '如果API需要认证，填入Token或API Key'}
@@ -1507,12 +1550,16 @@ export default function Settings({
                 >
                   {editingApi?.builtin ? '关闭' : '取消'}
                 </button>
-                {!editingApi?.builtin && (
+                {(!editingApi?.builtin || editingApi?.id === 'ipinfo') && (
                   <button
                     onClick={saveCustomApi}
-                    disabled={savingOnlineConfig || !customApiForm.name || !customApiForm.url || !customApiTestResult?.success}
+                    disabled={
+                      savingOnlineConfig
+                      || (!editingApi?.builtin && (!customApiForm.name || !customApiForm.url || !customApiTestResult?.success))
+                      || (editingApi?.id === 'ipinfo' && !customApiForm.token && !editingApi?.has_token)
+                    }
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                    title={!customApiTestResult?.success ? '请先测试成功后再保存' : ''}
+                    title={!editingApi?.builtin && !customApiTestResult?.success ? '请先测试成功后再保存' : ''}
                   >
                     {savingOnlineConfig ? '保存中...' : '保存'}
                   </button>

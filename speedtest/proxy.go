@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
 )
+
+var parseProxyAdapter = adapter.ParseProxy
 
 // initDNS initializes mihomo's DNS resolver with IPv6 support.
 // Without this, IPv6 proxy server addresses cause "dns resolve failed: ip version error".
@@ -43,22 +46,109 @@ func initDNS() {
 
 // getProxyAdapter creates a mihomo proxy adapter from a node link
 func getProxyAdapter(link string) (constant.Proxy, error) {
+	return getProxyAdapterWithDialer(link, "")
+}
+
+func getProxyAdapterWithDialer(link string, dialerProxy string) (constant.Proxy, error) {
 	proxyMap, err := linkToProxyMap(link)
 	if err != nil {
 		return nil, err
 	}
 
-	proxyAdapter, err := adapter.ParseProxy(proxyMap)
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy error: %v", err)
+	return parseTargetProxy(proxyMap, dialerProxy)
+}
+
+func dialerProxyConfig(rawProxyURL string) (map[string]interface{}, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawProxyURL))
+	if err != nil || parsed.Hostname() == "" {
+		return nil, fmt.Errorf("invalid dialer proxy configuration")
 	}
 
-	return proxyAdapter, nil
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" && scheme != "socks" && scheme != "socks5" {
+		return nil, fmt.Errorf("unsupported dialer proxy scheme")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, fmt.Errorf("invalid dialer proxy configuration")
+	}
+
+	defaultPort := 1080
+	proxyType := "socks5"
+	if scheme == "http" {
+		defaultPort = 80
+		proxyType = "http"
+	} else if scheme == "https" {
+		defaultPort = 443
+		proxyType = "http"
+	}
+
+	port := defaultPort
+	if parsed.Port() != "" {
+		parsedPort, parseErr := strconv.Atoi(parsed.Port())
+		if parseErr != nil || parsedPort < 1 || parsedPort > 65535 {
+			return nil, fmt.Errorf("invalid dialer proxy configuration")
+		}
+		port = parsedPort
+	}
+
+	proxyConfig := map[string]interface{}{
+		"name":   "__speedtest_dialer_proxy__",
+		"type":   proxyType,
+		"server": parsed.Hostname(),
+		"port":   port,
+	}
+	if scheme == "https" {
+		proxyConfig["tls"] = true
+	}
+	if parsed.User != nil {
+		proxyConfig["username"] = parsed.User.Username()
+		if password, exists := parsed.User.Password(); exists {
+			proxyConfig["password"] = password
+		}
+	}
+	return proxyConfig, nil
+}
+
+func parseTargetProxy(proxyConfig map[string]interface{}, dialerProxy string) (constant.Proxy, error) {
+	if strings.TrimSpace(dialerProxy) == "" {
+		proxyAdapter, err := parseProxyAdapter(normalizeXHTTPNode(proxyConfig))
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy error")
+		}
+		return proxyAdapter, nil
+	}
+
+	upstreamConfig, err := dialerProxyConfig(dialerProxy)
+	if err != nil {
+		return nil, err
+	}
+	upstreamAdapter, err := parseProxyAdapter(upstreamConfig)
+	if err != nil {
+		return nil, fmt.Errorf("invalid dialer proxy configuration")
+	}
+
+	targetConfig := make(map[string]interface{}, len(proxyConfig))
+	for key, value := range proxyConfig {
+		targetConfig[key] = value
+	}
+	delete(targetConfig, "dialer-proxy")
+	targetAdapter, err := parseProxyAdapter(
+		normalizeXHTTPNode(targetConfig),
+		adapter.WithDialerForAPI(proxydialer.New(upstreamAdapter, true)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy error")
+	}
+	return targetAdapter, nil
 }
 
 // testDelay tests latency using mihomo's URLTest
 func testDelay(link string, testURL string, timeout time.Duration) (int, error) {
-	proxyAdapter, err := getProxyAdapter(link)
+	return testDelayWithDialer(link, testURL, timeout, "")
+}
+
+func testDelayWithDialer(link string, testURL string, timeout time.Duration, dialerProxy string) (int, error) {
+	proxyAdapter, err := getProxyAdapterWithDialer(link, dialerProxy)
 	if err != nil {
 		return -1, err
 	}
@@ -77,7 +167,11 @@ func testDelay(link string, testURL string, timeout time.Duration) (int, error) 
 
 // getExitIP gets the exit IP through the proxy
 func getExitIP(link string, timeout time.Duration) (string, error) {
-	proxyAdapter, err := getProxyAdapter(link)
+	return getExitIPWithDialer(link, timeout, "")
+}
+
+func getExitIPWithDialer(link string, timeout time.Duration, dialerProxy string) (string, error) {
+	proxyAdapter, err := getProxyAdapterWithDialer(link, dialerProxy)
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +180,11 @@ func getExitIP(link string, timeout time.Duration) (string, error) {
 
 // testSpeed tests download speed through the proxy
 func testSpeed(link string, testURL string, timeout time.Duration, mode string, peakSampleInterval int) (float64, float64, int, int64, error) {
-	proxyAdapter, err := getProxyAdapter(link)
+	return testSpeedWithDialer(link, testURL, timeout, mode, peakSampleInterval, "")
+}
+
+func testSpeedWithDialer(link string, testURL string, timeout time.Duration, mode string, peakSampleInterval int, dialerProxy string) (float64, float64, int, int64, error) {
+	proxyAdapter, err := getProxyAdapterWithDialer(link, dialerProxy)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
@@ -95,12 +193,11 @@ func testSpeed(link string, testURL string, timeout time.Duration, mode string, 
 
 // getProxyAdapterFromNode creates a mihomo proxy adapter from a node config map
 func getProxyAdapterFromNode(node map[string]interface{}) (constant.Proxy, error) {
-	node = normalizeXHTTPNode(node)
-	proxyAdapter, err := adapter.ParseProxy(node)
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy error: %v", err)
-	}
-	return proxyAdapter, nil
+	return getProxyAdapterFromNodeWithDialer(node, "")
+}
+
+func getProxyAdapterFromNodeWithDialer(node map[string]interface{}, dialerProxy string) (constant.Proxy, error) {
+	return parseTargetProxy(node, dialerProxy)
 }
 
 func normalizeXHTTPNode(node map[string]interface{}) map[string]interface{} {
@@ -145,7 +242,11 @@ func normalizeXHTTPNode(node map[string]interface{}) map[string]interface{} {
 
 // testDelayWithNode tests latency using direct node config
 func testDelayWithNode(node map[string]interface{}, testURL string, timeout time.Duration) (int, error) {
-	proxyAdapter, err := getProxyAdapterFromNode(node)
+	return testDelayWithNodeAndDialer(node, testURL, timeout, "")
+}
+
+func testDelayWithNodeAndDialer(node map[string]interface{}, testURL string, timeout time.Duration, dialerProxy string) (int, error) {
+	proxyAdapter, err := getProxyAdapterFromNodeWithDialer(node, dialerProxy)
 	if err != nil {
 		return -1, err
 	}
@@ -163,7 +264,11 @@ func testDelayWithNode(node map[string]interface{}, testURL string, timeout time
 
 // getExitIPWithNode gets the exit IP using direct node config
 func getExitIPWithNode(node map[string]interface{}, timeout time.Duration) (string, error) {
-	proxyAdapter, err := getProxyAdapterFromNode(node)
+	return getExitIPWithNodeAndDialer(node, timeout, "")
+}
+
+func getExitIPWithNodeAndDialer(node map[string]interface{}, timeout time.Duration, dialerProxy string) (string, error) {
+	proxyAdapter, err := getProxyAdapterFromNodeWithDialer(node, dialerProxy)
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +277,11 @@ func getExitIPWithNode(node map[string]interface{}, timeout time.Duration) (stri
 
 // testSpeedWithNode tests download speed using direct node config
 func testSpeedWithNode(node map[string]interface{}, testURL string, timeout time.Duration, mode string, peakSampleInterval int) (float64, float64, int, int64, error) {
-	proxyAdapter, err := getProxyAdapterFromNode(node)
+	return testSpeedWithNodeAndDialer(node, testURL, timeout, mode, peakSampleInterval, "")
+}
+
+func testSpeedWithNodeAndDialer(node map[string]interface{}, testURL string, timeout time.Duration, mode string, peakSampleInterval int, dialerProxy string) (float64, float64, int, int64, error) {
+	proxyAdapter, err := getProxyAdapterFromNodeWithDialer(node, dialerProxy)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
@@ -360,11 +469,15 @@ Calculate:
 // chain: [A, B, C] means traffic goes A -> B -> C -> target
 // Returns the final proxy adapter that represents the entire chain
 func buildProxyChain(chain []map[string]interface{}) (constant.Proxy, error) {
-	return buildChainAdapter(chain)
+	return buildChainAdapterWithDialer(chain, "")
 }
 
 // testDelayWithChain tests latency through a proxy chain
 func testDelayWithChain(chain []map[string]interface{}, testURL string, timeout time.Duration) (int, error) {
+	return testDelayWithChainAndDialer(chain, testURL, timeout, "")
+}
+
+func testDelayWithChainAndDialer(chain []map[string]interface{}, testURL string, timeout time.Duration, dialerProxy string) (int, error) {
 	if len(chain) == 0 {
 		return -1, fmt.Errorf("empty chain")
 	}
@@ -374,11 +487,11 @@ func testDelayWithChain(chain []map[string]interface{}, testURL string, timeout 
 	// we'll use a different approach: dial through each proxy sequentially
 
 	if len(chain) == 1 {
-		return testDelayWithNode(chain[0], testURL, timeout)
+		return testDelayWithNodeAndDialer(chain[0], testURL, timeout, dialerProxy)
 	}
 
 	// Build the chain adapter
-	chainAdapter, err := buildChainAdapter(chain)
+	chainAdapter, err := buildChainAdapterWithDialer(chain, dialerProxy)
 	if err != nil {
 		return -1, err
 	}
@@ -396,15 +509,19 @@ func testDelayWithChain(chain []map[string]interface{}, testURL string, timeout 
 
 // getExitIPWithChain gets the exit IP through a proxy chain
 func getExitIPWithChain(chain []map[string]interface{}, timeout time.Duration) (string, error) {
+	return getExitIPWithChainAndDialer(chain, timeout, "")
+}
+
+func getExitIPWithChainAndDialer(chain []map[string]interface{}, timeout time.Duration, dialerProxy string) (string, error) {
 	if len(chain) == 0 {
 		return "", fmt.Errorf("empty chain")
 	}
 
 	if len(chain) == 1 {
-		return getExitIPWithNode(chain[0], timeout)
+		return getExitIPWithNodeAndDialer(chain[0], timeout, dialerProxy)
 	}
 
-	chainAdapter, err := buildChainAdapter(chain)
+	chainAdapter, err := buildChainAdapterWithDialer(chain, dialerProxy)
 	if err != nil {
 		return "", err
 	}
@@ -414,15 +531,19 @@ func getExitIPWithChain(chain []map[string]interface{}, timeout time.Duration) (
 
 // testSpeedWithChain tests download speed through a proxy chain
 func testSpeedWithChain(chain []map[string]interface{}, testURL string, timeout time.Duration, mode string, peakSampleInterval int) (float64, float64, int, int64, error) {
+	return testSpeedWithChainAndDialer(chain, testURL, timeout, mode, peakSampleInterval, "")
+}
+
+func testSpeedWithChainAndDialer(chain []map[string]interface{}, testURL string, timeout time.Duration, mode string, peakSampleInterval int, dialerProxy string) (float64, float64, int, int64, error) {
 	if len(chain) == 0 {
 		return 0, 0, 0, 0, fmt.Errorf("empty chain")
 	}
 
 	if len(chain) == 1 {
-		return testSpeedWithNode(chain[0], testURL, timeout, mode, peakSampleInterval)
+		return testSpeedWithNodeAndDialer(chain[0], testURL, timeout, mode, peakSampleInterval, dialerProxy)
 	}
 
-	chainAdapter, err := buildChainAdapter(chain)
+	chainAdapter, err := buildChainAdapterWithDialer(chain, dialerProxy)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
@@ -433,16 +554,20 @@ func testSpeedWithChain(chain []map[string]interface{}, testURL string, timeout 
 // buildChainAdapter creates a proxy adapter that chains multiple proxies together
 // This uses a custom approach since mihomo's dialer-proxy requires global registration
 func buildChainAdapter(chain []map[string]interface{}) (constant.Proxy, error) {
+	return buildChainAdapterWithDialer(chain, "")
+}
+
+func buildChainAdapterWithDialer(chain []map[string]interface{}, dialerProxy string) (constant.Proxy, error) {
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("empty chain")
 	}
 
 	if len(chain) == 1 {
-		return getProxyAdapterFromNode(chain[0])
+		return getProxyAdapterFromNodeWithDialer(chain[0], dialerProxy)
 	}
 
 	// Create the first proxy adapter
-	currentAdapter, err := getProxyAdapterFromNode(chain[0])
+	currentAdapter, err := getProxyAdapterFromNodeWithDialer(chain[0], dialerProxy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create first adapter: %v", err)
 	}
@@ -463,7 +588,7 @@ func buildChainAdapter(chain []map[string]interface{}) (constant.Proxy, error) {
 		// globally. Inject the previous adapter as the API dialer instead.
 		delete(nodeConfig, "dialer-proxy")
 
-		nextAdapter, err := adapter.ParseProxy(
+		nextAdapter, err := parseProxyAdapter(
 			normalizeXHTTPNode(nodeConfig),
 			adapter.WithDialerForAPI(proxydialer.New(currentAdapter, true)),
 		)
@@ -524,11 +649,11 @@ func fetchURLWithAdapter(proxyAdapter constant.Proxy, targetURL string, timeout 
 				return nil, err
 			}
 
-				metadata := &constant.Metadata{
-					Host:    host,
-					DstPort: uint16(portNum),
-					Type:    constant.HTTP,
-				}
+			metadata := &constant.Metadata{
+				Host:    host,
+				DstPort: uint16(portNum),
+				Type:    constant.HTTP,
+			}
 
 			return proxyAdapter.DialContext(ctx, metadata)
 		},

@@ -9,7 +9,6 @@ import base64
 import json
 import os
 import re
-import sys
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -21,14 +20,29 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from core.dependencies import verify_admin_or_user_token
-from core.token_utils import constant_time_equal
-from helpers import load_subscription_yaml, save_subscription_content
+from helpers import load_subscription_yaml
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.link_exporter import proxy_to_link
 from services.name_transformer import NameTransformer
 from services.node_visibility import apply_node_visibility_to_yaml_content, is_node_enabled
 from services.proxy_chain_utils import coerce_group_strategy, unique_group_name, unique_name
+from services.proxy_chain_references import (
+    CHAIN_NODE_SOURCE,
+    list_proxy_chain_virtual_references,
+)
 from services.region_history import apply_region_history_to_yaml_content
+from services.node_identity import (
+    custom_node_id,
+    proxy_chain_virtual_node_id,
+    virtual_node_id,
+)
+from services.subscription_state import (
+    describe_refresh_error,
+    refresh_attempt_fields,
+    refresh_failure_fields,
+    refresh_success_fields,
+)
+from services.subscription_storage import persist_subscription_content_and_record
 
 try:
     from yaml import CSafeLoader as YAMLLoader
@@ -61,7 +75,7 @@ def create_subscription_output_router(
     async def _noop_refresh_lock(_: str):
         yield
 
-    def update_subscription_record(sub_id: str, updates: dict) -> None:
+    def update_subscription_record(sub_id: str, updates: dict) -> bool:
         def mutator(latest_config: dict):
             for latest_sub in latest_config.get('subscriptions', []):
                 if latest_sub.get('id') == sub_id:
@@ -69,7 +83,7 @@ def create_subscription_output_router(
                     return True
             return False
 
-        update_config(mutator)
+        return bool(update_config(mutator))
 
     def update_template_record(current_template_id: str, updates: dict) -> None:
         def mutator(latest_config: dict):
@@ -77,21 +91,6 @@ def create_subscription_output_router(
                 if latest_template.get('id') == current_template_id:
                     latest_template.update(updates)
                     latest_template.pop('content', None)
-                    return True
-            return False
-
-        update_config(mutator)
-
-    def update_user_subscription_cache(current_user: dict, cache: dict) -> None:
-        user_id = current_user.get('id')
-        token_value = current_user.get('token')
-
-        def mutator(latest_config: dict):
-            for latest_user in latest_config.get('users', []):
-                if (user_id and latest_user.get('id') == user_id) or (
-                    token_value and constant_time_equal(latest_user.get('token'), token_value)
-                ):
-                    latest_user['sub_cache'] = cache
                     return True
             return False
 
@@ -129,21 +128,7 @@ def create_subscription_output_router(
         else:
             raise HTTPException(status_code=401, detail="Invalid subscription token")
 
-        # Check cache for user subscriptions (admin subscriptions are not cached as they may change frequently)
-        if user_info and not format:  # Only cache YAML format
-            cache = user_info.get('sub_cache', {})
-            cache_time = cache.get('timestamp', 0)
-            cache_content = cache.get('content', '')
-            cache_headers = cache.get('headers', {})
-
-            # Cache is valid for 5 minutes (300 seconds)
-            if cache_content and (time.time() - cache_time) < 300:
-                logger.debug(f"Using cached subscription for user {user_info['name']}")
-                return PlainTextResponse(
-                    cache_content,
-                    media_type='text/yaml',
-                    headers=cache_headers
-                )
+        group_config_subject = user_info or admin_token_info
 
         subs = config.get('subscriptions', [])
         enabled_subs = [s for s in subs if s.get('enabled', True)]
@@ -167,7 +152,7 @@ def create_subscription_output_router(
                             continue
                         transformed = NameTransformer.transform_name(node, 'Custom')
                         node_name = transformed.get('name', node.get('name', ''))
-                        if is_name_allocated(node_name, allocated_custom):
+                        if is_name_allocated(node_name, allocated_custom, custom_node_id(node)):
                             filtered.append(node)
                     custom_nodes = filtered
             else:
@@ -191,9 +176,28 @@ def create_subscription_output_router(
         if missing_subs:
             logger.info(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
             for sub in missing_subs:
+                attempted_at = int(time.time())
                 try:
                     lock_factory = subscription_refresh_lock or _noop_refresh_lock
                     async with lock_factory(sub['id']):
+                        filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
+                        if os.path.exists(filepath):
+                            continue
+                        latest_config = load_config()
+                        latest_sub = next(
+                            (
+                                candidate
+                                for candidate in latest_config.get('subscriptions', [])
+                                if candidate.get('id') == sub['id']
+                            ),
+                            None,
+                        )
+                        if not latest_sub or not latest_sub.get('enabled', True):
+                            continue
+                        update_subscription_record(
+                            sub['id'],
+                            refresh_attempt_fields(latest_sub, attempted_at),
+                        )
                         try:
                             existing_cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=False)
                             existing_nodes = existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
@@ -201,12 +205,12 @@ def create_subscription_output_router(
                             existing_nodes = []
                         if fetch_subscription_async is not None:
                             content, sub_info, node_count = await fetch_subscription_async(
-                                sub['url'],
+                                latest_sub['url'],
                             )
                         else:
                             content, sub_info, node_count = await asyncio.to_thread(
                                 fetch_subscription,
-                                sub['url'],
+                                latest_sub['url'],
                             )
                         content, remembered, inherited = apply_region_history_to_yaml_content(
                             content,
@@ -217,15 +221,19 @@ def create_subscription_output_router(
                             content,
                             existing_nodes=existing_nodes,
                         )
-                        sub.update({
+                        successful_refresh = {
                             'upload': sub_info.get('upload', 0),
                             'download': sub_info.get('download', 0),
                             'total': sub_info.get('total', 0),
                             'expire': sub_info.get('expire', 0),
                             'node_count': node_count,
-                            'last_update': int(time.time()),
-                            'update_status': 'success'
-                        })
+                            **refresh_success_fields(
+                                latest_sub,
+                                attempted_at=attempted_at,
+                                succeeded_at=int(time.time()),
+                            ),
+                        }
+                        sub.update(successful_refresh)
                         if remembered or inherited or visibility_inherited:
                             logger.info(
                                 "Missing subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
@@ -234,21 +242,23 @@ def create_subscription_output_router(
                                 inherited,
                                 visibility_inherited,
                             )
-                        save_subscription_content(sub['id'], content, YAML_SOURCE_DIR)
-                        update_subscription_record(sub['id'], {
-                            'upload': sub.get('upload', 0),
-                            'download': sub.get('download', 0),
-                            'total': sub.get('total', 0),
-                            'expire': sub.get('expire', 0),
-                            'node_count': sub.get('node_count', 0),
-                            'last_update': sub.get('last_update'),
-                            'update_status': sub.get('update_status'),
-                        })
+                        persist_subscription_content_and_record(
+                            sub['id'],
+                            content,
+                            YAML_SOURCE_DIR,
+                            lambda: (
+                                dict(successful_refresh)
+                                if update_subscription_record(sub['id'], successful_refresh)
+                                else None
+                            ),
+                        )
                         logger.info(f"  ✓ Refreshed: {sub['name']}")
                 except Exception as e:
-                    logger.error(f"  ✗ Failed to refresh {sub['name']}: {e}")
-                    sub['update_status'] = f'error: {str(e)}'
-                    update_subscription_record(sub['id'], {'update_status': sub['update_status']})
+                    error_message = describe_refresh_error(e)
+                    logger.error("Missing subscription refresh failed for %s: %s", sub['id'], error_message)
+                    failure_state = refresh_failure_fields(sub, e, attempted_at)
+                    sub.update(failure_state)
+                    update_subscription_record(sub['id'], failure_state)
 
         # Smart format detection: auto-select based on User-Agent
         # Clash clients → YAML, others → Base64
@@ -385,13 +395,16 @@ def create_subscription_output_router(
                         return False
                     if allocated_nodes == ['*']:
                         return True
-                    return is_name_allocated(proxy.get('name', ''), allocated_nodes)
+                    return is_name_allocated(
+                        proxy.get('name', ''),
+                        allocated_nodes,
+                        proxy.get('_allocation_id'),
+                    )
 
                 proxies = [p for p in proxies if is_allocated_proxy(p)]
 
                 # Regenerate proxy groups based on filtered proxies
                 from services.country_grouper import CountryGrouper
-                from services.config_merger import ProxyGroupGenerator
                 country_groups = CountryGrouper.group_by_country(proxies)
                 proxy_groups = ProxyGroupGenerator.generate_groups(proxies, country_groups)
 
@@ -399,129 +412,35 @@ def create_subscription_output_router(
             if template_proxy_groups and isinstance(template_proxy_groups, list) and len(template_proxy_groups) > 0:
                 # Get all proxy names
                 all_proxy_names = [p['name'] for p in proxies]
-
-                # Identify primary selection groups (groups that contain actual proxy nodes)
-                # These are typically "manual select" or "auto select" type groups
-                primary_groups = []
-                for g in template_proxy_groups:
-                    g_name = g.get('name', '')
-                    g_type = g.get('type', '')
-                    # Primary groups are usually select or url-test types that will contain actual nodes
-                    # Common patterns: "Node Selection", "Auto Select", "Manual Select", etc.
-                    if g_type in ['select', 'url-test', 'fallback', 'load-balance']:
-                        # Check if this looks like a primary selection group (not a policy group)
-                        # Policy groups typically have names like "Ad Block", "Domestic Service", etc.
-                        is_policy = any(keyword in g_name for keyword in ['广告', '拦截', '国内', '服务', '私有', '网络', '漏网', 'Ad', 'Block', 'Domestic', 'Private', 'Catch'])
-                        if not is_policy:
-                            primary_groups.append(g_name)
+                template_group_names = {
+                    group.get('name')
+                    for group in template_proxy_groups
+                    if isinstance(group, dict) and group.get('name')
+                }
 
                 # Process each group
                 custom_groups = []
                 for group in template_proxy_groups:
                     new_group = dict(group)
-                    group_name = new_group.get('name', '')
-                    group_type = new_group.get('type', '')
 
                     # Remove underscore fields
                     new_group = filter_underscore_fields(new_group)
 
-                    # Build fixed options based on group type
-                    # Base options that are always safe
-                    base_options = ["DIRECT", "REJECT"]
-
-                    # For policy groups (like ad-block, domestic, etc.), add primary selection groups
-                    # For primary selection groups, don't add other groups to avoid loops
-                    is_policy = any(keyword in group_name for keyword in ['广告', '拦截', '国内', '服务', '私有', '网络', '漏网', 'Ad', 'Block', 'Domestic', 'Private', 'Catch'])
-
-                    if is_policy:
-                        # Policy groups can reference primary selection groups
-                        fixed_options = base_options + primary_groups
-                    else:
-                        # Primary selection groups only get DIRECT/REJECT
-                        fixed_options = base_options
-
-                    # Apply user's group_config if exists
-                    if user_info and user_info.get('group_config'):
-                        group_config = user_info['group_config']
-
-                        # If user configured this group, use user's selection
-                        if group_name in group_config and group_config[group_name]:
-                            # Extract group references from original template (for other groups, not DIRECT/REJECT)
-                            original_proxies = group.get('proxies', [])
-                            group_refs = []
-
-                            for item in original_proxies:
-                                # Only keep group references (not DIRECT/REJECT, those come from user config)
-                                if item not in ['DIRECT', 'REJECT'] and item in [g.get('name') for g in template_proxy_groups]:
-                                    group_refs.append(item)
-
-                            # Filter user's selected nodes
-                            user_selected_nodes = group_config[group_name]
-                            valid_nodes = []
-
-                            # Log node selection for debugging
-                            logger.debug(f"Group '{group_name}': user selected {len(user_selected_nodes)} nodes")
-                            logger.debug(f"Available proxy names: {len(all_proxy_names)} nodes")
-                            if len(all_proxy_names) > 0:
-                                logger.debug(f"Sample proxy names: {all_proxy_names[:3]}")
-                            if len(user_selected_nodes) > 0:
-                                logger.debug(f"Sample user selected: {user_selected_nodes[:5]}")
-
-                            for node in user_selected_nodes:
-                                # Keep DIRECT and REJECT
-                                if node in ['DIRECT', 'REJECT']:
-                                    valid_nodes.append(node)
-                                # Keep actual proxy nodes that exist
-                                elif node in all_proxy_names:
-                                    valid_nodes.append(node)
-                                else:
-                                    # Node not found in available proxies
-                                    logger.debug(f"Node '{node}' not found in all_proxy_names")
-
-                            logger.debug(f"Valid nodes after filtering: {len(valid_nodes)} nodes")
-
-                            # Combine: group refs + user selected nodes (including DIRECT/REJECT)
-                            if valid_nodes:
-                                new_group['proxies'] = group_refs + valid_nodes
-                            else:
-                                # If no valid nodes, use group refs + all available nodes
-                                new_group['proxies'] = group_refs + ["DIRECT", "REJECT"] + all_proxy_names
-                        else:
-                            # No user config for this group - keep original template structure
-                            # but replace actual proxy nodes with user's available nodes
-                            original_proxies = group.get('proxies', [])
-                            new_proxies = []
-
-                            # Keep group references and special keywords (DIRECT, REJECT)
-                            for item in original_proxies:
-                                if item in ['DIRECT', 'REJECT'] or item in [g.get('name') for g in template_proxy_groups]:
-                                    # Keep DIRECT, REJECT, and group references
-                                    new_proxies.append(item)
-
-                            # Add user's available proxy nodes
-                            new_proxies.extend(all_proxy_names)
-
-                            # Remove duplicates while preserving order
-                            seen = set()
-                            new_group['proxies'] = [x for x in new_proxies if not (x in seen or seen.add(x))]
-                    else:
-                        # No user config at all - keep original template structure
-                        # but replace actual proxy nodes with user's available nodes
-                        original_proxies = group.get('proxies', [])
-                        new_proxies = []
-
-                        # Keep group references and special keywords (DIRECT, REJECT)
-                        for item in original_proxies:
-                            if item in ['DIRECT', 'REJECT'] or item in [g.get('name') for g in template_proxy_groups]:
-                                # Keep DIRECT, REJECT, and group references
-                                new_proxies.append(item)
-
-                        # Add user's available proxy nodes
-                        new_proxies.extend(all_proxy_names)
-
-                        # Remove duplicates while preserving order
-                        seen = set()
-                        new_group['proxies'] = [x for x in new_proxies if not (x in seen or seen.add(x))]
+                    # Build the template defaults first. Saved selections are
+                    # applied after proxy chains exist, so chain IDs can resolve
+                    # to the exact names emitted for this template.
+                    original_proxies = group.get('proxies', [])
+                    new_proxies = [
+                        item
+                        for item in original_proxies
+                        if item in ['DIRECT', 'REJECT'] or item in template_group_names
+                    ]
+                    new_proxies.extend(all_proxy_names)
+                    seen = set()
+                    new_group['proxies'] = [
+                        item for item in new_proxies
+                        if not (item in seen or seen.add(item))
+                    ]
 
                     custom_groups.append(new_group)
 
@@ -604,6 +523,7 @@ def create_subscription_output_router(
             proxy_chains = config.get('proxy_chains', [])
             chain_proxies = []
             chain_proxy_names = []
+            emitted_chain_reference_names = {}
 
             existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
@@ -621,6 +541,21 @@ def create_subscription_output_router(
                 return clean.strip()
 
             existing_group_names = {g.get('name') for g in proxy_groups if isinstance(g, dict) and g.get('name')}
+            existing_names.update(existing_group_names)
+            resolved_chain_references = list_proxy_chain_virtual_references(
+                config,
+                base_node_names=existing_names,
+                reserved_group_names=existing_group_names,
+            )
+            resolved_chain_reference_names = {
+                reference.stable_id: reference.name
+                for reference in resolved_chain_references
+            }
+            for reference in resolved_chain_references:
+                if reference.source_id == CHAIN_NODE_SOURCE:
+                    existing_names.add(reference.name)
+                else:
+                    existing_group_names.add(reference.name)
 
             def insert_pool_group(group_cfg: dict) -> None:
                 group_name = group_cfg.get('name')
@@ -643,7 +578,8 @@ def create_subscription_output_router(
                 chain_nodes: list,
                 add_to_manual: bool = True,
                 include_country_info: bool = True,
-                allow_name: Callable[[str], bool] | None = None
+                allow_name: Callable[[str], bool] | None = None,
+                owned_name: str | None = None,
             ) -> str | None:
                 """Build chain proxies for given nodes and return the final chain proxy name."""
                 if len(chain_nodes) < 2:
@@ -664,7 +600,11 @@ def create_subscription_output_router(
                 last_node_server = last_node.get('server', '')
                 chain_country_info = extract_country_from_name(last_node_name, last_node_server)
 
-                final_chain_name = unique_name(chain_display_name, existing_names)
+                if owned_name:
+                    final_chain_name = owned_name
+                    existing_names.add(final_chain_name)
+                else:
+                    final_chain_name = unique_name(chain_display_name, existing_names)
                 if allow_name and not allow_name(final_chain_name):
                     return None
 
@@ -730,9 +670,17 @@ def create_subscription_output_router(
 
                 if not name:
                     return False
-                return is_name_allocated(name, allocated_nodes)
+                return is_name_allocated(
+                    name,
+                    allocated_nodes,
+                    node_ref.get('node_id') or (node_proxy or {}).get('_allocation_id'),
+                )
 
-            def is_allocated_chain_name(name: str, alloc_key: str) -> bool:
+            def is_allocated_chain_name(
+                name: str,
+                alloc_key: str,
+                stable_allocation_id: str | None = None,
+            ) -> bool:
                 if user_allocations is None:
                     return True
                 if not name:
@@ -742,26 +690,28 @@ def create_subscription_output_router(
                     return False
                 if allocated == ['*']:
                     return True
+                if stable_allocation_id and stable_allocation_id in allocated:
+                    return True
+                if virtual_node_id(alloc_key, name) in allocated:
+                    return True
                 name_clean = normalize_alloc_name(name)
                 base_name = re.sub(r" \\([A-Za-z0-9]{4}\\)$", "", name)
                 base_clean = normalize_alloc_name(base_name)
                 for alloc in allocated:
                     if not alloc:
                         continue
-                    if alloc == name or alloc in name:
+                    if alloc == name:
                         return True
                     alloc_clean = normalize_alloc_name(alloc)
                     if alloc_clean and (
                         alloc_clean == name_clean
-                        or alloc_clean in name_clean
                         or alloc_clean == base_clean
-                        or (base_clean and alloc_clean in base_clean)
                     ):
                         return True
                 return False
 
 
-            for chain in proxy_chains:
+            for chain_idx, chain in enumerate(proxy_chains):
                 if not chain.get('enabled', True):
                     continue
 
@@ -769,6 +719,8 @@ def create_subscription_output_router(
                     nodes = row.get('nodes', [])
                     if len(nodes) < 2:
                         continue
+                    chain_id = str(chain.get('id') or f"legacy_chain_{chain_idx}")
+                    row_id = str(row.get('row_id') or f"legacy_row_{row_idx}")
 
                     # Build the chain by setting dialer-proxy on each node
                     # For chain [A, B, C]: B.dialer-proxy = A, C.dialer-proxy = B
@@ -777,12 +729,14 @@ def create_subscription_output_router(
                     # Parse chain hops (nodes + transit groups), terminal group is handled separately
                     chain_hops = []
                     group_spec = None
+                    group_spec_index = None
                     for idx, node_ref in enumerate(nodes):
                         if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
                             if idx == len(nodes) - 1:
                                 group_spec = node_ref
+                                group_spec_index = idx
                                 break
-                            chain_hops.append({'type': 'group', 'spec': node_ref})
+                            chain_hops.append({'type': 'group', 'spec': node_ref, 'node_index': idx})
                             continue
                         chain_hops.append({'type': 'node', 'ref': node_ref})
 
@@ -794,14 +748,29 @@ def create_subscription_output_router(
                     if len(chain.get('rows', [])) > 1:
                         chain_name = f"{chain_name} #{row_idx + 1}"
 
-                    def build_transit_group(base_name: str, spec: dict) -> str | None:
+                    def build_transit_group(
+                        base_name: str,
+                        spec: dict,
+                        node_index: int,
+                    ) -> str | None:
                         group_base_name = spec.get('group_name') or base_name
-                        group_name = unique_group_name(
-                            f"🔀 {group_base_name}",
-                            existing_group_names,
-                            spec.get('group_id'),
+                        group_allocation_id = proxy_chain_virtual_node_id(
+                            'chain_pools',
+                            chain_id,
+                            str(spec.get('group_id') or f"legacy_group_{row_idx}_{node_index}"),
                         )
-                        if user_allocations is not None and not is_allocated_chain_name(group_name, 'chain_pools'):
+                        group_name = resolved_chain_reference_names.get(group_allocation_id)
+                        if not group_name:
+                            group_name = unique_group_name(
+                                f"🔀 {group_base_name}",
+                                existing_group_names,
+                                spec.get('group_id'),
+                            )
+                        if user_allocations is not None and not is_allocated_chain_name(
+                            group_name,
+                            'chain_pools',
+                            group_allocation_id,
+                        ):
                             return None
                         group_nodes = spec.get('group_nodes', []) or []
                         member_proxies = []
@@ -809,7 +778,8 @@ def create_subscription_output_router(
                             node_proxy = find_node_by_reference(
                                 member_ref.get('sub_id'),
                                 member_ref.get('node_index'),
-                                member_ref.get('node_name')
+                                member_ref.get('node_name'),
+                                node_id=member_ref.get('node_id'),
                             )
                             if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
                                 member_proxies.append(dict(node_proxy))
@@ -822,6 +792,7 @@ def create_subscription_output_router(
                         group_cfg.update(coerce_group_strategy(spec))
                         insert_pool_group(group_cfg)
                         chain_proxy_names.append(group_name)
+                        emitted_chain_reference_names[group_allocation_id] = group_name
                         if group_name not in pool_group_names:
                             pool_group_names.append(group_name)
                         return group_name
@@ -837,7 +808,8 @@ def create_subscription_output_router(
                             node_proxy = find_node_by_reference(
                                 node_ref.get('sub_id'),
                                 node_ref.get('node_index'),
-                                node_ref.get('node_name')
+                                node_ref.get('node_name'),
+                                node_id=node_ref.get('node_id'),
                             )
                             if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
                                 base_allowed = False
@@ -846,7 +818,11 @@ def create_subscription_output_router(
                         else:
                             transit_idx += 1
                             base_name = hop['spec'].get('group_name') or f"{chain_name} 中转池{transit_idx}"
-                            group_name = build_transit_group(base_name, hop['spec'])
+                            group_name = build_transit_group(
+                                base_name,
+                                hop['spec'],
+                                hop['node_index'],
+                            )
                             if not group_name:
                                 base_allowed = False
                                 break
@@ -860,12 +836,23 @@ def create_subscription_output_router(
                     if group_spec:
                         # Build group name first to check allocation
                         group_base_name = group_spec.get('group_name') or f"{chain_name} 落地池"
-                        group_name = unique_group_name(
-                            f"🔀 {group_base_name}",
-                            existing_group_names,
-                            group_spec.get('group_id'),
+                        group_allocation_id = proxy_chain_virtual_node_id(
+                            'chain_pools',
+                            chain_id,
+                            str(group_spec.get('group_id') or f"legacy_group_{row_idx}_{group_spec_index}"),
                         )
-                        if user_allocations is not None and not is_allocated_chain_name(group_name, 'chain_pools'):
+                        group_name = resolved_chain_reference_names.get(group_allocation_id)
+                        if not group_name:
+                            group_name = unique_group_name(
+                                f"🔀 {group_base_name}",
+                                existing_group_names,
+                                group_spec.get('group_id'),
+                            )
+                        if user_allocations is not None and not is_allocated_chain_name(
+                            group_name,
+                            'chain_pools',
+                            group_allocation_id,
+                        ):
                             continue
 
                         group_nodes = group_spec.get('group_nodes', []) or []
@@ -874,7 +861,8 @@ def create_subscription_output_router(
                             node_proxy = find_node_by_reference(
                                 member_ref.get('sub_id'),
                                 member_ref.get('node_index'),
-                                member_ref.get('node_name')
+                                member_ref.get('node_name'),
+                                node_id=member_ref.get('node_id'),
                             )
                             if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
                                 member_proxies.append(dict(node_proxy))
@@ -904,6 +892,7 @@ def create_subscription_output_router(
 
                         insert_pool_group(group_cfg)
                         chain_proxy_names.append(group_name)
+                        emitted_chain_reference_names[group_allocation_id] = group_name
                         if group_name not in pool_group_names:
                             pool_group_names.append(group_name)
                     else:
@@ -911,9 +900,85 @@ def create_subscription_output_router(
                         if len(chain_nodes) < 2:
                             continue
                         chain_name_full = f"🔗 {chain_name}"
-                        if user_allocations is not None and not is_allocated_chain_name(chain_name_full, 'chain_nodes'):
+                        chain_allocation_id = proxy_chain_virtual_node_id(
+                            'chain_nodes',
+                            chain_id,
+                            row_id,
+                        )
+                        if user_allocations is not None and not is_allocated_chain_name(
+                            chain_name_full,
+                            'chain_nodes',
+                            chain_allocation_id,
+                        ):
                             continue
-                        build_chain_entry(chain_name_full, chain_nodes, add_to_manual=True)
+                        emitted_chain_name = build_chain_entry(
+                            chain_name_full,
+                            chain_nodes,
+                            add_to_manual=True,
+                            owned_name=resolved_chain_reference_names.get(chain_allocation_id),
+                        )
+                        if emitted_chain_name:
+                            emitted_chain_reference_names[chain_allocation_id] = emitted_chain_name
+
+            saved_group_config = (
+                group_config_subject.get('group_config', {})
+                if isinstance(group_config_subject, dict)
+                else {}
+            )
+            if isinstance(saved_group_config, dict) and saved_group_config:
+                emitted_proxy_names = {
+                    proxy.get('name')
+                    for proxy in [*proxies, *chain_proxies]
+                    if isinstance(proxy, dict) and proxy.get('name')
+                }
+                emitted_group_names = {
+                    group.get('name')
+                    for group in proxy_groups
+                    if isinstance(group, dict) and group.get('name')
+                }
+                template_groups_by_name = {
+                    group.get('name'): group
+                    for group in (template_proxy_groups or [])
+                    if isinstance(group, dict) and group.get('name')
+                }
+
+                for group in proxy_groups:
+                    group_name = group.get('name') if isinstance(group, dict) else None
+                    configured_references = saved_group_config.get(group_name)
+                    if not group_name or not isinstance(configured_references, list) or not configured_references:
+                        continue
+
+                    template_group = template_groups_by_name.get(group_name, {})
+                    retained_group_references = [
+                        reference
+                        for reference in template_group.get('proxies', [])
+                        if reference in emitted_group_names and reference != group_name
+                    ]
+                    selected_names = []
+                    for stored_reference in configured_references:
+                        resolved_name = emitted_chain_reference_names.get(
+                            stored_reference,
+                            stored_reference,
+                        )
+                        if (
+                            resolved_name in ['DIRECT', 'REJECT']
+                            or resolved_name in emitted_proxy_names
+                            or (
+                                resolved_name in emitted_group_names
+                                and resolved_name != group_name
+                            )
+                        ):
+                            selected_names.append(resolved_name)
+
+                    merged_names = []
+                    seen_names = set()
+                    for selected_name in [*retained_group_references, *selected_names]:
+                        if selected_name not in seen_names:
+                            seen_names.add(selected_name)
+                            merged_names.append(selected_name)
+                    # A saved selection becoming unavailable must not silently
+                    # expand back to every allocated node.
+                    group['proxies'] = merged_names or ['DIRECT']
 
             # Add pool groups to GLOBAL after fallback
             if pool_group_names:
@@ -1086,7 +1151,11 @@ def create_subscription_output_router(
 
                         # Build listeners for valid mappings only
                         listener_idx = 0
-                        for node_name, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                        for node_reference, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                            node_name = emitted_chain_reference_names.get(
+                                node_reference,
+                                node_reference,
+                            )
                             if node_name in proxy_names:
                                 listener = {
                                     'name': f'mixed{listener_idx}',
@@ -1139,7 +1208,11 @@ def create_subscription_output_router(
 
                 # Build listeners for valid mappings only
                 listeners = []
-                for node_name, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                for node_reference, port in sorted(port_mappings.items(), key=lambda x: x[1]):
+                    node_name = emitted_chain_reference_names.get(
+                        node_reference,
+                        node_reference,
+                    )
                     if node_name in proxy_names:
                         listener = {
                             'name': f'mixed-{port}',
@@ -1189,16 +1262,6 @@ def create_subscription_output_router(
                 "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
             }
 
-            # Cache the generated YAML for user subscriptions
-            if user_info:
-                cache_payload = {
-                    'content': yaml_content,
-                    'headers': response_headers,
-                    'timestamp': time.time()
-                }
-                update_user_subscription_cache(user_info, cache_payload)
-                logger.debug(f"Cached subscription for user {user_info['name']}")
-
             return PlainTextResponse(
                 yaml_content,
                 media_type='text/yaml',
@@ -1206,12 +1269,9 @@ def create_subscription_output_router(
             )
         except HTTPException:
             raise
-        except Exception as e:
-            import traceback
-            error_detail = f"Failed to generate subscription: {str(e)}\n{traceback.format_exc()}"
-            logger.error(error_detail)
-            print(f"ERROR in /sub endpoint: {error_detail}", file=sys.stderr)
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception:
+            logger.error("Failed to generate subscription", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to generate subscription")
 
 
     return router

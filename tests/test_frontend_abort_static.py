@@ -61,7 +61,7 @@ class FrontendAbortStaticTests(unittest.TestCase):
 
         self.assertIn("const toggleNodeEnabled = async (node) =>", content)
         self.assertIn("/custom-nodes/${node.id}/toggle", content)
-        self.assertIn("/subscriptions/${node.sourceId}/nodes/${node.idx}/toggle", content)
+        self.assertIn("/subscriptions/${node.sourceId}/nodes/${encodeURIComponent(node.id)}/toggle", content)
         self.assertIn("节点已禁用，不会出现在聚合配置中", content)
         self.assertIn("已禁用", content)
 

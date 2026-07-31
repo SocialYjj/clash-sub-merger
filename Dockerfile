@@ -1,5 +1,5 @@
 # Multi-stage build - Frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:22.17.1-alpine3.22 AS frontend-builder
 WORKDIR /app
 # Copy VERSION file first (needed for version sync)
 COPY VERSION ./
@@ -12,7 +12,7 @@ COPY submerger/ ./
 RUN npm run build
 
 # Multi-stage build - Go speedtest service
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.24.5-alpine3.22 AS go-builder
 WORKDIR /app/speedtest
 COPY speedtest/go.mod speedtest/go.sum ./
 RUN go mod download
@@ -20,7 +20,7 @@ COPY speedtest/*.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o speedtest .
 
 # Final image - Python backend + Go speedtest
-FROM python:3.12-slim AS runtime
+FROM python:3.12.11-slim-bookworm AS runtime
 WORKDIR /app
 
 # Labels
@@ -34,11 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     curl \
     ca-certificates \
+    gosu \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /usr/local/bin/uv
 
 # Run the application as an unprivileged user in the final image.
 RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin appuser
@@ -50,8 +51,9 @@ RUN uv pip install --system --no-cache -r requirements.txt
 # Copy VERSION file (needed for dynamic version reading)
 COPY VERSION ./
 
-# Copy backend code
-COPY *.py ./
+# Copy only application entry modules. Avoid wildcard copies that can bake
+# local operator scripts or credentials into a published image.
+COPY server.py helpers.py helpers_ua.py logger_config.py scheduler_service.py speedtest_service.py geoip_service.py ./
 COPY api/ ./api/
 COPY services/ ./services/
 COPY core/ ./core/
@@ -64,15 +66,10 @@ COPY --from=go-builder /app/speedtest/speedtest /app/speedtest/speedtest
 COPY --from=frontend-builder /app/submerger/dist ./submerger/dist
 
 # Create data directory with proper permissions BEFORE switching user
-RUN mkdir -p /app/data/uploads /app/data/logs /app/data/backups
+RUN mkdir -p /app/data/uploads /app/data/logs /app/data/backups /app/data/refresh_locks
 
-# Create startup script
-RUN echo '#!/bin/sh\n\
-# Ensure data subdirectories exist\n\
-mkdir -p /app/data/uploads /app/data/logs /app/data/backups\n\
-# Go speedtest service is started by Python server.py\n\
-exec python server.py' > /app/start.sh \
-    && chmod +x /app/start.sh \
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && chown -R appuser:appuser /app
 
 # Healthcheck
@@ -88,7 +85,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Expose port
 EXPOSE 8666
 
-USER appuser
-
-# Start both services
-CMD ["/app/start.sh"]
+# The entrypoint starts as root only long enough to repair bind-mount ownership,
+# then runs the application as the unprivileged appuser.
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["python", "server.py"]

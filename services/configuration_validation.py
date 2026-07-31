@@ -1,0 +1,342 @@
+"""Validation and normalization for complete configuration migration data."""
+
+from __future__ import annotations
+
+import base64
+from copy import deepcopy
+import re
+from urllib.parse import urlsplit
+
+from services.node_reference_migration import ensure_custom_node_ids
+from services.proxy_chain_references import ensure_proxy_chain_component_ids
+
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
+_COLLECTIONS = (
+    "subscriptions",
+    "custom_nodes",
+    "users",
+    "templates",
+    "admin_tokens",
+    "proxy_chains",
+    "source_order",
+)
+
+
+def _require_list(config: dict, key: str) -> list:
+    value = config.get(key, [])
+    if not isinstance(value, list):
+        raise ValueError(f"Imported {key} must be a list")
+    return value
+
+
+def _validate_identifier(value: object, field_name: str) -> str:
+    identifier = str(value or "").strip()
+    if not _SAFE_ID.fullmatch(identifier):
+        raise ValueError(f"Imported {field_name} is invalid")
+    return identifier
+
+
+def _validate_unique_ids(items: list, collection_name: str, *, allow_missing: bool = False) -> set[str]:
+    identifiers: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError(f"Imported {collection_name} contains an invalid item")
+        raw_identifier = item.get("id")
+        if allow_missing and not raw_identifier:
+            continue
+        identifier = _validate_identifier(raw_identifier, f"{collection_name} ID")
+        if identifier in identifiers:
+            raise ValueError(f"Imported {collection_name} contains duplicate IDs")
+        item["id"] = identifier
+        identifiers.add(identifier)
+    return identifiers
+
+
+def _validate_subscription_records(subscriptions: list) -> set[str]:
+    identifiers = _validate_unique_ids(subscriptions, "subscriptions")
+    names: set[str] = set()
+    urls: set[str] = set()
+    for subscription in subscriptions:
+        name = str(subscription.get("name") or "").strip()
+        if not name or len(name) > 200:
+            raise ValueError("Imported subscription name is invalid")
+        name_key = name.casefold()
+        if name_key in names:
+            raise ValueError("Imported subscriptions contain duplicate names")
+        names.add(name_key)
+        subscription["name"] = name
+
+        subscription_type = subscription.get("type", "remote")
+        if subscription_type == "local":
+            continue
+        url = str(subscription.get("url") or "").strip()
+        if not url or len(url) > 4096:
+            raise ValueError("Imported remote subscription URL is invalid")
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Imported remote subscription URL must use HTTP or HTTPS")
+        if url in urls:
+            raise ValueError("Imported subscriptions contain duplicate URLs")
+        urls.add(url)
+        subscription["url"] = url
+    return identifiers
+
+
+def _validate_auth(config: dict) -> None:
+    auth = config.get("auth", {})
+    password_hash = auth.get("password_hash")
+    if not isinstance(password_hash, str) or not password_hash:
+        raise ValueError("Imported configuration has no administrator password hash")
+    if re.fullmatch(r"[0-9a-fA-F]{64}", password_hash):
+        return
+    try:
+        scheme, iterations_raw, salt, digest_b64 = password_hash.split("$", 3)
+        iterations = int(iterations_raw)
+        digest = base64.b64decode(digest_b64.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        raise ValueError("Imported administrator password hash is invalid") from None
+    if (
+        scheme != "pbkdf2_sha256"
+        or not 1 <= iterations <= 2_000_000
+        or not 8 <= len(salt) <= 256
+        or len(digest) != 32
+    ):
+        raise ValueError("Imported administrator password hash is invalid")
+
+
+def _validate_tokens(config: dict, users: list, admin_tokens: list) -> None:
+    tokens: set[str] = set()
+    legacy_token = config.get("auth", {}).get("sub_token") if isinstance(config.get("auth"), dict) else None
+    if legacy_token:
+        tokens.add(str(legacy_token))
+    for collection_name, items in (("users", users), ("admin tokens", admin_tokens)):
+        for item in items:
+            token = str(item.get("token") or "").strip()
+            if not 8 <= len(token) <= 4096:
+                raise ValueError(f"Imported {collection_name} contains an invalid token")
+            if token in tokens:
+                raise ValueError("Imported configuration contains duplicate subscription tokens")
+            tokens.add(token)
+            item["token"] = token
+
+
+def _validate_proxy_chain_reference(
+    reference: dict,
+    *,
+    subscription_ids: set[str],
+    custom_node_ids: set[str],
+    group_ids: set[str],
+) -> None:
+    if not isinstance(reference, dict):
+        raise ValueError("Imported proxy chain contains an invalid node reference")
+    reference_type = reference.get("type", "node")
+    if reference_type not in {"node", "group"}:
+        raise ValueError("Imported proxy chain contains an unknown reference type")
+    if reference_type == "group":
+        group_id = _validate_identifier(reference.get("group_id"), "proxy group ID")
+        if group_id in group_ids:
+            raise ValueError("Imported proxy chains contain duplicate group IDs")
+        group_ids.add(group_id)
+        members = reference.get("group_nodes")
+        if not isinstance(members, list) or not 1 <= len(members) <= 500:
+            raise ValueError("Imported proxy group must contain 1 to 500 nodes")
+        for member in members:
+            if isinstance(member, dict) and member.get("type") == "group":
+                raise ValueError("Imported proxy groups cannot be nested")
+            _validate_proxy_chain_reference(
+                member,
+                subscription_ids=subscription_ids,
+                custom_node_ids=custom_node_ids,
+                group_ids=group_ids,
+            )
+        return
+
+    source_id = str(reference.get("sub_id") or "").strip()
+    node_id = str(reference.get("node_id") or "").strip()
+    node_name = str(reference.get("node_name") or "").strip()
+    if len(source_id) > 200 or len(node_id) > 500 or len(node_name) > 500:
+        raise ValueError("Imported proxy chain node reference is too long")
+    if source_id in {"custom", "custom_nodes"}:
+        legacy_reference = isinstance(reference.get("node_index"), int) or bool(node_name)
+        if node_id and node_id not in custom_node_ids:
+            raise ValueError("Imported proxy chain references an unknown custom node")
+        if not node_id and not legacy_reference:
+            raise ValueError("Imported proxy chain custom-node reference is incomplete")
+        return
+    if source_id not in subscription_ids:
+        raise ValueError("Imported proxy chain references an unknown subscription")
+    if not node_id and not isinstance(reference.get("node_index"), int) and not node_name:
+        raise ValueError("Imported proxy chain node reference is incomplete")
+
+
+def _validate_proxy_chains(
+    proxy_chains: list,
+    *,
+    subscription_ids: set[str],
+    custom_node_ids: set[str],
+) -> None:
+    _validate_unique_ids(proxy_chains, "proxy chains")
+    names: set[str] = set()
+    row_ids: set[str] = set()
+    group_ids: set[str] = set()
+    for chain in proxy_chains:
+        name = str(chain.get("name") or "").strip()
+        if not name or len(name) > 100:
+            raise ValueError("Imported proxy chain name is invalid")
+        name_key = name.casefold()
+        if name_key in names:
+            raise ValueError("Imported proxy chains contain duplicate names")
+        names.add(name_key)
+        rows = chain.get("rows")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 100:
+            raise ValueError("Imported proxy chain must contain 1 to 100 rows")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Imported proxy chain contains an invalid row")
+            row_id = _validate_identifier(row.get("row_id"), "proxy chain row ID")
+            if row_id in row_ids:
+                raise ValueError("Imported proxy chains contain duplicate row IDs")
+            row_ids.add(row_id)
+            nodes = row.get("nodes")
+            if not isinstance(nodes, list) or not 2 <= len(nodes) <= 20:
+                raise ValueError("Imported proxy chain row must contain 2 to 20 hops")
+            for reference in nodes:
+                _validate_proxy_chain_reference(
+                    reference,
+                    subscription_ids=subscription_ids,
+                    custom_node_ids=custom_node_ids,
+                    group_ids=group_ids,
+                )
+
+
+def _validate_allocations(users: list, known_sources: set[str]) -> None:
+    known_sources = known_sources | {"custom_nodes", "chain_nodes", "chain_pools"}
+    for user in users:
+        allocations = user.get("allocations", {})
+        if not isinstance(allocations, dict) or len(allocations) > 500:
+            raise ValueError("Imported user allocations are invalid")
+        for source_id, references in allocations.items():
+            if source_id not in known_sources:
+                raise ValueError("Imported user allocation references an unknown source")
+            if not isinstance(references, list) or len(references) > 5000:
+                raise ValueError("Imported user allocation contains too many nodes")
+            if "*" in references and references != ["*"]:
+                raise ValueError("Imported wildcard allocation cannot be mixed with node IDs")
+            if any(not isinstance(reference, str) or not reference or len(reference) > 500 for reference in references):
+                raise ValueError("Imported user allocation contains an invalid node reference")
+
+
+def _validate_source_order(config: dict, subscription_ids: set[str]) -> None:
+    source_order = config.get("source_order", [])
+    if len(source_order) > 500 or any(not isinstance(source_id, str) for source_id in source_order):
+        raise ValueError("Imported source order is invalid")
+    if len(source_order) != len(set(source_order)):
+        raise ValueError("Imported source order contains duplicate IDs")
+    known_sources = set(subscription_ids)
+    if config.get("custom_nodes"):
+        known_sources.add("custom_nodes")
+    if any(source_id not in known_sources for source_id in source_order):
+        raise ValueError("Imported source order references an unknown source")
+
+
+def remove_legacy_stale_references(config: dict) -> int:
+    """Remove references left by sources deleted by releases before cleanup existed."""
+    changed = 0
+    subscription_ids = {
+        str(subscription.get("id"))
+        for subscription in config.get("subscriptions", [])
+        if isinstance(subscription, dict) and subscription.get("id")
+    }
+    known_allocation_sources = subscription_ids | {
+        "custom_nodes",
+        "chain_nodes",
+        "chain_pools",
+    }
+    for user in config.get("users", []):
+        if not isinstance(user, dict) or not isinstance(user.get("allocations"), dict):
+            continue
+        allocations = user["allocations"]
+        legacy_custom_values = allocations.pop("custom", None)
+        if legacy_custom_values is not None:
+            changed += 1
+            if "custom_nodes" not in allocations:
+                allocations["custom_nodes"] = legacy_custom_values
+        for source_id in list(allocations):
+            if source_id not in known_allocation_sources:
+                allocations.pop(source_id, None)
+                changed += 1
+
+    known_order_sources = set(subscription_ids)
+    if config.get("custom_nodes"):
+        known_order_sources.add("custom_nodes")
+    source_order = config.get("source_order", [])
+    if isinstance(source_order, list):
+        cleaned_order: list[str] = []
+        seen_sources: set[str] = set()
+        for source_id in source_order:
+            if (
+                isinstance(source_id, str)
+                and source_id in known_order_sources
+                and source_id not in seen_sources
+            ):
+                cleaned_order.append(source_id)
+                seen_sources.add(source_id)
+        if cleaned_order != source_order:
+            config["source_order"] = cleaned_order
+            changed += 1
+    return changed
+
+
+def _validate_group_config(subjects: list) -> None:
+    for subject in subjects:
+        group_config = subject.get("group_config", {})
+        if not isinstance(group_config, dict) or len(group_config) > 200:
+            raise ValueError("Imported proxy-group configuration is invalid")
+        for group_name, references in group_config.items():
+            if not isinstance(group_name, str) or not group_name.strip() or len(group_name) > 200:
+                raise ValueError("Imported proxy-group name is invalid")
+            if not isinstance(references, list) or len(references) > 5000:
+                raise ValueError("Imported proxy-group contains too many nodes")
+            if any(not isinstance(reference, str) or not reference or len(reference) > 500 for reference in references):
+                raise ValueError("Imported proxy-group contains an invalid node reference")
+
+
+def validate_and_normalize_configuration(config: dict) -> dict:
+    """Return a detached configuration that satisfies persisted invariants."""
+    if not isinstance(config, dict):
+        raise ValueError("Imported configuration must be an object")
+    normalized = deepcopy(config)
+    for key in _COLLECTIONS:
+        _require_list(normalized, key)
+    if "auth" in normalized and not isinstance(normalized["auth"], dict):
+        raise ValueError("Imported auth configuration must be an object")
+    if "settings" in normalized and not isinstance(normalized["settings"], dict):
+        raise ValueError("Imported settings configuration must be an object")
+    _validate_auth(normalized)
+
+    subscriptions = normalized.get("subscriptions", [])
+    custom_nodes = normalized.get("custom_nodes", [])
+    users = normalized.get("users", [])
+    templates = normalized.get("templates", [])
+    admin_tokens = normalized.get("admin_tokens", [])
+    proxy_chains = normalized.get("proxy_chains", [])
+
+    subscription_ids = _validate_subscription_records(subscriptions)
+    _validate_unique_ids(users, "users")
+    _validate_unique_ids(templates, "templates")
+    _validate_unique_ids(admin_tokens, "admin tokens")
+    _validate_unique_ids(custom_nodes, "custom nodes", allow_missing=True)
+    ensure_custom_node_ids(normalized)
+    custom_node_ids = _validate_unique_ids(custom_nodes, "custom nodes")
+    ensure_proxy_chain_component_ids(normalized)
+    _validate_proxy_chains(
+        proxy_chains,
+        subscription_ids=subscription_ids,
+        custom_node_ids=custom_node_ids,
+    )
+    _validate_tokens(normalized, users, admin_tokens)
+    _validate_allocations(users, subscription_ids)
+    _validate_source_order(normalized, subscription_ids)
+    _validate_group_config([*users, *admin_tokens])
+    return normalized

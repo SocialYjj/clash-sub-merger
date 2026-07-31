@@ -5,28 +5,44 @@ Subscription management endpoints
 import asyncio
 import time
 from typing import Optional, List
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, HttpUrl, Field, field_validator
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from core.dependencies import verify_session
-from core.database import load_config, update_config, update_subscription_fields
+from core.database import load_config, update_config
 from core.config import AppConfig
-from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml, save_subscription_content
+from core.rate_limit import limiter
+from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
 from services.node_visibility import apply_node_visibility_to_yaml_content
 from services.region_history import apply_region_history_to_yaml_content
 from services.subscription_parser import parse_local_subscription, InvalidContentError
 from services.subscription_fetcher import SubscriptionFetcher, FetchError
+from services.subscription_cleanup import cleanup_deleted_subscription
+from services.node_reference_updates import (
+    reconcile_subscription_node_references,
+    subscription_nodes_from_yaml_content,
+)
+from services.node_visibility import clear_user_subscription_caches
+from services.subscription_refresh_lock import reject_concurrent_refresh, subscription_write_slot
+from services.subscription_state import (
+    describe_refresh_error,
+    record_refresh_attempt,
+    record_refresh_failure,
+    refresh_success_fields,
+)
+from services.subscription_storage import (
+    persist_subscription_content_and_record,
+    restore_subscription_content,
+    snapshot_subscription_content,
+    subscription_file_path,
+)
 from services.stats_cache import invalidate as invalidate_stats_cache
 from logger_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
 
 # Lazy-initialized fetcher
 _fetcher: Optional[SubscriptionFetcher] = None
@@ -36,13 +52,14 @@ _fetcher_client: Optional[httpx.AsyncClient] = None
 
 async def close_fetcher():
     """Close the fetcher's HTTP client. Called during shutdown."""
-    global _fetcher, _fetcher_client
+    global _fetcher, _fetcher_proxy_url, _fetcher_client
     if _fetcher_client is not None:
         try:
             await _fetcher_client.aclose()
         except Exception:
             pass
     _fetcher = None
+    _fetcher_proxy_url = None
     _fetcher_client = None
 
 
@@ -54,14 +71,7 @@ def _get_fetcher() -> SubscriptionFetcher:
     config = load_config()
     proxy_url = config.get('settings', {}).get('subscription_proxy_url')
 
-    # Recreate fetcher if proxy config changed
-    if _fetcher is None or _fetcher_proxy_url != proxy_url:
-        # Close previous client to avoid connection pool leak
-        if _fetcher_client is not None:
-            try:
-                asyncio.ensure_future(_fetcher_client.aclose())
-            except Exception:
-                pass
+    if _fetcher_client is None:
         _fetcher_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=AppConfig.CONNECT_TIMEOUT,
@@ -75,7 +85,12 @@ def _get_fetcher() -> SubscriptionFetcher:
                 max_connections=AppConfig.HTTP_MAX_CONNECTIONS
             ),
             verify=AppConfig.HTTP_VERIFY_SSL,
+            trust_env=False,
         )
+
+    # The direct client does not depend on the optional fallback proxy. Reuse it
+    # so a settings change cannot close another refresh's in-flight connection.
+    if _fetcher is None or _fetcher_proxy_url != proxy_url:
         _fetcher = SubscriptionFetcher(_fetcher_client, proxy_url=proxy_url)
         _fetcher_proxy_url = proxy_url
 
@@ -101,6 +116,152 @@ def _load_existing_subscription_nodes(sub_id: str) -> list:
     return []
 
 
+def _validate_subscription_uniqueness(
+    config: dict,
+    *,
+    name: str,
+    url: Optional[str] = None,
+    exclude_subscription_id: Optional[str] = None,
+) -> None:
+    normalized_name = name.strip().casefold()
+    for subscription in config.get('subscriptions', []):
+        if subscription.get('id') == exclude_subscription_id:
+            continue
+        if str(subscription.get('name') or '').strip().casefold() == normalized_name:
+            raise HTTPException(status_code=409, detail="A subscription with this name already exists")
+        if url and str(subscription.get('url') or '') == url:
+            raise HTTPException(status_code=409, detail="This subscription URL already exists")
+
+
+async def _refresh_remote_subscription(
+    subscription: dict,
+    *,
+    record_overrides: Optional[dict] = None,
+) -> dict:
+    """Fetch, validate and persist one URL subscription under its exclusive lock."""
+    subscription_id = subscription['id']
+    latest_subscription = subscription
+    attempted_at = int(time.time())
+    try:
+        async with reject_concurrent_refresh(subscription_id):
+            latest_config = load_config()
+            latest_subscription = next(
+                (
+                    candidate
+                    for candidate in latest_config.get('subscriptions', [])
+                    if candidate['id'] == subscription_id
+                ),
+                None,
+            )
+            if not latest_subscription:
+                raise HTTPException(status_code=404, detail="Subscription not found")
+            if latest_subscription.get('type') == 'local':
+                raise HTTPException(status_code=400, detail="Local subscriptions cannot be refreshed")
+
+            refreshed_subscription = {**latest_subscription, **(record_overrides or {})}
+            record_refresh_attempt(refreshed_subscription, attempted_at)
+            logger.info(
+                "Refreshing subscription %s (%s)",
+                subscription_id,
+                refreshed_subscription.get('name', ''),
+            )
+            existing_nodes = _load_existing_subscription_nodes(subscription_id)
+            content, subscription_usage, node_count = await _get_fetcher().fetch(
+                refreshed_subscription['url'],
+                user_agent=_get_user_agent(),
+            )
+
+            content, remembered, inherited = apply_region_history_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f'sub:refresh:{subscription_id}',
+            )
+            content, visibility_inherited = apply_node_visibility_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+            )
+            refreshed_nodes = subscription_nodes_from_yaml_content(content)
+
+            updates = {
+                **(record_overrides or {}),
+                'upload': subscription_usage.get('upload', 0),
+                'download': subscription_usage.get('download', 0),
+                'total': subscription_usage.get('total', 0),
+                'expire': subscription_usage.get('expire', 0),
+                'node_count': node_count,
+                **refresh_success_fields(
+                    refreshed_subscription,
+                    attempted_at=attempted_at,
+                    succeeded_at=int(time.time()),
+                ),
+            }
+
+            if remembered or inherited or visibility_inherited:
+                logger.info(
+                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
+                    subscription_id,
+                    remembered,
+                    inherited,
+                    visibility_inherited,
+                )
+
+            def commit_refreshed_subscription(latest_config: dict) -> dict:
+                stored_subscription = next(
+                    (
+                        candidate
+                        for candidate in latest_config.get('subscriptions', [])
+                        if candidate.get('id') == subscription_id
+                    ),
+                    None,
+                )
+                if not stored_subscription:
+                    raise HTTPException(status_code=404, detail="Subscription not found")
+
+                new_name = str(updates.get('name') or stored_subscription.get('name') or subscription_id)
+                new_url = str(updates.get('url') or stored_subscription.get('url') or '')
+                _validate_subscription_uniqueness(
+                    latest_config,
+                    name=new_name,
+                    url=new_url,
+                    exclude_subscription_id=subscription_id,
+                )
+                reconcile_subscription_node_references(
+                    latest_config,
+                    subscription_id,
+                    old_nodes=existing_nodes,
+                    new_nodes=refreshed_nodes,
+                    old_subscription_name=str(stored_subscription.get('name') or subscription_id),
+                    new_subscription_name=new_name,
+                )
+                stored_subscription.update(updates)
+                clear_user_subscription_caches(latest_config)
+                return dict(stored_subscription)
+
+            updated_subscription = persist_subscription_content_and_record(
+                subscription_id,
+                content,
+                AppConfig.YAML_SOURCE_DIR,
+                lambda: update_config(commit_refreshed_subscription),
+            )
+            invalidate_stats_cache()
+            logger.info("Successfully refreshed subscription %s, got %s nodes", subscription_id, node_count)
+            return updated_subscription
+    except Exception as exc:
+        error_message = describe_refresh_error(exc)
+        logger.error(
+            "Failed to refresh subscription %s (%s): %s",
+            subscription_id,
+            (latest_subscription or {}).get('name', ''),
+            error_message,
+            exc_info=True,
+        )
+        try:
+            record_refresh_failure(latest_subscription or subscription, exc, attempted_at)
+        except Exception:
+            logger.error("Failed to persist refresh failure state for %s", subscription_id, exc_info=True)
+        raise
+
+
 # ==================== Data Models ====================
 
 class AddSubscription(BaseModel):
@@ -110,21 +271,42 @@ class AddSubscription(BaseModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if '/' in v or '\\' in v or '..' in v:
+        normalized_name = v.strip()
+        if not normalized_name:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized_name or '\\' in normalized_name or '..' in normalized_name:
             raise ValueError('Name contains invalid characters')
-        return v.strip()
+        return normalized_name
+
+
+def _validate_local_subscription_content(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not value.strip():
+        raise ValueError('Content cannot be empty')
+    if len(value.encode('utf-8')) > AppConfig.SUBSCRIPTION_MAX_BYTES:
+        raise ValueError('Subscription content exceeds the configured size limit')
+    return value
 
 
 class AddLocalSubscription(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    content: str = Field(min_length=1, max_length=10*1024*1024)
+    content: str = Field(min_length=1, max_length=AppConfig.SUBSCRIPTION_MAX_BYTES)
     
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if '/' in v or '\\' in v or '..' in v:
+        normalized_name = v.strip()
+        if not normalized_name:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized_name or '\\' in normalized_name or '..' in normalized_name:
             raise ValueError('Name contains invalid characters')
-        return v.strip()
+        return normalized_name
+
+    @field_validator('content')
+    @classmethod
+    def validate_content(cls, value):
+        return _validate_local_subscription_content(value)
 
 
 class UpdateSubscription(BaseModel):
@@ -134,14 +316,36 @@ class UpdateSubscription(BaseModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if v and ('/' in v or '\\' in v or '..' in v):
+        if v is None:
+            return None
+        normalized_name = v.strip()
+        if not normalized_name:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized_name or '\\' in normalized_name or '..' in normalized_name:
             raise ValueError('Name contains invalid characters')
-        return v.strip() if v else v
+        return normalized_name
 
 
 class UpdateLocalSubscription(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
-    content: Optional[str] = Field(None, max_length=10*1024*1024)
+    content: Optional[str] = Field(None, max_length=AppConfig.SUBSCRIPTION_MAX_BYTES)
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, value):
+        if value is None:
+            return None
+        normalized_name = value.strip()
+        if not normalized_name:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized_name or '\\' in normalized_name or '..' in normalized_name:
+            raise ValueError('Name contains invalid characters')
+        return normalized_name
+
+    @field_validator('content')
+    @classmethod
+    def validate_content(cls, value):
+        return _validate_local_subscription_content(value)
 
 
 class ReorderSubscriptions(BaseModel):
@@ -163,13 +367,19 @@ def list_subscriptions(_: bool = Depends(verify_session)):
 async def add_subscription(data: AddSubscription, _: bool = Depends(verify_session)):
     """Add a new URL subscription"""
     sub_id = generate_timestamp_id('sub_')
+    subscription_url = str(data.url)
+    _validate_subscription_uniqueness(
+        load_config(),
+        name=data.name,
+        url=subscription_url,
+    )
     
     try:
         fetcher = _get_fetcher()
         user_agent = _get_user_agent()
         
         content, sub_info, node_count = await fetcher.fetch(
-            str(data.url),
+            subscription_url,
             user_agent=user_agent
         )
         
@@ -180,13 +390,15 @@ async def add_subscription(data: AddSubscription, _: bool = Depends(verify_sessi
         )
         content, visibility_inherited = apply_node_visibility_to_yaml_content(content, existing_nodes=[])
         
+        created_at = int(time.time())
         new_sub = {
-            'id': sub_id, 'name': data.name, 'url': str(data.url), 'enabled': True,
+            'id': sub_id, 'name': data.name, 'url': subscription_url, 'enabled': True,
             'type': 'url',
             'upload': sub_info.get('upload', 0), 'download': sub_info.get('download', 0),
             'total': sub_info.get('total', 0), 'expire': sub_info.get('expire', 0),
-            'node_count': node_count, 'last_update': int(time.time()),
-            'cron_expr': None, 'next_update': None
+            'node_count': node_count, 'last_update': created_at,
+            'last_attempt': created_at, 'last_success': created_at, 'last_error': None,
+            'update_status': 'success', 'cron_expr': None, 'next_update': None
         }
         
         if inherited:
@@ -194,12 +406,21 @@ async def add_subscription(data: AddSubscription, _: bool = Depends(verify_sessi
         if visibility_inherited:
             logger.info("Inherited disabled state for %s node(s) while adding subscription %s", visibility_inherited, sub_id)
         
-        save_subscription_content(sub_id, content, AppConfig.YAML_SOURCE_DIR)
-        
         def append_subscription(config: dict):
+            _validate_subscription_uniqueness(
+                config,
+                name=data.name,
+                url=subscription_url,
+            )
             config.setdefault('subscriptions', []).append(new_sub)
-        
-        update_config(append_subscription)
+            return dict(new_sub)
+
+        persist_subscription_content_and_record(
+            sub_id,
+            content,
+            AppConfig.YAML_SOURCE_DIR,
+            lambda: update_config(append_subscription),
+        )
         invalidate_stats_cache()
         return {"status": "success", "subscription": new_sub}
         
@@ -212,6 +433,7 @@ async def add_subscription(data: AddSubscription, _: bool = Depends(verify_sessi
 def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_session)):
     """Add a local subscription by pasting content"""
     sub_id = generate_timestamp_id('sub_')
+    _validate_subscription_uniqueness(load_config(), name=data.name)
     
     try:
         yaml_content, proxies, node_count = parse_local_subscription(data.content)
@@ -223,10 +445,12 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
         )
         yaml_content, visibility_inherited = apply_node_visibility_to_yaml_content(yaml_content, existing_nodes=[])
         
+        created_at = int(time.time())
         new_sub = {
             'id': sub_id, 'name': data.name, 'enabled': True,
             'type': 'local', 'node_count': node_count,
-            'last_update': int(time.time()),
+            'last_update': created_at, 'last_attempt': created_at,
+            'last_success': created_at, 'last_error': None, 'update_status': 'success',
             'cron_expr': None, 'next_update': None
         }
         
@@ -235,12 +459,17 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
         if visibility_inherited:
             logger.info("Inherited disabled state for %s node(s) while adding local subscription %s", visibility_inherited, sub_id)
         
-        save_subscription_content(sub_id, yaml_content, AppConfig.YAML_SOURCE_DIR)
-        
         def append_local_subscription(config: dict):
+            _validate_subscription_uniqueness(config, name=data.name)
             config.setdefault('subscriptions', []).append(new_sub)
-        
-        update_config(append_local_subscription)
+            return dict(new_sub)
+
+        persist_subscription_content_and_record(
+            sub_id,
+            yaml_content,
+            AppConfig.YAML_SOURCE_DIR,
+            lambda: update_config(append_local_subscription),
+        )
         return {"status": "success", "subscription": new_sub}
         
     except InvalidContentError as e:
@@ -251,23 +480,26 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
 @handle_api_errors
 def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: bool = Depends(verify_session)):
     """Update a local subscription"""
-    config = load_config()
-    sub = next((s for s in config['subscriptions'] if s['id'] == sub_id), None)
-    
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    if sub.get('type') != 'local':
-        raise HTTPException(status_code=400, detail="Not a local subscription")
-    
-    updates = {}
-    if data.name:
-        updates['name'] = data.name
-    
-    if data.content:
-        try:
-            yaml_content, proxies, node_count = parse_local_subscription(data.content)
-            existing_nodes = _load_existing_subscription_nodes(sub_id)
-            
+    with subscription_write_slot(sub_id):
+        config = load_config()
+        sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if sub.get('type') != 'local':
+            raise HTTPException(status_code=400, detail="Not a local subscription")
+
+        existing_nodes = _load_existing_subscription_nodes(sub_id)
+        updates = {}
+        if data.name is not None:
+            updates['name'] = data.name
+
+        yaml_content = None
+        if data.content is not None:
+            try:
+                yaml_content, _proxies, node_count = parse_local_subscription(data.content)
+            except InvalidContentError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
             yaml_content, remembered, inherited = apply_region_history_to_yaml_content(
                 yaml_content,
                 existing_nodes=existing_nodes,
@@ -277,8 +509,15 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                 yaml_content,
                 existing_nodes=existing_nodes,
             )
-            
-            updates['node_count'] = node_count
+            updated_at = int(time.time())
+            updates.update({
+                'node_count': node_count,
+                'last_update': updated_at,
+                'last_attempt': updated_at,
+                'last_success': updated_at,
+                'last_error': None,
+                'update_status': 'success',
+            })
             if remembered or inherited or visibility_inherited:
                 logger.info(
                     "Local subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
@@ -287,23 +526,48 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                     inherited,
                     visibility_inherited,
                 )
-            save_subscription_content(sub_id, yaml_content, AppConfig.YAML_SOURCE_DIR)
-        except InvalidContentError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    
-    updates['last_update'] = int(time.time())
-    
-    def apply_local_update(latest_config: dict) -> dict:
-        latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
-        if not latest_sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        if latest_sub.get('type') != 'local':
-            raise HTTPException(status_code=400, detail="Not a local subscription")
-        latest_sub.update(updates)
-        return dict(latest_sub)
-    
-    updated_sub = update_config(apply_local_update)
-    return {"status": "success", "subscription": updated_sub}
+
+        updated_nodes = (
+            subscription_nodes_from_yaml_content(yaml_content)
+            if yaml_content is not None
+            else existing_nodes
+        )
+
+        def apply_local_update(latest_config: dict) -> dict:
+            latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
+            if not latest_sub:
+                raise HTTPException(status_code=404, detail="Subscription not found")
+            if latest_sub.get('type') != 'local':
+                raise HTTPException(status_code=400, detail="Not a local subscription")
+            updated_name = str(updates.get('name') or latest_sub.get('name') or sub_id)
+            _validate_subscription_uniqueness(
+                latest_config,
+                name=updated_name,
+                exclude_subscription_id=sub_id,
+            )
+            reconcile_subscription_node_references(
+                latest_config,
+                sub_id,
+                old_nodes=existing_nodes,
+                new_nodes=updated_nodes,
+                old_subscription_name=str(latest_sub.get('name') or sub_id),
+                new_subscription_name=updated_name,
+            )
+            latest_sub.update(updates)
+            clear_user_subscription_caches(latest_config)
+            return dict(latest_sub)
+
+        if yaml_content is not None:
+            updated_sub = persist_subscription_content_and_record(
+                sub_id,
+                yaml_content,
+                AppConfig.YAML_SOURCE_DIR,
+                lambda: update_config(apply_local_update),
+            )
+        else:
+            updated_sub = update_config(apply_local_update)
+        invalidate_stats_cache()
+        return {"status": "success", "subscription": updated_sub}
 
 
 @router.post("/parse-preview")
@@ -319,56 +583,95 @@ def parse_subscription_preview(data: AddLocalSubscription, _: bool = Depends(ver
 
 @router.delete("/{sub_id}")
 @handle_api_errors
-def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
+async def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
     """Delete a subscription"""
     if sub_id == 'custom_nodes':
         raise HTTPException(status_code=400, detail="custom_nodes is not a subscription")
-    
-    def remove_subscription(config: dict) -> dict:
-        subs = config.get('subscriptions', [])
-        sub = next((s for s in subs if s.get('id') == sub_id), None)
-        if not sub:
+
+    async with reject_concurrent_refresh(sub_id):
+        current_config = load_config()
+        current_subscription = next(
+            (item for item in current_config.get('subscriptions', []) if item.get('id') == sub_id),
+            None,
+        )
+        if not current_subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        config['subscriptions'] = [s for s in subs if s.get('id') != sub_id]
-        return dict(sub)
-    
-    update_config(remove_subscription)
-    invalidate_stats_cache()
-    
-    # Invalidate YAML cache for this subscription
-    from helpers import yaml_cache
-    yaml_cache.invalidate(sub_id)
-    
-    # Delete the subscription YAML file
-    yaml_root = Path(AppConfig.YAML_SOURCE_DIR).resolve()
-    yaml_file = (yaml_root / f'{sub_id}.yaml').resolve()
-    if yaml_root not in yaml_file.parents and yaml_file != yaml_root:
-        raise HTTPException(status_code=400, detail="Invalid subscription id")
-    
-    try:
-        if yaml_file.exists():
-            yaml_file.unlink()
-            logger.info(f"Deleted subscription file: {yaml_file}")
-    except Exception as e:
-        logger.warning(f"Failed to delete subscription file {yaml_file}: {e}")
-    
+        current_nodes = _load_existing_subscription_nodes(sub_id)
+        previous_content = snapshot_subscription_content(sub_id, AppConfig.YAML_SOURCE_DIR)
+        yaml_file = subscription_file_path(sub_id, AppConfig.YAML_SOURCE_DIR)
+        try:
+            yaml_file.unlink(missing_ok=True)
+            from helpers import yaml_cache
+            yaml_cache.invalidate(sub_id)
+
+            def remove_subscription(config: dict) -> dict:
+                removed = cleanup_deleted_subscription(
+                    config,
+                    sub_id,
+                    current_nodes,
+                )
+                if not removed:
+                    raise HTTPException(status_code=404, detail="Subscription not found")
+                return removed
+
+            update_config(remove_subscription)
+        except Exception:
+            restore_subscription_content(
+                sub_id,
+                AppConfig.YAML_SOURCE_DIR,
+                previous_content,
+            )
+            raise
+
+        from scheduler_service import get_scheduler
+        get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+        invalidate_stats_cache()
+        logger.info("Deleted subscription %s and its persisted references", sub_id)
+
     return {"status": "success"}
 
 
 @router.put("/{sub_id}/toggle")
 @handle_api_errors
-def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
+async def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
     """Toggle subscription enabled status"""
-    def toggle_enabled(config: dict) -> bool:
-        for sub in config.get('subscriptions', []):
-            if sub['id'] == sub_id:
-                sub['enabled'] = not sub.get('enabled', True)
-                return sub['enabled']
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    
-    enabled = update_config(toggle_enabled)
-    invalidate_stats_cache()
-    return {"status": "success", "enabled": enabled}
+    async with reject_concurrent_refresh(sub_id):
+        def toggle_enabled(config: dict) -> dict:
+            for subscription in config.get('subscriptions', []):
+                if subscription['id'] == sub_id:
+                    subscription['enabled'] = not subscription.get('enabled', True)
+                    if not subscription['enabled']:
+                        subscription['next_update'] = None
+                    return {
+                        'enabled': subscription['enabled'],
+                        'cron_expr': subscription.get('cron_expr'),
+                    }
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        toggle_state = update_config(toggle_enabled)
+        if toggle_state['enabled'] and toggle_state['cron_expr']:
+            try:
+                from api.scheduler import _set_subscription_schedule
+                _set_subscription_schedule(sub_id, toggle_state['cron_expr'])
+            except Exception:
+                def disable_after_schedule_failure(config: dict):
+                    subscription = next(
+                        (item for item in config.get('subscriptions', []) if item['id'] == sub_id),
+                        None,
+                    )
+                    if subscription:
+                        subscription['enabled'] = False
+                        subscription['next_update'] = None
+
+                update_config(disable_after_schedule_failure)
+                raise
+        elif not toggle_state['enabled']:
+            from scheduler_service import get_scheduler
+            get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+
+        invalidate_stats_cache()
+
+    return {"status": "success", "enabled": toggle_state['enabled']}
 
 
 @router.put("/reorder")
@@ -393,176 +696,151 @@ def reorder_subscriptions(data: ReorderSubscriptions, _: bool = Depends(verify_s
 
 @router.put("/{sub_id}")
 @handle_api_errors
-def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends(verify_session)):
-    """Update subscription info"""
-    def apply_subscription_update(config: dict) -> dict:
-        for sub in config.get('subscriptions', []):
-            if sub['id'] == sub_id:
-                if data.name is not None:
-                    sub['name'] = data.name
-                if data.url is not None:
-                    sub['url'] = str(data.url)
-                return dict(sub)
+async def update_subscription(sub_id: str, data: UpdateSubscription, _: bool = Depends(verify_session)):
+    """Update metadata; a changed URL is fetched and committed with its YAML as one operation."""
+    config = load_config()
+    current_subscription = next(
+        (item for item in config.get('subscriptions', []) if item.get('id') == sub_id),
+        None,
+    )
+    if not current_subscription:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    
-    sub = update_config(apply_subscription_update)
-    return {"status": "success", "subscription": sub}
+    if current_subscription.get('type') == 'local':
+        raise HTTPException(status_code=400, detail="Use the local subscription endpoint")
+
+    requested_url = str(data.url) if data.url is not None else current_subscription.get('url')
+    url_changed = data.url is not None and requested_url != current_subscription.get('url')
+    requested_name = data.name if data.name is not None else current_subscription.get('name', sub_id)
+    _validate_subscription_uniqueness(
+        config,
+        name=requested_name,
+        url=requested_url,
+        exclude_subscription_id=sub_id,
+    )
+    record_overrides = {}
+    if data.name is not None:
+        record_overrides['name'] = data.name
+    if url_changed:
+        record_overrides['url'] = requested_url
+        try:
+            updated_subscription = await _refresh_remote_subscription(
+                current_subscription,
+                record_overrides=record_overrides,
+            )
+        except FetchError as exc:
+            raise HTTPException(status_code=400, detail=describe_refresh_error(exc)) from exc
+        return {"status": "success", "subscription": updated_subscription}
+
+    async with reject_concurrent_refresh(sub_id):
+        existing_nodes = _load_existing_subscription_nodes(sub_id)
+
+        def apply_subscription_update(latest_config: dict) -> dict:
+            latest_subscription = next(
+                (item for item in latest_config.get('subscriptions', []) if item.get('id') == sub_id),
+                None,
+            )
+            if not latest_subscription:
+                raise HTTPException(status_code=404, detail="Subscription not found")
+            updated_name = data.name if data.name is not None else latest_subscription.get('name', sub_id)
+            _validate_subscription_uniqueness(
+                latest_config,
+                name=updated_name,
+                url=str(latest_subscription.get('url') or ''),
+                exclude_subscription_id=sub_id,
+            )
+            if data.name is not None:
+                reconcile_subscription_node_references(
+                    latest_config,
+                    sub_id,
+                    old_nodes=existing_nodes,
+                    new_nodes=existing_nodes,
+                    old_subscription_name=str(latest_subscription.get('name') or sub_id),
+                    new_subscription_name=data.name,
+                )
+                latest_subscription['name'] = data.name
+                clear_user_subscription_caches(latest_config)
+            return dict(latest_subscription)
+
+        updated_subscription = update_config(apply_subscription_update)
+    return {"status": "success", "subscription": updated_subscription}
 
 
 @router.post("/{sub_id}/refresh")
+@limiter.limit(AppConfig.RATE_LIMIT_REFRESH_SINGLE)
 @handle_api_errors
 async def refresh_subscription(sub_id: str, request: Request, _: bool = Depends(verify_session)):
     """Refresh a single subscription"""
-    from server import subscription_refresh_lock
-
     config = load_config()
-
     sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-
     if sub.get('type') == 'local':
         raise HTTPException(status_code=400, detail="Local subscriptions cannot be refreshed")
 
-    async with subscription_refresh_lock(sub_id):
-        try:
-            fetcher = _get_fetcher()
-            user_agent = _get_user_agent()
-
-            logger.info(f"Refreshing subscription {sub_id} ({sub['name']}): {sub['url']}")
-            existing_nodes = _load_existing_subscription_nodes(sub_id)
-
-            content, sub_info, node_count = await fetcher.fetch(
-                sub['url'],
-                user_agent=user_agent
-            )
-
-            content, remembered, inherited = apply_region_history_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-                source=f'sub:refresh:{sub_id}',
-            )
-            content, visibility_inherited = apply_node_visibility_to_yaml_content(
-                content,
-                existing_nodes=existing_nodes,
-            )
-
-            updates = {
-                'upload': sub_info.get('upload', 0),
-                'download': sub_info.get('download', 0),
-                'total': sub_info.get('total', 0),
-                'expire': sub_info.get('expire', 0),
-                'node_count': node_count,
-                'last_update': int(time.time()),
-                'update_status': 'success'
-            }
-
-            if remembered or inherited or visibility_inherited:
-                logger.info(
-                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
-                    sub_id,
-                    remembered,
-                    inherited,
-                    visibility_inherited,
-                )
-
-            save_subscription_content(sub_id, content, AppConfig.YAML_SOURCE_DIR)
-            updated_sub = update_subscription_fields(sub_id, updates)
-            if not updated_sub:
-                raise HTTPException(status_code=404, detail="Subscription not found")
-            invalidate_stats_cache()
-
-            logger.info(f"Successfully refreshed subscription {sub_id}, got {node_count} nodes")
-            return {"status": "success", "subscription": updated_sub}
-
-        except HTTPException:
-            raise
-        except FetchError as e:
-            error_msg = str(e)
-            logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-            raise HTTPException(status_code=400, detail=error_msg)
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed to refresh subscription {sub_id} ({sub['name']}): {error_msg}", exc_info=True)
-            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-            raise HTTPException(status_code=400, detail=error_msg)
+    try:
+        updated_subscription = await _refresh_remote_subscription(sub)
+        return {"status": "success", "subscription": updated_subscription}
+    except FetchError as exc:
+        raise HTTPException(status_code=400, detail=describe_refresh_error(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=describe_refresh_error(exc)) from exc
 
 
 @router.post("/refresh-all")
+@limiter.limit(AppConfig.RATE_LIMIT_REFRESH_ALL)
 @handle_api_errors
 async def refresh_all_subscriptions(request: Request, _: bool = Depends(verify_session)):
     """Refresh all URL subscriptions"""
-    from server import subscription_refresh_lock
-
     config = load_config()
-
     url_subs = [s for s in config.get('subscriptions', []) if s.get('type') != 'local' and s.get('enabled', True)]
 
     if not url_subs:
-        return {"status": "success", "message": "No URL subscriptions to refresh", "results": []}
+        return {
+            "status": "success",
+            "message": "No URL subscriptions to refresh",
+            "success_count": 0,
+            "failure_count": 0,
+            "total_count": 0,
+            "results": [],
+        }
 
-    results = []
-    fetcher = _get_fetcher()
-    user_agent = _get_user_agent()
+    refresh_slots = asyncio.Semaphore(AppConfig.SUBSCRIPTION_REFRESH_CONCURRENCY)
 
-    for sub in url_subs:
-        try:
-            async with subscription_refresh_lock(sub['id']):
-                existing_nodes = _load_existing_subscription_nodes(sub['id'])
-
-                content, sub_info, node_count = await fetcher.fetch(
-                    sub['url'],
-                    user_agent=user_agent
-                )
-
-                content, remembered, inherited = apply_region_history_to_yaml_content(
-                    content,
-                    existing_nodes=existing_nodes,
-                    source=f"sub:refresh-all:{sub['id']}",
-                )
-                content, visibility_inherited = apply_node_visibility_to_yaml_content(
-                    content,
-                    existing_nodes=existing_nodes,
-                )
-
-                updates = {
-                    'upload': sub_info.get('upload', 0),
-                    'download': sub_info.get('download', 0),
-                    'total': sub_info.get('total', 0),
-                    'expire': sub_info.get('expire', 0),
-                    'node_count': node_count,
-                    'last_update': int(time.time()),
-                    'update_status': 'success'
+    async def refresh_one_subscription(sub: dict) -> dict:
+        async with refresh_slots:
+            try:
+                await _refresh_remote_subscription(sub)
+                return {"id": sub['id'], "name": sub['name'], "status": "success"}
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                return {"id": sub['id'], "name": sub['name'], "status": "error", "error": detail}
+            except Exception as exc:
+                return {
+                    "id": sub['id'],
+                    "name": sub['name'],
+                    "status": "error",
+                    "error": describe_refresh_error(exc),
                 }
 
-                if remembered or inherited or visibility_inherited:
-                    logger.info(
-                        "Subscription %s history in refresh-all: remembered=%s inherited_region=%s inherited_disabled=%s",
-                        sub['id'],
-                        remembered,
-                        inherited,
-                        visibility_inherited,
-                    )
+    refresh_results = await asyncio.gather(
+        *(refresh_one_subscription(subscription) for subscription in url_subs)
+    )
+    success_count = sum(item['status'] == 'success' for item in refresh_results)
+    failure_count = len(refresh_results) - success_count
+    if failure_count == 0:
+        refresh_status = 'success'
+    elif success_count == 0:
+        refresh_status = 'error'
+    else:
+        refresh_status = 'partial'
 
-                save_subscription_content(sub['id'], content, AppConfig.YAML_SOURCE_DIR)
-                update_subscription_fields(sub['id'], updates)
-                results.append({"id": sub['id'], "name": sub['name'], "status": "success"})
-
-        except HTTPException as e:
-            detail = e.detail if isinstance(e.detail, str) else str(e.detail)
-            if e.status_code != 409:
-                update_subscription_fields(sub['id'], {'update_status': f'error: {detail}'})
-            results.append({"id": sub['id'], "name": sub['name'], "status": "error", "error": detail})
-        except Exception as e:
-            update_subscription_fields(sub['id'], {'update_status': f'error: {str(e)}'})
-            results.append({"id": sub['id'], "name": sub['name'], "status": "error", "error": str(e)})
-    
-    invalidate_stats_cache()
-    
-    success_count = len([r for r in results if r['status'] == 'success'])
     return {
-        "status": "success",
+        "status": refresh_status,
         "message": f"Refreshed {success_count}/{len(url_subs)} subscriptions",
-        "results": results
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "total_count": len(url_subs),
+        "results": refresh_results,
     }

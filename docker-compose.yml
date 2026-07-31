@@ -1,16 +1,18 @@
 services:
   clash-merger:
-    image: ghcr.io/socialyjj/clash-sub-merger:4.2.0
+    image: ghcr.io/socialyjj/clash-sub-merger:latest
     container_name: submerger
     restart: unless-stopped
     ports:
-      - "${PORT:-8666}:8666"
+      - "${HOST_PORT:-8666}:8666"
     volumes:
       - ./data:/app/data
     env_file:
       - .env
     environment:
       DATA_DIR: /app/data
+      HOST: 0.0.0.0
+      PORT: 8666
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8666/health', timeout=5)\""]
       interval: 30s

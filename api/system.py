@@ -5,9 +5,10 @@ System management, backup, import/export, logging endpoints
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.config import AppConfig
+from core.database import load_config
 from core.dependencies import verify_session
 from services.backup import (
     create_backup as backup_create,
@@ -15,13 +16,43 @@ from services.backup import (
     restore_backup as backup_restore,
     delete_backup as backup_delete,
     export_config as config_export,
-    import_config as config_import
+    import_config as config_import,
+    restore_config_snapshot,
 )
 from services.key_rotation import check_key_rotation_needed
 from logger_config import get_logger, set_log_level, get_current_log_level, list_all_loggers
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+def _reload_runtime_configuration() -> None:
+    import server
+
+    server.reload_runtime_configuration()
+
+
+def _reload_or_restore(previous_config: dict, operation: str) -> None:
+    """Rollback persisted config if rebuilding derived runtime state fails."""
+    try:
+        _reload_runtime_configuration()
+    except Exception as reload_error:
+        logger.error(
+            "%s runtime reload failed; restoring previous configuration: %s",
+            operation,
+            type(reload_error).__name__,
+        )
+        try:
+            restore_config_snapshot(previous_config)
+            _reload_runtime_configuration()
+        except Exception as rollback_error:
+            logger.critical(
+                "%s rollback failed: %s",
+                operation,
+                type(rollback_error).__name__,
+            )
+            raise RuntimeError("Configuration rollback failed") from rollback_error
+        raise RuntimeError("Runtime configuration reload failed") from reload_error
 
 
 # ==================== Data Models ====================
@@ -31,6 +62,8 @@ class LogLevelRequest(BaseModel):
 
 
 class ImportRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     data: dict
     merge: bool = False
 
@@ -93,7 +126,9 @@ def create_manual_backup(_: bool = Depends(verify_session)):
 def restore_from_backup(filename: str, _: bool = Depends(verify_session)):
     """Restore from a backup"""
     try:
+        previous_config = load_config()
         backup_restore(filename)
+        _reload_or_restore(previous_config, "Backup restore")
         return {"status": "success", "message": f"Restored from {filename}"}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Backup not found")
@@ -101,9 +136,9 @@ def restore_from_backup(filename: str, _: bool = Depends(verify_session)):
         raise HTTPException(status_code=400, detail=str(e))
     except TimeoutError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to restore backup: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Failed to restore backup: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Failed to restore backup")
 
 
 @router.delete("/backups/{filename}", tags=["system"])
@@ -118,7 +153,7 @@ def delete_backup_file(filename: str, _: bool = Depends(verify_session)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete backup: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete backup")
 
 
 # ==================== Import/Export API ====================
@@ -133,25 +168,31 @@ def export_configuration(_: bool = Depends(verify_session)):
             content=json.dumps(export_data, ensure_ascii=False, indent=2),
             media_type="application/json",
             headers={
-                "Content-Disposition": f'attachment; filename="submerger_export_{int(time.time())}.json"'
+                "Content-Disposition": f'attachment; filename="submerger_export_{int(time.time())}.json"',
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
             }
         )
-    except Exception as e:
-        logger.error(f"Failed to export config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Failed to export config: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Failed to export configuration")
 
 
 @router.post("/import", tags=["system"])
 def import_configuration(req: ImportRequest, _: bool = Depends(verify_session)):
     """Import configuration from export file"""
     try:
+        previous_config = load_config()
         mode = config_import(req.data, req.merge)
+        _reload_or_restore(previous_config, "Configuration import")
         return {"status": "success", "mode": mode}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to import config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to import config: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Failed to import configuration")
 
 
 # ==================== Key Rotation API ====================

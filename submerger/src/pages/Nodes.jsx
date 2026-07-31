@@ -350,7 +350,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       subNodeList.forEach((node, idx) => {
         if (isInfoNode(node)) return;
 
-        const nodeKey = `${subId}-${idx}`;
+        const nodeKey = node.id || `${subId}-${idx}`;
         const testResult = nodeTestResults[nodeKey];
 
         // Priority for region: testResult > backend's node.region > geoipData lookup
@@ -720,7 +720,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (isRegionTest) {
         payload.geoip_api = selectedGeoipApi;
       }
-      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, payload);
+      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, payload);
       setNodeTestResults(prev => {
         const newResult = { ...prev[node.nodeKey] };
         if (isRegionTest) {
@@ -750,7 +750,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setTestingNode(node.nodeKey);
     setTestingType('speed');
     try {
-      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
         test_latency: false,
         test_speed: true,
         test_region: false,
@@ -821,7 +821,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + testConcurrency);
         const results = await Promise.allSettled(batch.map(async (node) => {
           try {
-            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
               test_latency: true,
               test_speed: false,
               test_region: false,
@@ -831,8 +831,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
-            saveData[node.sourceId][node.idx].latency = res.data.latency;
+            if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
+            saveData[node.sourceId][node.id].latency = res.data.latency;
             
             return { nodeKey: node.nodeKey, data: { latency: res.data.latency, error: false } };
           } catch {
@@ -863,7 +863,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + testConcurrency);
         const results = await Promise.allSettled(batch.map(async (node) => {
           try {
-            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
               test_latency: false,
               test_speed: false,
               test_region: true,
@@ -874,10 +874,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
-            saveData[node.sourceId][node.idx].exit_ip = res.data.exit_ip;
-            saveData[node.sourceId][node.idx].region = res.data.region;
-            saveData[node.sourceId][node.idx].city = res.data.city;
+            if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
+            saveData[node.sourceId][node.id].exit_ip = res.data.exit_ip;
+            saveData[node.sourceId][node.id].region = res.data.region;
+            saveData[node.sourceId][node.id].city = res.data.city;
             
             return { nodeKey: node.nodeKey, data: { region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip, error: false } };
           } catch {
@@ -910,7 +910,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         const batch = nodesToTest.slice(i, i + speedConcurrency);
         const results = await Promise.allSettled(batch.map(async (node) => {
           try {
-            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${node.idx}/test`, {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
               test_latency: false,
               test_speed: true,
               test_region: false,
@@ -920,8 +920,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            if (!saveData[node.sourceId][node.idx]) saveData[node.sourceId][node.idx] = {};
-            saveData[node.sourceId][node.idx].speed = res.data.speed;
+            if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
+            saveData[node.sourceId][node.id].speed = res.data.speed;
             
             return { nodeKey: node.nodeKey, data: { speed: res.data.speed, peak_speed: res.data.peak_speed, speed_error: false, error: false } };
           } catch {
@@ -1160,10 +1160,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const openChainModal = (chain = null) => {
     if (chain) {
       setChainName(chain.name);
-      const resolveNodeName = (subId, nodeName, nodeIndex) => {
-        if (nodeName) return nodeName;
-        const found = availableChainNodes.find(n => n.sub_id === subId && n.node_index === nodeIndex);
-        return found?.node_name ?? found?.display_name ?? found?.name;
+      const resolveStoredNode = (subId, nodeId, nodeName, nodeIndex) => {
+        if (nodeId) {
+          const byId = availableChainNodes.find(n => n.sub_id === subId && n.node_id === nodeId);
+          if (byId) return byId;
+        }
+        if (nodeName) {
+          const byName = availableChainNodes.find(n =>
+            n.sub_id === subId && (n.node_name ?? n.display_name ?? n.name) === nodeName
+          );
+          if (byName) return byName;
+        }
+        return availableChainNodes.find(n => n.sub_id === subId && n.node_index === nodeIndex);
       };
       const resolveGroupId = (groupId, rowIndex, colIndex) => groupId || `${chain.id || 'chain'}_${rowIndex}_${colIndex}`;
       const rows = chain.rows.map((row, rowIndex) =>
@@ -1177,19 +1185,23 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               group_name: node.group_name || defaultLabel,
               group_strategy: node.group_strategy || 'load-balance',
               lb_strategy: node.lb_strategy || 'round-robin',
-              group_nodes: (node.group_nodes || []).map(n => ({
-                type: 'node',
-                sub_id: n.sub_id,
-                node_index: n.node_index,
-                node_name: resolveNodeName(n.sub_id, n.node_name, n.node_index)
-              }))
+              group_nodes: (node.group_nodes || []).map(n => {
+                const resolved = resolveStoredNode(n.sub_id, n.node_id, n.node_name, n.node_index);
+                return {
+                  type: 'node',
+                  sub_id: n.sub_id,
+                  node_id: n.node_id || resolved?.node_id,
+                  node_name: n.node_name || resolved?.node_name || resolved?.display_name || resolved?.name
+                };
+              })
             };
           }
+          const resolved = resolveStoredNode(node.sub_id, node.node_id, node.node_name, node.node_index);
           return {
             type: 'node',
             sub_id: node.sub_id,
-            node_index: node.node_index,
-            node_name: resolveNodeName(node.sub_id, node.node_name, node.node_index)
+            node_id: node.node_id || resolved?.node_id,
+            node_name: node.node_name || resolved?.node_name || resolved?.display_name || resolved?.name
           };
         })
       );
@@ -1244,8 +1256,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const generateGroupId = () => `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
-  const makeChainNodeKey = (subId, nodeName, nodeIndex) => {
+  const makeChainNodeKey = (subId, nodeId, nodeName, nodeIndex) => {
     if (!subId) return '';
+    if (nodeId) return `${subId}|id:${encodeURIComponent(nodeId)}`;
     if (nodeName) return `${subId}|${encodeURIComponent(nodeName)}`;
     if (nodeIndex !== undefined && nodeIndex !== null && !Number.isNaN(nodeIndex)) {
       return `${subId}|#${nodeIndex}`;
@@ -1254,20 +1267,27 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   const parseChainNodeKey = (key) => {
-    if (!key) return { subId: '', nodeName: '', nodeIndex: null };
+    if (!key) return { subId: '', nodeId: '', nodeName: '', nodeIndex: null };
     const sep = key.indexOf('|');
-    if (sep === -1) return { subId: '', nodeName: '', nodeIndex: null };
+    if (sep === -1) return { subId: '', nodeId: '', nodeName: '', nodeIndex: null };
     const subId = key.slice(0, sep);
     const rest = key.slice(sep + 1);
+    if (rest.startsWith('id:')) {
+      return { subId, nodeId: decodeURIComponent(rest.slice(3)), nodeName: '', nodeIndex: null };
+    }
     if (rest.startsWith('#')) {
       const idx = parseInt(rest.slice(1), 10);
-      return { subId, nodeName: '', nodeIndex: Number.isNaN(idx) ? null : idx };
+      return { subId, nodeId: '', nodeName: '', nodeIndex: Number.isNaN(idx) ? null : idx };
     }
-    return { subId, nodeName: decodeURIComponent(rest), nodeIndex: null };
+    return { subId, nodeId: '', nodeName: decodeURIComponent(rest), nodeIndex: null };
   };
 
-  const resolveChainNode = (nodes, subId, nodeName, nodeIndex) => {
+  const resolveChainNode = (nodes, subId, nodeId, nodeName, nodeIndex) => {
     if (!nodes?.length || !subId) return null;
+    if (nodeId) {
+      const match = nodes.find(n => n.sub_id === subId && n.node_id === nodeId);
+      if (match) return match;
+    }
     if (nodeName) {
       const match = nodes.find(n =>
         n.sub_id === subId && (n.node_name ?? n.display_name ?? n.name) === nodeName
@@ -1281,8 +1301,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   const resolveChainNodeFromKey = (nodes, key) => {
-    const { subId, nodeName, nodeIndex } = parseChainNodeKey(key);
-    return resolveChainNode(nodes, subId, nodeName, nodeIndex);
+    const { subId, nodeId, nodeName, nodeIndex } = parseChainNodeKey(key);
+    return resolveChainNode(nodes, subId, nodeId, nodeName, nodeIndex);
   };
 
   const updateChainNode = (rowIndex, colIndex, nodeKey) => {
@@ -1303,7 +1323,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       newRows[rowIndex][colIndex] = node ? {
         type: 'node',
         sub_id: node.sub_id,
-        node_index: node.node_index,
+        node_id: node.node_id,
         node_name: nodeName
       } : null;
       return newRows;
@@ -1358,7 +1378,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return node ? {
         type: 'node',
         sub_id: node.sub_id,
-        node_index: node.node_index,
+        node_id: node.node_id,
         node_name: nodeName
       } : null;
     }).filter(Boolean);
@@ -1370,7 +1390,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const beginGroupEdit = (rowIndex, colIndex) => {
     const key = getGroupCellKey(rowIndex, colIndex);
     const current = chainRows[rowIndex]?.[colIndex];
-    const keys = (current?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
+    const keys = (current?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
     setGroupDrafts(prev => ({ ...prev, [key]: keys }));
     setGroupEditing(prev => ({ ...prev, [key]: true }));
   };
@@ -1401,7 +1421,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const newRows = [...prev];
       const current = newRows[rowIndex]?.[colIndex];
       if (!current || current.type !== 'group') return newRows;
-      const selectedKeys = (current.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
+      const selectedKeys = (current.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
       const nextKeys = selectedKeys.includes(nodeKey)
         ? selectedKeys.filter(k => k !== nodeKey)
         : [...selectedKeys, nodeKey];
@@ -1411,7 +1431,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         return node ? {
           type: 'node',
           sub_id: node.sub_id,
-          node_index: node.node_index,
+          node_id: node.node_id,
           node_name: nodeName
         } : null;
       }).filter(Boolean);
@@ -1428,7 +1448,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const getChainNodeKey = (node) => {
     if (!node || node.type === 'group') return '';
-    return makeChainNodeKey(node.sub_id, node.node_name, node.node_index);
+    return makeChainNodeKey(node.sub_id, node.node_id, node.node_name, node.node_index);
   };
 
   const saveChain = async () => {
@@ -1453,6 +1473,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             showToast?.('组内至少选择一个节点', 'error');
             return;
           }
+          if (node.group_nodes.some(member => !member?.sub_id || !member?.node_id)) {
+            showToast?.('组内存在已失效节点，请重新选择', 'error');
+            return;
+          }
+        } else if (!node?.sub_id || !node?.node_id) {
+          showToast?.('链路中存在已失效节点，请重新选择', 'error');
+          return;
         }
       }
     }
@@ -1470,7 +1497,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               lb_strategy: node.lb_strategy,
               group_nodes: (node.group_nodes || []).map(n => ({
                 sub_id: n.sub_id,
-                node_index: n.node_index,
+                node_id: n.node_id,
                 node_name: n.node_name
               }))
             };
@@ -1478,7 +1505,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           return {
             type: 'node',
             sub_id: node.sub_id,
-            node_index: node.node_index,
+            node_id: node.node_id,
             node_name: node.node_name
           };
         })
@@ -1518,7 +1545,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     try {
       const endpoint = node.sourceType === 'custom'
         ? `${API_BASE}/custom-nodes/${node.id}/toggle`
-        : `${API_BASE}/subscriptions/${node.sourceId}/nodes/${node.idx}/toggle`;
+        : `${API_BASE}/subscriptions/${node.sourceId}/nodes/${encodeURIComponent(node.id)}/toggle`;
       const res = await request.put(endpoint);
       const enabled = res.data?.enabled !== false;
 
@@ -1530,8 +1557,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             ...prev,
             [node.sourceId]: {
               ...source,
-              nodes: (source.nodes || []).map((item, index) => (
-                index === node.idx ? { ...item, enabled } : item
+              nodes: (source.nodes || []).map((item) => (
+                item.id === node.id ? { ...item, enabled } : item
               ))
             }
           };
@@ -2660,7 +2687,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           const isLast = colIndex === row.length - 1;
                           const cellType = node?.type || 'node';
                           const groupLabel = isLast ? '组(落地池)' : '组(中转池)';
-                                          const selectedKeys = (node?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_name, n.node_index));
+                          const selectedKeys = (node?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
                           return (
                             <React.Fragment key={colIndex}>
                               <div className="flex justify-center">
@@ -2755,7 +2782,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                             <div className="flex gap-2">
                                               <button
                                                 type="button"
-                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, filteredNodes.map(n => makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index)))}
+                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, filteredNodes.map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index)))}
                                                 className="text-blue-400 hover:text-blue-300"
                                               >
                                                 全选
@@ -2777,7 +2804,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                           />
                                           <div className="max-h-40 overflow-y-auto border border-gray-700 rounded-lg bg-gray-800">
                                             {filteredNodes.map(n => {
-                                              const key = makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
+                                              const key = makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
                                               const checked = draftKeys.includes(key);
                                               return (
                                                 <div
@@ -2814,7 +2841,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                     <option value="">选择节点</option>
                                     {/* Use flat list like node management page */}
                                     {orderedChainNodes.map(n => {
-                                      const key = makeChainNodeKey(n.sub_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
+                                      const key = makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
                                       return (
                                         <option key={key} value={key}>
                                           {getChainNodeLabel(n)}

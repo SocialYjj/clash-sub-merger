@@ -15,7 +15,6 @@ FORBIDDEN_LATENCY_URLS = [
 ]
 SOURCE_FILES_WITH_LATENCY_DEFAULTS = [
     Path("api/nodes.py"),
-    Path("api/templates.py"),
     Path("services/config_merger.py"),
     Path("services/proxy_chain_utils.py"),
     Path("speedtest_service.py"),

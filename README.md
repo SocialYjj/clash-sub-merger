@@ -87,6 +87,7 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 - 🔐 **Password Protection** - Panel access requires password
 - 🎫 **Token Authentication** - Subscription URL with token
 - 🔑 **Regenerate Token** - Reset subscription token anytime
+- 🧾 **Credential-safe Logging** - Built-in access logs omit token-bearing subscription URLs; reverse proxies should also disable or redact query-string logging
 
 ## 🏗️ Architecture
 
@@ -108,43 +109,62 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 
 ### Docker Compose (Recommended)
 
-1. Create `docker-compose.yml`:
+1. Create the working directory and `.env`:
+
+```bash
+mkdir submerger && cd submerger
+cat > .env <<'EOF'
+INITIAL_ADMIN_PASSWORD=replace-with-a-password-containing-letters-and-digits
+SESSION_SECRET=replace-with-a-long-random-string
+TZ=Asia/Shanghai
+EOF
+```
+
+`INITIAL_ADMIN_PASSWORD` is required only for the first successful initialization. Remove it from the deployment environment after the password hash has been persisted, and never deploy the example value.
+
+2. Create `docker-compose.yml`:
 
 ```yaml
 services:
   submerger:
-    image: ghcr.io/socialyjj/submerger:latest
+    image: ghcr.io/socialyjj/clash-sub-merger:latest
     container_name: submerger
     restart: unless-stopped
     ports:
       - "8666:8666"
     volumes:
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
-      - TZ=Asia/Shanghai
+      DATA_DIR: /app/data
+      HOST: 0.0.0.0
+      PORT: 8666
 ```
 
-2. Start:
+3. Start:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-3. Visit `http://your-ip:8666`
+4. Visit `http://your-ip:8666` and log in with the initial administrator password. The entrypoint creates and validates `data/uploads`, `data/logs`, `data/backups`, and `data/refresh_locks` before dropping privileges.
 
 ### Build Manually
 
 ```bash
 git clone https://github.com/SocialYjj/clash-sub-merger.git
 cd clash-sub-merger
-docker-compose up -d --build
+cp .env.example .env
+# Set INITIAL_ADMIN_PASSWORD in .env first.
+docker compose up -d --build
 ```
 
 ## 📖 Usage
 
 ### First Time Setup
 
-1. Visit the panel and set admin password
+1. Set `INITIAL_ADMIN_PASSWORD` before the first startup; network-based first setup is disabled
 2. Add subscriptions or custom nodes
 3. Click "Subscribe" button to get the aggregated URL
 
@@ -175,11 +195,28 @@ docker-compose up -d --build
 
 ### Environment Variables
 
-| Variable     | Default       | Description    |
-| ------------ | ------------- | -------------- |
-| `TZ`       | `UTC`       | Timezone       |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TZ` | `UTC` | Timezone |
 | `DATA_DIR` | `/app/data` | Data directory |
-| `PORT`     | `8666`      | Server port    |
+| `HOST_PORT` | `8666` | Docker Compose host port |
+| `INITIAL_ADMIN_PASSWORD` | required on first start | Initial administrator password |
+| `SESSION_SECRET` | empty | Optional session signing secret; recommended in production |
+| `SESSION_TTL_SECONDS` | `86400` | Administrator session lifetime in seconds |
+| `METRICS_TOKEN` | empty | Dedicated `/metrics` token; empty disables the endpoint |
+| `MAX_REQUEST_SIZE` | `10485760` | Maximum HTTP request body size in bytes |
+| `SUBSCRIPTION_MAX_BYTES` | `10485760` | Maximum decoded subscription response size in bytes |
+| `SUBSCRIPTION_FETCH_RETRIES` | `1` | Extra retries for transient subscription fetch failures |
+| `SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS` | `1` | Base delay before a transient fetch retry |
+| `SUBSCRIPTION_REFRESH_CONCURRENCY` | `4` | Maximum concurrent items in “refresh all” |
+| `FILE_LOCK_TIMEOUT` | `10` | Wait limit for a refresh/configuration file lock |
+| `SCHEDULED_REFRESH_WORKERS` | `4` | Worker threads for scheduled refreshes |
+| `SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS` | `300` | Grace period for a delayed scheduled refresh |
+| `SCHEDULED_REFRESH_JITTER_SECONDS` | `120` | Random staggering window for jobs sharing the same Cron time |
+| `RATE_LIMIT_GEOIP` | `30/minute` | Limit for GeoIP lookup and API-test endpoints |
+| `CUSTOM_GEOIP_MAX_RESPONSE_BYTES` | `1048576` | Maximum custom GeoIP API response size in bytes |
+
+Scheduled jobs configured for the same time, such as `0 0 * * *`, run within the jitter window instead of all starting at exactly midnight.
 
 ### Data Persistence
 
@@ -187,6 +224,13 @@ All data is stored in `/app/data`:
 
 - `config.json` - Configuration (subscriptions, nodes, auth)
 - `uploads/` - Subscription cache files
+- `logs/` - Rotating, credential-redacted application logs
+- `backups/` - Configuration backups
+- `refresh_locks/` - OS-backed refresh lock files; file presence alone does not mean a lock is held
+
+Back up the complete `data/` directory before upgrades. Saved subscription-fetch and IPv6-test proxy credentials are write-only: the API reports only whether a value exists, so replace or clear them instead of reading them back. Configuration exports and backups are full migration data containing password hashes and subscription tokens and must be protected as sensitive files; login sessions are neither exported nor restored.
+
+Delete historical application or reverse-proxy logs and rotate credentials if an older release logged full subscription URLs, tokens, or proxy credentials. For a custom non-root container, make the bind mount writable by UID 1000.
 
 ## 🛠️ Development
 

@@ -90,6 +90,7 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
 - **一键导入** - 支持 `clash://` 协议唤起客户端一键导入。
 - **移动端友好** - 提供二维码快速扫描订阅。
 - **自定义模板** - 允许用户自定义输出的 Clash 配置文件模板（Rules, DNS 等）。
+- **日志保护** - 内置访问日志不会记录带 Token 的订阅 URL；反向代理也应关闭或脱敏查询参数日志。
 
 ## 🏗️ 系统架构
 
@@ -111,38 +112,47 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
 
 ### 方式一：Docker Compose（推荐）
 
-这是最简单的部署方式。
-
-1. **创建工作目录**：
+1. **创建工作目录和 `.env`**：
 
    ```bash
    mkdir submerger && cd submerger
+   cat > .env <<'EOF'
+   INITIAL_ADMIN_PASSWORD=请改成至少8位且包含字母和数字的密码
+   SESSION_SECRET=请改成随机长字符串
+   TZ=Asia/Shanghai
+   EOF
    ```
+
+   `INITIAL_ADMIN_PASSWORD` 仅用于首次生成密码哈希；初始化成功后可从部署环境移除。不要使用示例值直接上线。
 
 2. **创建 `docker-compose.yml` 文件**：
 
    ```yaml
    services:
      submerger:
-       image: ghcr.io/socialyjj/submerger:latest
+       image: ghcr.io/socialyjj/clash-sub-merger:latest
        container_name: submerger
        restart: unless-stopped
        ports:
          - "8666:8666"
        volumes:
          - ./data:/app/data
+       env_file:
+         - .env
        environment:
-         - TZ=Asia/Shanghai
+         DATA_DIR: /app/data
+         HOST: 0.0.0.0
+         PORT: 8666
    ```
 
 3. **启动服务**：
 
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 4. **访问面板**：
-   打开浏览器访问 `http://你的IP:8666`。首次登录需设置管理员密码。
+   打开浏览器访问 `http://你的IP:8666`，使用 `.env` 中的初始管理员密码登录。首次启动会自动创建 `data/`、`uploads/`、`logs/`、`backups/` 和 `refresh_locks/`；绑定目录会在容器降权前修正为应用用户可写。
 
 ### 方式二：手动构建运行
 
@@ -154,13 +164,15 @@ git clone https://github.com/SocialYjj/clash-sub-merger.git
 cd clash-sub-merger
 
 # 2. 启动（会自动构建镜像）
-docker-compose up -d --build
+cp .env.example .env
+# 编辑 .env，至少填写 INITIAL_ADMIN_PASSWORD
+docker compose up -d --build
 ```
 
 ## 📖 使用指南
 
 ### 基础配置
-1. **设置密码**：首次访问时系统会提示设置全局管理密码。
+1. **初始化密码**：首次启动前在 `.env` 中设置 `INITIAL_ADMIN_PASSWORD`，不支持通过公网接口抢占式设置密码。
 2. **添加订阅**：
    - 点击“添加订阅”按钮。
    - 输入机场订阅链接（支持 Clash YAML 或 Base64 链接）。
@@ -181,11 +193,35 @@ docker-compose up -d --build
 | :--- | :--- | :--- |
 | `TZ` | `UTC` (建议 Asia/Shanghai) | 容器时区设置 |
 | `DATA_DIR` | `/app/data` | 数据存储路径 |
-| `PORT` | `8666` | 服务监听端口 |
+| `HOST_PORT` | `8666` | Docker Compose 对外端口 |
+| `INITIAL_ADMIN_PASSWORD` | 无，首次启动必填 | 首次初始化管理员密码 |
+| `SESSION_SECRET` | 空 | 管理会话签名密钥，生产环境建议设置 |
+| `SESSION_TTL_SECONDS` | `86400` | 管理会话有效期（秒） |
+| `METRICS_TOKEN` | 空 | `/metrics` 独立 Token；空值表示关闭 |
+| `MAX_REQUEST_SIZE` | `10485760` | HTTP 请求体上限（字节） |
+| `SUBSCRIPTION_MAX_BYTES` | `10485760` | 远端订阅响应上限（字节） |
+| `SUBSCRIPTION_FETCH_RETRIES` | `1` | DNS、连接超时、408、429、5xx 等瞬态失败的额外重试次数 |
+| `SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS` | `1` | 瞬态失败重试的基础等待时间（秒） |
+| `SUBSCRIPTION_REFRESH_CONCURRENCY` | `4` | “全部更新”的最大并发订阅数 |
+| `FILE_LOCK_TIMEOUT` | `10` | 刷新或配置文件锁的最长等待时间（秒） |
+| `SCHEDULED_REFRESH_WORKERS` | `4` | 定时刷新工作线程数 |
+| `SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS` | `300` | 定时任务延迟执行的宽限时间（秒） |
+| `SCHEDULED_REFRESH_JITTER_SECONDS` | `120` | 相同 Cron 时间任务的随机错峰窗口（秒） |
+| `RATE_LIMIT_GEOIP` | `30/minute` | GeoIP 查询和 API 测试接口限流 |
+| `CUSTOM_GEOIP_MAX_RESPONSE_BYTES` | `1048576` | 自定义 GeoIP API 最大响应大小（字节） |
+
+多个订阅均设置为 `0 0 * * *` 时，任务会在错峰窗口内依次启动，不保证全部恰好在 00:00:00 开始。
 
 数据目录说明 (`/app/data`)：
 - `config.json`: 核心配置文件，包含订阅列表、用户数据等。
 - `uploads/`: 存放下载的订阅文件缓存。
+- `logs/`: 脱敏后的轮转日志。
+- `backups/`: 配置备份。
+- `refresh_locks/`: 跨进程订阅刷新锁文件；锁文件存在不表示仍被锁定，不要手工删除。
+
+升级前应备份整个 `data/`。已保存的订阅获取代理和 IPv6 测试代理只返回“是否已配置”，管理界面不能读取明文；需要变更时应直接替换或清除。配置导出与备份属于完整迁移数据，包含密码哈希和订阅 Token，必须按敏感文件保管；登录会话不会导出或恢复。
+
+如果旧版本日志或反向代理访问日志曾记录过完整订阅 URL、Token 或代理凭据，应删除旧日志并轮换对应凭据；新版本的应用日志脱敏不能撤销历史泄露。非 root 方式运行自定义容器时，需确保绑定目录对 UID 1000 可写。
 
 ## 🛠️ 本地开发
 

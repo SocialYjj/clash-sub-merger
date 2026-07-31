@@ -13,11 +13,12 @@ import (
 
 // Request/Response structures
 type DelayRequest struct {
-	Link    string                   `json:"link"`
-	Node    map[string]interface{}   `json:"node"`
-	Chain   []map[string]interface{} `json:"chain"`
-	URL     string                   `json:"url"`
-	Timeout int                      `json:"timeout"` // milliseconds
+	Link        string                   `json:"link"`
+	Node        map[string]interface{}   `json:"node"`
+	Chain       []map[string]interface{} `json:"chain"`
+	URL         string                   `json:"url"`
+	Timeout     int                      `json:"timeout"` // milliseconds
+	DialerProxy string                   `json:"dialer_proxy"`
 }
 
 type DelayResponse struct {
@@ -27,10 +28,11 @@ type DelayResponse struct {
 }
 
 type IPRequest struct {
-	Link    string                   `json:"link"`
-	Node    map[string]interface{}   `json:"node"`
-	Chain   []map[string]interface{} `json:"chain"`
-	Timeout int                      `json:"timeout"`
+	Link        string                   `json:"link"`
+	Node        map[string]interface{}   `json:"node"`
+	Chain       []map[string]interface{} `json:"chain"`
+	Timeout     int                      `json:"timeout"`
+	DialerProxy string                   `json:"dialer_proxy"`
 }
 
 type IPResponse struct {
@@ -47,6 +49,7 @@ type SpeedRequest struct {
 	Timeout            int                      `json:"timeout"`            // seconds
 	Mode               string                   `json:"mode"`               // "average" or "peak", default "average"
 	PeakSampleInterval int                      `json:"peakSampleInterval"` // milliseconds, 50-200, default 100
+	DialerProxy        string                   `json:"dialer_proxy"`
 }
 
 type SpeedResponse struct {
@@ -59,11 +62,11 @@ type SpeedResponse struct {
 }
 
 type FetchURLRequest struct {
-	Link    string                 `json:"link"`
-	Node    map[string]interface{} `json:"node"`
+	Link    string                   `json:"link"`
+	Node    map[string]interface{}   `json:"node"`
 	Chain   []map[string]interface{} `json:"chain"`
-	URL     string                 `json:"url"`     // Target URL to fetch
-	Timeout int                    `json:"timeout"` // seconds
+	URL     string                   `json:"url"`     // Target URL to fetch
+	Timeout int                      `json:"timeout"` // seconds
 }
 
 type FetchURLResponse struct {
@@ -73,6 +76,8 @@ type FetchURLResponse struct {
 	StatusCode int               `json:"statusCode,omitempty"`
 	Error      string            `json:"error,omitempty"`
 }
+
+var runNodeDelayRequest = testDelayWithNodeAndDialer
 
 func main() {
 	initDNS()
@@ -144,11 +149,11 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		latency, err = testDelayWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Millisecond)
+		latency, err = testDelayWithChainAndDialer(req.Chain, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	} else if req.Node != nil {
-		latency, err = testDelayWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Millisecond)
+		latency, err = runNodeDelayRequest(req.Node, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	} else {
-		latency, err = testDelay(req.Link, req.URL, time.Duration(req.Timeout)*time.Millisecond)
+		latency, err = testDelayWithDialer(req.Link, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	}
 
 	if err != nil {
@@ -184,11 +189,11 @@ func handleIP(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		ip, err = getExitIPWithChain(req.Chain, time.Duration(req.Timeout)*time.Millisecond)
+		ip, err = getExitIPWithChainAndDialer(req.Chain, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	} else if req.Node != nil {
-		ip, err = getExitIPWithNode(req.Node, time.Duration(req.Timeout)*time.Millisecond)
+		ip, err = getExitIPWithNodeAndDialer(req.Node, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	} else {
-		ip, err = getExitIP(req.Link, time.Duration(req.Timeout)*time.Millisecond)
+		ip, err = getExitIPWithDialer(req.Link, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
 	}
 
 	if err != nil {
@@ -235,11 +240,11 @@ func handleSpeed(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		speed, peakSpeed, latency, bytes, err = testSpeedWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval)
+		speed, peakSpeed, latency, bytes, err = testSpeedWithChainAndDialer(req.Chain, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval, req.DialerProxy)
 	} else if req.Node != nil {
-		speed, peakSpeed, latency, bytes, err = testSpeedWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval)
+		speed, peakSpeed, latency, bytes, err = testSpeedWithNodeAndDialer(req.Node, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval, req.DialerProxy)
 	} else {
-		speed, peakSpeed, latency, bytes, err = testSpeed(req.Link, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval)
+		speed, peakSpeed, latency, bytes, err = testSpeedWithDialer(req.Link, req.URL, time.Duration(req.Timeout)*time.Second, req.Mode, req.PeakSampleInterval, req.DialerProxy)
 	}
 
 	if err != nil {

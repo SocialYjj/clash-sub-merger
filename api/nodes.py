@@ -2,27 +2,33 @@
 Nodes API
 Custom nodes and subscription nodes management
 """
-import os
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from core.config import AppConfig
 from core.dependencies import verify_session
-from core.database import load_config, update_config
+from core.database import load_config
+from core.rate_limit import limiter
 from helpers import (
     handle_api_errors,
     generate_timestamp_id,
     load_subscription_yaml,
-    update_subscription_yaml,
 )
 from services.name_transformer import NameTransformer
-from services.node_visibility import clear_user_subscription_caches, is_node_enabled
+from services.node_visibility import is_node_enabled
 from services.node_parser import parse_node_link
+from services.node_identity import (
+    custom_node_id as get_custom_node_id,
+    find_subscription_node_index,
+    subscription_node_id,
+)
+from services.custom_node_storage import update_custom_nodes
+from services.node_reference_updates import update_subscription_yaml_with_references
 from services.proxy_filter import ProxyFilter
 from services.region_history import inherit_regions_for_nodes, remember_nodes_region
 from geoip_service import GeoIPService, normalize_country_name, translate_city_name
-from logger_config import get_logger
+from logger_config import SensitiveDataFilter, get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -77,6 +83,13 @@ def _resolve_city_name(node: dict) -> str:
 
 # ==================== Data Models ====================
 
+_NODE_ADMIN_FIELDS = {
+    'id', 'link', 'enabled', 'display_name', 'index',
+    'last_latency', 'last_latency_time', 'last_speed',
+    'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip',
+    'region', 'city',
+}
+
 class CustomNode(BaseModel):
     link: str = Field(min_length=1, max_length=2000)
     name: Optional[str] = Field(None, max_length=200)
@@ -84,9 +97,14 @@ class CustomNode(BaseModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if v and ('/' in v or '\\' in v or '..' in v):
+        if v is None:
+            return None
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
             raise ValueError('Name contains invalid characters')
-        return v
+        return normalized
 
 
 class UpdateNodeName(BaseModel):
@@ -95,9 +113,12 @@ class UpdateNodeName(BaseModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if '/' in v or '\\' in v or '..' in v:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
             raise ValueError('Name contains invalid characters')
-        return v
+        return normalized
 
 
 class UpdateNodeFull(BaseModel):
@@ -109,19 +130,54 @@ class UpdateNodeFull(BaseModel):
         if not isinstance(v, dict):
             raise ValueError('Node must be a dictionary')
         # Ensure required fields exist
-        if 'name' not in v or not v['name']:
+        if any(field in v for field in _NODE_ADMIN_FIELDS):
+            raise ValueError('Node metadata fields cannot be changed')
+        if any(str(key).startswith('_') for key in v):
+            raise ValueError('Internal node fields cannot be changed')
+        if not str(v.get('name') or '').strip():
             raise ValueError('Node must have a name')
-        if 'type' not in v or not v['type']:
+        if not str(v.get('type') or '').strip():
             raise ValueError('Node must have a type')
-        return v
+        normalized = dict(v)
+        normalized['name'] = str(v['name']).strip()
+        normalized['type'] = str(v['type']).strip().lower()
+        invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
+        if invalid_reason:
+            raise ValueError(f'Invalid node configuration: {invalid_reason}')
+        return normalized
 
 
 class UpdateSubNode(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
+    @field_validator('name')
+    @classmethod
+    def normalize_name(cls, value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        return normalized
+
 
 class UpdateSubNodeFull(BaseModel):
     node: dict
+
+    @field_validator('node')
+    @classmethod
+    def validate_node(cls, value):
+        if not str(value.get('name') or '').strip() or not str(value.get('type') or '').strip():
+            raise ValueError('Node must have a name and type')
+        if any(field in value for field in _NODE_ADMIN_FIELDS):
+            raise ValueError('Node metadata fields cannot be changed')
+        if any(str(key).startswith('_') for key in value):
+            raise ValueError('Internal node fields cannot be changed')
+        normalized = dict(value)
+        normalized['name'] = str(value['name']).strip()
+        normalized['type'] = str(value['type']).strip().lower()
+        invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
+        if invalid_reason:
+            raise ValueError(f'Invalid node configuration: {invalid_reason}')
+        return normalized
 
 
 class ReorderNodes(BaseModel):
@@ -139,6 +195,16 @@ class BatchDeleteNodes(BaseModel):
 
 def _display_enabled(node: dict) -> bool:
     return is_node_enabled(node)
+
+
+def _subscription_node_index(nodes: list, sub_id: str, node_id: str) -> int:
+    try:
+        node_index = find_subscription_node_index(nodes, sub_id, node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if node_index is None:
+        raise HTTPException(status_code=404, detail="Node not found or subscription changed")
+    return node_index
 
 
 # ==================== Custom Nodes API ====================
@@ -188,9 +254,9 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
 
     def append_custom_node(config: dict):
         config.setdefault('custom_nodes', []).append(node)
+        return dict(node)
 
-    update_config(append_custom_node)
-    srv.update_custom_nodes_yaml()
+    node = update_custom_nodes(append_custom_node)
     srv.invalidate_stats_cache()
     
     return {"status": "success", "node": node}
@@ -235,9 +301,9 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
 
     def extend_custom_nodes(config: dict):
         config.setdefault('custom_nodes', []).extend(added_nodes)
+        return len(added_nodes)
 
-    update_config(extend_custom_nodes)
-    srv.update_custom_nodes_yaml()
+    update_custom_nodes(extend_custom_nodes)
     srv.invalidate_stats_cache()
 
     return {
@@ -256,10 +322,12 @@ def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
 
     def remove_custom_node(config: dict):
         nodes = config.get('custom_nodes', [])
-        config['custom_nodes'] = [n for n in nodes if n['id'] != node_id]
+        remaining_nodes = [n for n in nodes if get_custom_node_id(n) != node_id]
+        if len(remaining_nodes) == len(nodes):
+            raise HTTPException(status_code=404, detail="Node not found")
+        config['custom_nodes'] = remaining_nodes
 
-    update_config(remove_custom_node)
-    srv.update_custom_nodes_yaml()
+    update_custom_nodes(remove_custom_node)
     srv.invalidate_stats_cache()
     return {"status": "success"}
 
@@ -274,13 +342,11 @@ def toggle_custom_node(node_id: str, _: bool = Depends(verify_session)):
         for node in config.get('custom_nodes', []):
             if node.get('id') == node_id:
                 node['enabled'] = not is_node_enabled(node)
-                clear_user_subscription_caches(config)
                 return node['enabled']
 
         raise HTTPException(status_code=404, detail="Node not found")
 
-    enabled = update_config(toggle_node)
-    srv.update_custom_nodes_yaml()
+    enabled = update_custom_nodes(toggle_node)
     srv.invalidate_stats_cache()
     return {"status": "success", "enabled": enabled}
 
@@ -303,11 +369,10 @@ def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_s
             config['custom_nodes'] = remaining
         return deleted_count
 
-    deleted_count = update_config(remove_custom_nodes)
+    deleted_count = update_custom_nodes(remove_custom_nodes)
     if deleted_count == 0:
         return {"status": "success", "deleted": 0}
 
-    srv.update_custom_nodes_yaml()
     srv.invalidate_stats_cache()
     return {"status": "success", "deleted": deleted_count}
 
@@ -330,8 +395,7 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
 
         config['custom_nodes'] = new_nodes
 
-    update_config(apply_custom_node_order)
-    srv.update_custom_nodes_yaml()
+    update_custom_nodes(apply_custom_node_order)
     return {"status": "success"}
 
 
@@ -357,8 +421,7 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
         inherit_regions_for_nodes(nodes, source='custom:reparse')
         return updated_count
 
-    updated_count = update_config(reparse_nodes)
-    srv.update_custom_nodes_yaml()
+    updated_count = update_custom_nodes(reparse_nodes)
     return {"status": "success", "updated": updated_count}
 
 
@@ -385,8 +448,7 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
 
         raise HTTPException(status_code=404, detail="Node not found")
 
-    node = update_config(reparse_node)
-    srv.update_custom_nodes_yaml()
+    node = update_custom_nodes(reparse_node)
     return {"status": "success", "node": node}
 
 
@@ -404,8 +466,7 @@ def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(ver
 
         raise HTTPException(status_code=404, detail="Node not found")
 
-    node = update_config(rename_custom_node)
-    srv.update_custom_nodes_yaml()
+    node = update_custom_nodes(rename_custom_node)
     return {"status": "success", "node": node}
 
 
@@ -423,13 +484,11 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
                 if 'enabled' not in updated and 'enabled' in node:
                     updated['enabled'] = node['enabled']
                 config['custom_nodes'][i] = updated
-                clear_user_subscription_caches(config)
                 return dict(updated)
 
         raise HTTPException(status_code=404, detail="Node not found")
 
-    updated = update_config(replace_custom_node)
-    srv.update_custom_nodes_yaml()
+    updated = update_custom_nodes(replace_custom_node)
     return {"status": "success", "node": updated}
 
 
@@ -458,6 +517,7 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     for i, node in enumerate(nodes):
         enhanced = dict(node)
         enhanced['index'] = i
+        enhanced['id'] = subscription_node_id(sub_id, node)
         transformed = NameTransformer.transform_name(node, sub['name'])
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
@@ -469,34 +529,30 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 
-@router.put("/subscriptions/{sub_id}/nodes/{node_index}")
+@router.put("/subscriptions/{sub_id}/nodes/{node_id}")
 @handle_api_errors
-def update_subscription_node(sub_id: str, node_index: int, data: UpdateSubNode, _: bool = Depends(verify_session)):
+def update_subscription_node(sub_id: str, node_id: str, data: UpdateSubNode, _: bool = Depends(verify_session)):
     """Update subscription node name"""
     def rename_node(sub_data: dict):
         nodes = sub_data.get('proxies', []) if sub_data else []
 
-        if node_index < 0 or node_index >= len(nodes):
-            raise HTTPException(status_code=404, detail="Node not found")
-
+        node_index = _subscription_node_index(nodes, sub_id, node_id)
         nodes[node_index]['name'] = data.name
         return dict(nodes[node_index])
 
-    updated_node = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, rename_node)
+    updated_node = update_subscription_yaml_with_references(sub_id, rename_node)
 
     return {"status": "success", "node": updated_node}
 
 
-@router.put("/subscriptions/{sub_id}/nodes/{node_index}/full")
+@router.put("/subscriptions/{sub_id}/nodes/{node_id}/full")
 @handle_api_errors
-def update_subscription_node_full(sub_id: str, node_index: int, data: UpdateSubNodeFull, _: bool = Depends(verify_session)):
+def update_subscription_node_full(sub_id: str, node_id: str, data: UpdateSubNodeFull, _: bool = Depends(verify_session)):
     """Update subscription node with full config"""
     def replace_node(sub_data: dict):
         nodes = sub_data.get('proxies', []) if sub_data else []
 
-        if node_index < 0 or node_index >= len(nodes):
-            raise HTTPException(status_code=404, detail="Node not found")
-
+        node_index = _subscription_node_index(nodes, sub_id, node_id)
         previous = nodes[node_index]
         updated = dict(data.node)
         if 'enabled' not in updated and isinstance(previous, dict) and 'enabled' in previous:
@@ -504,14 +560,14 @@ def update_subscription_node_full(sub_id: str, node_index: int, data: UpdateSubN
         nodes[node_index] = updated
         return dict(nodes[node_index])
 
-    updated_node = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, replace_node)
+    updated_node = update_subscription_yaml_with_references(sub_id, replace_node)
 
     return {"status": "success", "node": updated_node}
 
 
-@router.put("/subscriptions/{sub_id}/nodes/{node_index}/toggle")
+@router.put("/subscriptions/{sub_id}/nodes/{node_id}/toggle")
 @handle_api_errors
-def toggle_subscription_node(sub_id: str, node_index: int, _: bool = Depends(verify_session)):
+def toggle_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify_session)):
     """Toggle whether a subscription node is included in generated subscriptions."""
     srv = _get_server()
     config = load_config()
@@ -523,25 +579,18 @@ def toggle_subscription_node(sub_id: str, node_index: int, _: bool = Depends(ver
     def toggle_node(sub_data: dict):
         nodes = sub_data.get('proxies', []) if sub_data else []
 
-        if node_index < 0 or node_index >= len(nodes):
-            raise HTTPException(status_code=404, detail="Node not found")
-
+        node_index = _subscription_node_index(nodes, sub_id, node_id)
         nodes[node_index]['enabled'] = not is_node_enabled(nodes[node_index])
         return nodes[node_index]['enabled']
 
-    enabled = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, toggle_node)
-
-    def invalidate_user_caches(config: dict):
-        clear_user_subscription_caches(config)
-
-    update_config(invalidate_user_caches)
+    enabled = update_subscription_yaml_with_references(sub_id, toggle_node)
     srv.invalidate_stats_cache()
     return {"status": "success", "enabled": enabled}
 
 
-@router.delete("/subscriptions/{sub_id}/nodes/{node_index}")
+@router.delete("/subscriptions/{sub_id}/nodes/{node_id}")
 @handle_api_errors
-def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(verify_session)):
+def delete_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify_session)):
     """Delete a node from subscription"""
     config = load_config()
     
@@ -552,20 +601,12 @@ def delete_subscription_node(sub_id: str, node_index: int, _: bool = Depends(ver
     def remove_node(sub_data: dict):
         nodes = sub_data.get('proxies', []) if sub_data else []
 
-        if node_index < 0 or node_index >= len(nodes):
-            raise HTTPException(status_code=404, detail="Node not found")
-
+        node_index = _subscription_node_index(nodes, sub_id, node_id)
         del nodes[node_index]
         return len(nodes)
 
-    node_count = update_subscription_yaml(sub_id, YAML_SOURCE_DIR, remove_node)
-    
-    def update_subscription_node_count(latest_config: dict):
-        latest_sub = next((s for s in latest_config.get('subscriptions', []) if s['id'] == sub_id), None)
-        if latest_sub:
-            latest_sub['node_count'] = node_count
-
-    update_config(update_subscription_node_count)
+    update_subscription_yaml_with_references(sub_id, remove_node)
+    _get_server().invalidate_stats_cache()
     
     return {"status": "success"}
 
@@ -579,12 +620,13 @@ class NodeTestRequest(BaseModel):
 
 
 class BatchSaveRequest(BaseModel):
-    results: dict  # {source_id: {node_index: {latency, speed, region, etc}}}
+    results: dict  # {source_id: {stable_node_id: {latency, speed, region, etc}}}
 
 
 @router.post("/nodes/batch-save")
+@limiter.limit(AppConfig.RATE_LIMIT_NODE_SAVE)
 @handle_api_errors
-async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(verify_session)):
+async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: bool = Depends(verify_session)):
     """批量保存所有测试结果"""
     from datetime import datetime
     
@@ -597,9 +639,16 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                 updated_region_nodes = []
                 saved = 0
                 custom_nodes = config.get('custom_nodes', [])
-                for node_index_str, result in nodes_data.items():
-                    node_index = int(node_index_str)
-                    if 0 <= node_index < len(custom_nodes):
+                for node_id, result in nodes_data.items():
+                    node_index = next(
+                        (
+                            index
+                            for index, candidate in enumerate(custom_nodes)
+                            if get_custom_node_id(candidate) == node_id
+                        ),
+                        None,
+                    )
+                    if node_index is not None:
                         node = custom_nodes[node_index]
                         normalized_node = ProxyFilter.sanitize_proxy(node)
                         if normalized_node != node:
@@ -622,7 +671,7 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                         saved += 1
                 return saved, updated_region_nodes
 
-            custom_saved_count, updated_region_nodes = update_config(save_custom_results)
+            custom_saved_count, updated_region_nodes = update_custom_nodes(save_custom_results)
             saved_count += custom_saved_count
             if updated_region_nodes:
                 remember_nodes_region(updated_region_nodes, source='speedtest:custom-batch')
@@ -633,10 +682,14 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                 updated_region_nodes = []
                 if not sub_data:
                     return saved, updated_region_nodes
-                for node_index_str, result in nodes_data.items():
-                    node_index = int(node_index_str)
+                for node_id, result in nodes_data.items():
                     nodes = sub_data.get('proxies', [])
-                    if 0 <= node_index < len(nodes):
+                    try:
+                        node_index = find_subscription_node_index(nodes, source_id, node_id)
+                    except ValueError:
+                        logger.warning("Skipped ambiguous node identity while saving batch results")
+                        continue
+                    if node_index is not None:
                         node = nodes[node_index]
                         normalized_node = ProxyFilter.sanitize_proxy(node)
                         if normalized_node != node:
@@ -659,7 +712,10 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
                         saved += 1
                 return saved, updated_region_nodes
 
-            source_saved_count, updated_region_nodes = update_subscription_yaml(source_id, YAML_SOURCE_DIR, save_subscription_results)
+            source_saved_count, updated_region_nodes = update_subscription_yaml_with_references(
+                source_id,
+                save_subscription_results,
+            )
             saved_count += source_saved_count
             if updated_region_nodes:
                 remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
@@ -667,48 +723,50 @@ async def batch_save_test_results(data: BatchSaveRequest, _: bool = Depends(veri
     return {"status": "success", "saved_count": saved_count}
 
 
-@router.post("/nodes/{source_id}/{node_index}/test")
+@router.post("/nodes/{source_id}/{node_id}/test")
+@limiter.limit(AppConfig.RATE_LIMIT_NODE_TEST)
 @handle_api_errors
-async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: bool = Depends(verify_session)):
+async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request: Request, _: bool = Depends(verify_session)):
     """Test latency/speed/region for any node (subscription or custom)"""
-    import httpx
     import asyncio
     from datetime import datetime
+    from api.speedtest import (
+        _go_speedtest_request,
+        build_node_speedtest_payload,
+    )
     
     if source_id == "custom":
         # Test custom node
         config = load_config()
         nodes = config.get('custom_nodes', [])
-        
-        if node_index < 0 or node_index >= len(nodes):
+        node_index = next(
+            (
+                index
+                for index, candidate in enumerate(nodes)
+                if get_custom_node_id(candidate) == node_id
+            ),
+            None,
+        )
+        if node_index is None:
             raise HTTPException(status_code=404, detail="Node not found")
-        
+
         node = nodes[node_index]
-        custom_node_id = node.get('id')
+        persistent_custom_node_id = get_custom_node_id(node)
         is_custom = True
     else:
         # Test subscription node
         sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=True)
         nodes = sub_data.get('proxies', []) if sub_data else []
-        
-        if node_index < 0 or node_index >= len(nodes):
-            raise HTTPException(status_code=404, detail="Node not found")
-        
+        node_index = _subscription_node_index(nodes, source_id, node_id)
         node = nodes[node_index]
-        custom_node_id = None
+        persistent_custom_node_id = None
         is_custom = False
 
     normalized_node = ProxyFilter.sanitize_proxy(node)
     normalization_changed = normalized_node != node
     if normalization_changed:
         node = normalized_node
-        if is_custom:
-            config['custom_nodes'][node_index] = node
-        else:
-            sub_data['proxies'][node_index] = node
     
-    # Call Go speedtest service
-    go_port = os.environ.get('GO_SPEEDTEST_PORT', '9876')
     result = {
         "success": True,
         "name": node.get('name', 'Unknown')
@@ -717,112 +775,107 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
     need_save = normalization_changed
     
     try:
-        async with httpx.AsyncClient() as client:
-            # Test latency
-            if data.test_latency:
-                resp = await client.post(
-                    f"http://127.0.0.1:{go_port}/api/delay",
-                    json={
-                        "node": node,
-                        "url": "https://cp.cloudflare.com/generate_204",
-                        "timeout": 5000
-                    },
-                    timeout=10
-                )
-                latency_result = resp.json()
-                latency = latency_result.get('latency', -1)
-                result['latency'] = latency
-                if not latency_result.get('success'):
-                    result['error'] = latency_result.get('error', 'Latency test failed')
-                else:
-                    # Save latency to node
-                    node['last_latency'] = latency
-                    node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    need_save = True
+        base_payload, using_proxy = build_node_speedtest_payload(node)
+        if using_proxy:
+            result['using_proxy'] = True
+
+        # Test latency
+        if data.test_latency:
+            latency_result = await _go_speedtest_request(
+                "/api/delay",
+                {
+                    **base_payload,
+                    "url": "https://cp.cloudflare.com/generate_204",
+                    "timeout": AppConfig.SPEEDTEST_TIMEOUT * 1000,
+                },
+                AppConfig.SPEEDTEST_TIMEOUT + 2,
+            )
+            latency = latency_result.get('latency', -1)
+            result['latency'] = latency
+            if not latency_result.get('success'):
+                result['success'] = False
+                result['error'] = latency_result.get('error', 'Latency test failed')
+            else:
+                node['last_latency'] = latency
+                node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                need_save = True
             
-            # Test region (get exit IP)
-            if data.test_region:
-                resp = await client.post(
-                    f"http://127.0.0.1:{go_port}/api/ip",
-                    json={
-                        "node": node,
-                        "timeout": 5000
-                    },
-                    timeout=10
-                )
-                ip_result = resp.json()
-                if ip_result.get('success'):
-                    exit_ip = ip_result.get('ip')
-                    result['exit_ip'] = exit_ip
+        # Test region (get exit IP)
+        if data.test_region:
+            ip_result = await _go_speedtest_request(
+                "/api/ip",
+                {**base_payload, "timeout": AppConfig.SPEEDTEST_TIMEOUT * 1000},
+                AppConfig.SPEEDTEST_TIMEOUT + 2,
+            )
+            if ip_result.get('success'):
+                exit_ip = ip_result.get('ip')
+                result['exit_ip'] = exit_ip
                     
-                    # Lookup region for the exit IP
-                    if exit_ip:
-                        from geoip_service import lookup_ip_online
-                        geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
-                        if geo_result:
-                            result['region'] = {
-                                'country': geo_result.get('country_name'),
-                                'country_code': geo_result.get('iso_code'),
-                                'flag': geo_result.get('flag'),
-                                'display': geo_result.get('country_name')
-                            }
-                            result['city'] = geo_result.get('city')
+                if exit_ip:
+                    from geoip_service import lookup_ip_online
+                    geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
+                    if geo_result:
+                        result['region'] = {
+                            'country': geo_result.get('country_name'),
+                            'country_code': geo_result.get('iso_code'),
+                            'flag': geo_result.get('flag'),
+                            'display': geo_result.get('country_name')
+                        }
+                        result['city'] = geo_result.get('city')
                             
-                            # Save region info to node
-                            node['exit_ip'] = exit_ip
-                            node['region'] = {
-                                'country': geo_result.get('country_name'),
-                                'country_code': geo_result.get('iso_code'),
-                                'flag': geo_result.get('flag')
-                            }
-                            node['city'] = geo_result.get('city')
-                            remember_nodes_region([node], source=f'speedtest:single:{source_id}')
-                            need_save = True
-                else:
-                    result['error'] = ip_result.get('error', 'IP lookup failed')
+                        node['exit_ip'] = exit_ip
+                        node['region'] = {
+                            'country': geo_result.get('country_name'),
+                            'country_code': geo_result.get('iso_code'),
+                            'flag': geo_result.get('flag')
+                        }
+                        node['city'] = geo_result.get('city')
+                        remember_nodes_region([node], source=f'speedtest:single:{source_id}')
+                        need_save = True
+                    else:
+                        result['success'] = False
+                        result['error'] = 'GeoIP lookup failed'
+            else:
+                result['success'] = False
+                result['error'] = ip_result.get('error', 'IP lookup failed')
             
-            # Test speed
-            if data.test_speed:
-                resp = await client.post(
-                    f"http://127.0.0.1:{go_port}/api/speed",
-                    json={
-                        "node": node,
-                        "url": "https://speed.cloudflare.com/__down?bytes=10000000",
-                        "timeout": 10,
-                        "mode": "average"
-                    },
-                    timeout=15
-                )
-                speed_result = resp.json()
-                if speed_result.get('success'):
-                    speed = speed_result.get('speed', 0)
-                    result['speed'] = speed
-                    result['bytes'] = speed_result.get('bytes', 0)
+        # Test speed
+        if data.test_speed:
+            speed_result = await _go_speedtest_request(
+                "/api/speed",
+                {
+                    **base_payload,
+                    "url": "https://speed.cloudflare.com/__down?bytes=10000000",
+                    "timeout": AppConfig.SPEEDTEST_TIMEOUT,
+                    "mode": "average",
+                },
+                AppConfig.SPEEDTEST_TIMEOUT + 5,
+            )
+            if speed_result.get('success'):
+                speed = speed_result.get('speed', 0)
+                result['speed'] = speed
+                result['bytes'] = speed_result.get('bytes', 0)
                     
-                    # Save speed to node
-                    node['last_speed'] = speed
-                    node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    need_save = True
-                else:
-                    result['error'] = speed_result.get('error', 'Speed test failed')
+                node['last_speed'] = speed
+                node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                need_save = True
+            else:
+                result['success'] = False
+                result['error'] = speed_result.get('error', 'Speed test failed')
         
-        # Async save in background (don't block response)
+        # Do not acknowledge a successful test until its metadata is durable.
         if need_save and not data.batch_mode:
-            async def save_in_background():
+            def save_test_result():
                 try:
                     if is_custom:
                         def save_custom_test_result(latest_config: dict):
                             latest_nodes = latest_config.get('custom_nodes', [])
                             target_index = None
 
-                            if custom_node_id:
-                                for idx, candidate in enumerate(latest_nodes):
-                                    if candidate.get('id') == custom_node_id:
-                                        target_index = idx
-                                        break
-
-                            if target_index is None and 0 <= node_index < len(latest_nodes):
-                                target_index = node_index
+                            for idx, candidate in enumerate(latest_nodes):
+                                if get_custom_node_id(candidate) == persistent_custom_node_id:
+                                    target_index = idx
+                                    break
 
                             if target_index is None:
                                 return
@@ -836,28 +889,40 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
                                     latest_node[field] = node[field]
                             latest_nodes[target_index] = latest_node
 
-                        update_config(save_custom_test_result)
+                        update_custom_nodes(save_custom_test_result)
                     else:
                         def save_subscription_test_result(latest_sub_data: dict):
                             latest_nodes = latest_sub_data.get('proxies', []) if latest_sub_data else []
-                            if not (0 <= node_index < len(latest_nodes)):
+                            try:
+                                target_index = find_subscription_node_index(
+                                    latest_nodes,
+                                    source_id,
+                                    node_id,
+                                )
+                            except ValueError:
+                                logger.warning("Skipped ambiguous node identity while saving test result")
+                                return
+                            if target_index is None:
                                 return
 
-                            latest_node = ProxyFilter.sanitize_proxy(latest_nodes[node_index])
+                            latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
                             for field in (
                                 'xhttp-opts', 'last_latency', 'last_latency_time',
                                 'last_speed', 'last_speed_time', 'exit_ip', 'region', 'city'
                             ):
                                 if field in node:
                                     latest_node[field] = node[field]
-                            latest_nodes[node_index] = latest_node
+                            latest_nodes[target_index] = latest_node
 
-                        update_subscription_yaml(source_id, YAML_SOURCE_DIR, save_subscription_test_result)
+                        update_subscription_yaml_with_references(
+                            source_id,
+                            save_subscription_test_result,
+                        )
                 except Exception as e:
                     logger.error(f"Failed to save node test results: {e}")
+                    raise
             
-            # Fire and forget - don't wait for save to complete
-            asyncio.create_task(save_in_background())
+            await asyncio.to_thread(save_test_result)
         
         return result
         
@@ -866,5 +931,5 @@ async def test_node(source_id: str, node_index: int, data: NodeTestRequest, _: b
         return {
             "success": False,
             "name": node.get('name', 'Unknown'),
-            "error": str(e)
+            "error": SensitiveDataFilter.sanitize(str(e))[:500] or "Node test failed"
         }

@@ -10,6 +10,7 @@ import sys
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 # Get log level from environment variable
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -52,11 +53,13 @@ class JSONFormatter(logging.Formatter):
         
         # Add exception info if present
         if record.exc_info:
-            log_data['exception'] = self.formatException(record.exc_info)
+            log_data['exception'] = SensitiveDataFilter.sanitize(
+                self.formatException(record.exc_info)
+            )
         
         # Add extra fields if any
         if hasattr(record, 'extra_data'):
-            log_data['extra'] = record.extra_data
+            log_data['extra'] = SensitiveDataFilter.sanitize_value(record.extra_data)
         
         return json.dumps(log_data, ensure_ascii=False)
     
@@ -84,25 +87,83 @@ class SensitiveDataFilter(logging.Filter):
         (re.compile(r'(Authorization["\s:=]+)["\']?(Bearer\s+)?([a-zA-Z0-9_.-]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
         # URLs with credentials
         (re.compile(r'(https?://)[^:]+:[^@]+@', re.IGNORECASE), r'\1***:***@'),
+        (
+            re.compile(
+                r'\b(?:vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|socks5?|anytls|wireguard)://[^\s"\']+',
+                re.IGNORECASE,
+            ),
+            '***REDACTED_PROXY_URI***',
+        ),
     ]
+
+    HTTP_URL_PATTERN = re.compile(r'https?://[^\s"\']+', re.IGNORECASE)
+
+    @staticmethod
+    def _redact_http_url(match: re.Match) -> str:
+        """Keep only the origin; subscription paths and queries commonly carry credentials."""
+        raw_url = match.group(0)
+        trailing = ''
+        while raw_url and raw_url[-1] in '.,);]}':
+            trailing = raw_url[-1] + trailing
+            raw_url = raw_url[:-1]
+        try:
+            parsed = urlsplit(raw_url)
+            hostname = parsed.hostname or ''
+            if not hostname:
+                return '***REDACTED_URL***' + trailing
+            if ':' in hostname and not hostname.startswith('['):
+                hostname = f'[{hostname}]'
+            port = f':{parsed.port}' if parsed.port else ''
+            redacted = urlunsplit((parsed.scheme, f'{hostname}{port}', '/***REDACTED***', '', ''))
+            return redacted + trailing
+        except (ValueError, TypeError):
+            return '***REDACTED_URL***' + trailing
     
     @classmethod
     def sanitize(cls, message: str) -> str:
         """Apply all sanitization patterns to a message"""
+        message = str(message)
         for pattern, replacement in cls.PATTERNS:
             message = pattern.sub(replacement, message)
-        return message
+        return cls.HTTP_URL_PATTERN.sub(cls._redact_http_url, message)
+
+    @classmethod
+    def sanitize_value(cls, value, key: str = ''):
+        """Sanitize nested structured log fields without flattening their shape."""
+        normalized_key = key.lower().replace('-', '_')
+        if any(marker in normalized_key for marker in ('token', 'password', 'passwd', 'secret', 'api_key', 'authorization')):
+            return '***REDACTED***' if value not in (None, '') else value
+        if isinstance(value, dict):
+            return {item_key: cls.sanitize_value(item_value, str(item_key)) for item_key, item_value in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls.sanitize_value(item, key) for item in value]
+        if isinstance(value, str):
+            return cls.sanitize(value)
+        return value
     
     def filter(self, record: logging.LogRecord) -> bool:
         """Filter and sanitize the log record"""
         if record.msg:
             record.msg = self.sanitize(str(record.msg))
         if record.args:
-            record.args = tuple(
-                self.sanitize(str(arg)) if isinstance(arg, str) else arg
-                for arg in record.args
-            )
+            if isinstance(record.args, dict):
+                record.args = self.sanitize_value(record.args)
+            else:
+                record.args = tuple(
+                    self.sanitize(str(arg)) if isinstance(arg, str) else arg
+                    for arg in record.args
+                )
         return True
+
+
+class SensitiveFormatter(logging.Formatter):
+    """Sanitize traceback text in addition to the regular log message."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return SensitiveDataFilter.sanitize(super().format(record))
+
+    def formatException(self, exc_info) -> str:
+        return SensitiveDataFilter.sanitize(super().formatException(exc_info))
 
 # Store all loggers for dynamic level adjustment
 _all_loggers = {}
@@ -117,7 +178,7 @@ def _get_formatter() -> logging.Formatter:
     """
     if LOG_FORMAT_TYPE == 'json':
         return JSONFormatter()
-    return logging.Formatter(LOG_FORMAT, DATE_FORMAT)
+    return SensitiveFormatter(LOG_FORMAT, DATE_FORMAT)
 
 
 def setup_logger(name: str = None) -> logging.Logger:

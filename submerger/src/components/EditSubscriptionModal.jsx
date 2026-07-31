@@ -6,7 +6,7 @@ import { copyToClipboard } from '../utils/clipboard';
 
 const API_BASE = '/api';
 
-export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefreshList, showToast }) {
+export default function EditSubscriptionModal({ sub, onClose, onRefreshList, showToast }) {
     const [editName, setEditName] = useState('');
     const [editUrl, setEditUrl] = useState('');
     const [editContent, setEditContent] = useState('');
@@ -79,19 +79,7 @@ export default function EditSubscriptionModal({ sub, onClose, onRefresh, onRefre
             }
             showToast?.('订阅已更新');
             onClose();
-            // For local subscriptions, just refresh the list without calling refresh API
-            // For URL subscriptions, call refresh API to update content
-            if (isLocal) {
-                // Just refresh the list to show updated last_update time
-                if (onRefreshList) {
-                    onRefreshList();
-                }
-            } else {
-                // Refresh URL subscription content
-                if (onRefresh) {
-                    onRefresh(sub.id);
-                }
-            }
+            onRefreshList?.();
         } catch (err) {
             showToast?.('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
         } finally {

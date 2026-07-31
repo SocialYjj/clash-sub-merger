@@ -172,7 +172,6 @@ export default function Subscriptions({
         <EditSubscriptionModal
           sub={selectedSub}
           onClose={() => setShowEditModal(false)}
-          onRefresh={onRefresh}
           onRefreshList={onRefreshList}
           showToast={showToast}
         />
@@ -182,7 +181,7 @@ export default function Subscriptions({
         <ScheduleModal
           sub={selectedSub}
           onClose={() => setShowScheduleModal(false)}
-          onRefresh={onRefresh}
+          onRefreshList={onRefreshList}
           showToast={showToast}
         />
       )}

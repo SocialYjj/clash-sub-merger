@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 
 import api.health as health_api
 import server
-from services.node_manager import get_proxy_node_by_id
+from services.node_identity import subscription_node_id
+from services.node_manager import find_subscription_node, get_proxy_node_by_id
 
 
 class ServerBugfixTests(unittest.TestCase):
@@ -27,41 +28,59 @@ class ServerBugfixTests(unittest.TestCase):
         self.assertEqual(info["country_code"], "JP")
 
     def test_subscription_node_id_allows_underscores_in_subscription_id(self):
+        expected_node = {
+            "name": "second",
+            "type": "http",
+            "server": "second.example.com",
+            "port": 8080,
+        }
         with tempfile.TemporaryDirectory() as tempdir:
-            sub_file = Path(tempdir) / "sub_my_sub_name.yaml"
+            sub_file = Path(tempdir) / "my_sub_name.yaml"
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch("services.node_manager.load_config", return_value={"custom_nodes": []}),
+                patch("services.node_manager.load_config", return_value={
+                    "custom_nodes": [],
+                    "subscriptions": [{"id": "my_sub_name", "name": "Provider"}],
+                }),
                 patch("services.node_manager.load_subscription_yaml", return_value={
                     "proxies": [
-                        {"name": "first"},
-                        {"name": "second"},
+                        {"name": "first", "type": "http", "server": "first.example.com", "port": 8080},
+                        expected_node,
                     ]
                 }),
             ):
-                node = get_proxy_node_by_id("sub_my_sub_name_1", yaml_source_dir=tempdir)
+                node = get_proxy_node_by_id(
+                    subscription_node_id("my_sub_name", expected_node),
+                    yaml_source_dir=tempdir,
+                )
 
-        self.assertEqual(node, {"name": "second"})
+        self.assertEqual(node, expected_node)
 
-    def test_canonical_subscription_node_id_strips_sub_prefix_before_loading_yaml(self):
+    def test_invalid_stable_id_does_not_fall_back_to_name_or_position(self):
+        nodes = [
+            {"name": "first", "type": "http", "server": "first.example.com", "port": 8080},
+            {"name": "second", "type": "http", "server": "second.example.com", "port": 8080},
+        ]
         with tempfile.TemporaryDirectory() as tempdir:
             sub_file = Path(tempdir) / "my_sub_1.yaml"
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch("services.node_manager.load_config", return_value={"custom_nodes": []}),
-                patch("services.node_manager.load_subscription_yaml", return_value={
-                    "proxies": [
-                        {"name": "first"},
-                        {"name": "second"},
-                    ]
-                }) as load_yaml,
+                patch("services.node_manager.load_config", return_value={
+                    "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
+                }),
+                patch("services.node_manager.load_subscription_yaml", return_value={"proxies": nodes}),
             ):
-                node = get_proxy_node_by_id("sub_my_sub_1_1", yaml_source_dir=tempdir)
+                node = find_subscription_node(
+                    "my_sub_1",
+                    node_index=1,
+                    node_name="second",
+                    node_id="node_invalid",
+                    yaml_source_dir=tempdir,
+                )
 
-        self.assertEqual(node, {"name": "second"})
-        load_yaml.assert_called_with("my_sub_1", tempdir, use_cache=True)
+        self.assertIsNone(node)
 
     def test_sync_fetch_wrapper_rejects_running_event_loop(self):
         async def call_sync_wrapper():

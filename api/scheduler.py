@@ -10,6 +10,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from helpers import handle_api_errors
 from logger_config import get_logger
+from services.subscription_refresh_lock import subscription_write_slot
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -96,95 +97,102 @@ def get_subscription_schedule(sub_id: str, _: bool = Depends(verify_session)):
     }
 
 
-@router.put("/subscriptions/{sub_id}")
-@handle_api_errors
-def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = Depends(verify_session)):
-    """Update subscription's schedule"""
+def _set_subscription_schedule(sub_id: str, cron_expression: Optional[str]) -> dict:
+    """Keep the persisted cron expression and the in-memory job consistent."""
     srv = _get_server()
-    from scheduler_service import get_scheduler, get_cron_description
+    from scheduler_service import get_scheduler
+
     scheduler = get_scheduler()
     task_id = f"sub_refresh_{sub_id}"
+    requested_cron = cron_expression.strip() if cron_expression else None
 
-    # Validate cron expression BEFORE saving config or touching scheduler
-    if data.cron_expr:
+    if requested_cron:
         from apscheduler.triggers.cron import CronTrigger
-        CronTrigger.from_crontab(data.cron_expr)  # raises on invalid
+        CronTrigger.from_crontab(requested_cron)
 
-    # Save config first (scheduler ops happen after, so config and scheduler stay consistent)
+    current_config = load_config()
+    current_subscription = next(
+        (candidate for candidate in current_config.get('subscriptions', []) if candidate['id'] == sub_id),
+        None,
+    )
+    if not current_subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    if current_subscription.get('type') == 'local':
+        raise HTTPException(status_code=400, detail="Local subscriptions cannot be scheduled")
+
+    previous_cron = current_subscription.get('cron_expr')
+    subscription_enabled = current_subscription.get('enabled', True)
+
+    def restore_previous_job() -> None:
+        scheduler.remove_job(task_id)
+        if previous_cron and subscription_enabled:
+            scheduler.add_job(task_id, previous_cron, srv.refresh_subscription_job, sub_id)
+
+    next_update = None
+    if requested_cron and subscription_enabled:
+        job_id = scheduler.add_job(
+            task_id,
+            requested_cron,
+            srv.refresh_subscription_job,
+            sub_id,
+        )
+        if not job_id:
+            restore_previous_job()
+            raise HTTPException(status_code=400, detail="Scheduler rejected the subscription job")
+
+        job_info = scheduler.get_job_info(task_id)
+        if not job_info or not job_info.get('next_run'):
+            restore_previous_job()
+            raise HTTPException(status_code=400, detail="Scheduler did not return a next run time")
+        next_update = int(job_info['next_run'].timestamp())
+    else:
+        scheduler.remove_job(task_id)
+
     def apply_schedule_update(config: dict) -> dict:
         sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
         if not sub:
             raise HTTPException(status_code=404, detail="Subscription not found")
-
-        if sub.get('type') == 'local':
-            raise HTTPException(status_code=400, detail="Local subscriptions cannot be scheduled")
-
-        sub['cron_expr'] = data.cron_expr or None
-        sub['next_update'] = None  # will be filled after scheduler add_job
+        sub['cron_expr'] = requested_cron
+        sub['next_update'] = next_update
         return {
             "cron_expr": sub.get('cron_expr'),
-            "next_update": None
+            "next_update": sub.get('next_update'),
         }
 
-    result = update_config(apply_schedule_update)
-
-    # Now update the scheduler (config is already saved)
     try:
-        scheduler.remove_job(task_id)
+        return update_config(apply_schedule_update)
     except Exception:
-        pass  # job may not exist
+        restore_previous_job()
+        raise
 
-    if data.cron_expr:
-        try:
-            scheduler.add_job(
-                task_id,
-                data.cron_expr,
-                srv.refresh_subscription_job,
-                sub_id
-            )
-            job_info = scheduler.get_job_info(task_id)
-            next_run = job_info["next_run"].timestamp() if job_info and job_info.get("next_run") else None
 
-            # Update next_update in config
-            if next_run:
-                def update_next_run(config: dict) -> dict:
-                    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
-                    if sub:
-                        sub['next_update'] = int(next_run)
-                        return {"next_update": int(next_run)}
-                    return {}
-                update_config(update_next_run)
-                result['next_update'] = int(next_run)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Scheduler error: {str(e)}")
+@router.put("/subscriptions/{sub_id}")
+@handle_api_errors
+def update_subscription_schedule(sub_id: str, data: ScheduleUpdate, _: bool = Depends(verify_session)):
+    """Update a subscription schedule."""
+    from scheduler_service import get_cron_description
+
+    with subscription_write_slot(sub_id):
+        saved_schedule = _set_subscription_schedule(sub_id, data.cron_expr)
 
     return {
         "status": "success",
-        "cron_expr": result.get('cron_expr'),
-        "description": get_cron_description(result.get('cron_expr')) if result.get('cron_expr') else None,
-        "next_update": result.get('next_update')
+        "cron_expr": saved_schedule.get('cron_expr'),
+        "description": (
+            get_cron_description(saved_schedule.get('cron_expr'))
+            if saved_schedule.get('cron_expr')
+            else None
+        ),
+        "next_update": saved_schedule.get('next_update'),
     }
 
 
 @router.delete("/subscriptions/{sub_id}")
 @handle_api_errors
 def remove_subscription_schedule(sub_id: str, _: bool = Depends(verify_session)):
-    """Remove subscription's schedule"""
-    from scheduler_service import get_scheduler
-    scheduler = get_scheduler()
-    task_id = f"sub_refresh_{sub_id}"
-
-    def remove_schedule(config: dict):
-        sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
-        if not sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-
-        scheduler.remove_job(task_id)
-        sub['cron_expr'] = None
-        sub['next_update'] = None
-
-    update_config(remove_schedule)
-    
+    """Remove a subscription schedule."""
+    with subscription_write_slot(sub_id):
+        _set_subscription_schedule(sub_id, None)
     return {"status": "success"}
 
 

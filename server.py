@@ -5,13 +5,13 @@ import time
 import hashlib
 import httpx
 import subprocess
-import sys
 import atexit
 import base64  # Used for local subscription parsing
 import asyncio  # Used for async operations
 import uuid  # Used for request IDs
-import re
-from contextlib import asynccontextmanager, contextmanager
+import sys
+from copy import deepcopy
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Use C-accelerated safe YAML loader for better performance.
@@ -28,10 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from filelock import FileLock, Timeout as FileLockTimeout
+from slowapi.middleware import SlowAPIMiddleware
 
 # Import from refactored modules
 from core import (
@@ -39,25 +38,48 @@ from core import (
     concurrent_requests,
 )
 from services.name_transformer import NameTransformer
-from services.node_visibility import apply_node_visibility_to_yaml_content, is_node_enabled
-from services.proxy_filter import ProxyFilter
+from services.node_visibility import (
+    apply_node_visibility_to_yaml_content,
+    clear_user_subscription_caches,
+    is_node_enabled,
+)
+from services.node_reference_updates import (
+    reconcile_subscription_node_references,
+    subscription_nodes_from_yaml_content,
+)
 from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP
 from services.node_parser import parse_node_link
 from services.region_history import apply_region_history_to_yaml_content
+from services.node_manager import find_node_by_reference, is_name_allocated
 from geoip_service import GeoIPService
 from scheduler_service import get_scheduler, init_scheduler
 from logger_config import get_logger
 from helpers import (
     Constants,
-    load_subscription_yaml, save_subscription_content, save_subscription_yaml,
+    load_subscription_yaml,
     generate_timestamp_id,
 )
 
 # Import refactored modules
 from core.config import AppConfig as CoreAppConfig, env_int
 from core.database import load_config, save_config, update_config, find_subscription_by_id, update_subscription_fields
+from core.http_middleware import RequestSizeLimitMiddleware
+from core.initialization import initialize_administrator
+from core.rate_limit import limiter
 from services.subscription_output import create_subscription_output_router
-from services.subscription_fetcher import SubscriptionFetcher
+from services.subscription_fetcher import FetchError, SubscriptionFetcher
+from services.subscription_refresh_lock import (
+    SubscriptionRefreshInProgress,
+    wait_for_refresh_slot,
+    wait_for_scheduled_refresh_slot,
+)
+from services.subscription_state import (
+    describe_refresh_error,
+    record_refresh_attempt,
+    record_refresh_failure,
+    refresh_success_fields,
+)
+from services.subscription_storage import persist_subscription_content_and_record
 
 # Import API routers
 from api import api_router
@@ -73,9 +95,6 @@ logger = get_logger(__name__)
 # Keep server.py on the canonical configuration object.  Duplicating AppConfig
 # here made environment variables drift between core and server startup paths.
 AppConfig = CoreAppConfig
-
-# Setup rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=[AppConfig.RATE_LIMIT_DEFAULT])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -107,14 +126,12 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Global exception handler to log all unhandled exceptions
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    import traceback
-    error_detail = f"Unhandled exception: {str(exc)}\n{traceback.format_exc()}"
-    logger.error(error_detail)
-    print(f"GLOBAL ERROR: {error_detail}", file=sys.stderr)
+    logger.error("Unhandled request exception", exc_info=(type(exc), exc, exc.__traceback__))
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"}
@@ -165,6 +182,7 @@ app.add_middleware(
 
 # GZip compression middleware for large responses
 app.add_middleware(GZipMiddleware, minimum_size=AppConfig.GZIP_MIN_SIZE)
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=AppConfig.MAX_REQUEST_SIZE)
 
 
 # ==================== Startup/Shutdown Events ====================
@@ -175,9 +193,23 @@ def _restore_scheduled_jobs():
         config = load_config()
         scheduler = get_scheduler()
         restored_count = 0
-        
+        desired_task_ids = {
+            f"sub_refresh_{sub['id']}"
+            for sub in config.get('subscriptions', [])
+            if sub.get('id')
+            and sub.get('type') != 'local'
+            and sub.get('enabled', True)
+            and sub.get('cron_expr')
+        }
+
+        for existing_task_id in list(scheduler.jobs):
+            if existing_task_id.startswith('sub_refresh_') and existing_task_id not in desired_task_ids:
+                scheduler.remove_job(existing_task_id)
+
         for sub in config.get('subscriptions', []):
-            if sub.get('type') == 'local':
+            if sub.get('type') == 'local' or not sub.get('enabled', True):
+                if sub.get('next_update') is not None:
+                    update_subscription_fields(sub['id'], {'next_update': None})
                 continue
             
             cron_expr = sub.get('cron_expr')
@@ -194,17 +226,20 @@ def _restore_scheduled_jobs():
                     # Update next_update timestamp
                     job_info = scheduler.get_job_info(task_id)
                     if job_id and job_info and job_info.get("next_run"):
-                        sub['next_update'] = int(job_info["next_run"].timestamp())
+                        next_update = int(job_info["next_run"].timestamp())
+                        update_subscription_fields(sub['id'], {'next_update': next_update})
                         restored_count += 1
                         logger.info(f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job_info['next_run']}")
                     else:
-                        sub['next_update'] = None
+                        update_subscription_fields(sub['id'], {'next_update': None})
+                        logger.error("Failed to restore schedule for subscription '%s'", sub.get('name'))
                 except Exception as e:
                     logger.error(f"Failed to restore schedule for subscription '{sub.get('name')}': {e}")
-                    sub['next_update'] = None
-        
+                    update_subscription_fields(sub['id'], {'next_update': None})
+            elif sub.get('next_update') is not None:
+                update_subscription_fields(sub['id'], {'next_update': None})
+
         if restored_count > 0:
-            save_config(config)
             logger.info(f"Restored {restored_count} scheduled job(s)")
     except Exception as e:
         logger.error(f"Failed to restore scheduled jobs: {e}")
@@ -246,10 +281,50 @@ def _schedule_flclash_version_check():
         logger.warning(f"Failed to schedule FlClash version check: {e}")
 
 
+def _schedule_automatic_backup() -> None:
+    """Register the configured periodic config backup job."""
+    scheduler = get_scheduler().scheduler
+    job_id = "automatic_config_backup"
+    try:
+        if not AppConfig.AUTO_BACKUP_ENABLED:
+            existing_job = scheduler.get_job(job_id)
+            if existing_job:
+                scheduler.remove_job(job_id)
+            logger.info("Automatic config backup disabled")
+            return
+
+        from apscheduler.triggers.interval import IntervalTrigger
+        from services.backup import create_backup
+
+        scheduler.add_job(
+            create_backup,
+            trigger=IntervalTrigger(hours=AppConfig.AUTO_BACKUP_INTERVAL_HOURS),
+            args=["auto"],
+            id=job_id,
+            replace_existing=True,
+        )
+        logger.info(
+            "Automatic config backup scheduled every %s hour(s)",
+            AppConfig.AUTO_BACKUP_INTERVAL_HOURS,
+        )
+    except Exception:
+        logger.error("Failed to schedule automatic config backup", exc_info=True)
+
+
 async def startup_event() -> None:
     """Initialize services on startup"""
     global http_client
     logger.info("Starting up application...")
+
+    # Migrations and first-start initialization run inside lifespan rather than
+    # at module import, so an invalid configuration prevents readiness cleanly.
+    migrate_old_config()
+    migrate_legacy_sub_token()
+    migrate_subscription_fields()
+    migrate_proxy_chain_group_ids()
+    migrate_stable_node_references()
+    initialize_administrator()
+    init_geoip_config()
     
     # Initialize HTTP client
     http_client = httpx.AsyncClient(
@@ -265,6 +340,7 @@ async def startup_event() -> None:
             max_connections=AppConfig.HTTP_MAX_CONNECTIONS
         ),
         verify=AppConfig.HTTP_VERIFY_SSL,
+        trust_env=False,
     )
     set_health_http_client(http_client)
     logger.info("HTTP client initialized")
@@ -288,10 +364,13 @@ async def startup_event() -> None:
     # Schedule FlClash version check
     _schedule_flclash_version_check()
 
+    _schedule_automatic_backup()
+
 
 async def shutdown_event() -> None:
     """Cleanup on shutdown"""
     logger.info("Shutting down application...")
+    get_scheduler().stop()
     stop_go_speedtest_service()
     if http_client:
         await http_client.aclose()
@@ -323,17 +402,6 @@ async def add_request_id(request: Request, call_next: Callable) -> Response:
     response.headers["X-Request-ID"] = request_id
     return response
 
-# Request size limit middleware
-@app.middleware("http")
-async def limit_request_size(request: Request, call_next: Callable) -> Response:
-    """Limit request body size"""
-    if request.headers.get("content-length"):
-        content_length = int(request.headers["content-length"])
-        if content_length > Constants.MAX_REQUEST_SIZE:
-            raise HTTPException(status_code=413, detail="Request too large")
-
-    return await call_next(request)
-
 # Slow request logging middleware
 @app.middleware("http")
 async def log_slow_requests(request: Request, call_next: Callable) -> Response:
@@ -357,8 +425,6 @@ async def metrics_middleware(request: Request, call_next):
     """Collect HTTP request metrics"""
     start_time = time.time()
 
-    # Get endpoint path (remove query params)
-    endpoint = request.url.path
     method = request.method
 
     # Track concurrent requests
@@ -367,6 +433,8 @@ async def metrics_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
         status = response.status_code
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or "<unmatched>"
 
         # Record metrics
         http_requests_total.labels(method=method, endpoint=endpoint, status=status).inc()
@@ -376,6 +444,8 @@ async def metrics_middleware(request: Request, call_next):
         return response
     except Exception as e:
         # Record error
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or "<unmatched>"
         http_requests_total.labels(method=method, endpoint=endpoint, status=500).inc()
         duration = time.time() - start_time
         http_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(duration)
@@ -401,193 +471,6 @@ os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
 # ==================== HTTP Client ====================
 # Global async HTTP client - initialized in startup_event()
 http_client = None
-
-# ==================== Config Helper Functions ====================
-
-# Fields to exclude from proxy config (metadata fields)
-NODE_METADATA_FIELDS = {
-    'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
-}
-
-
-def _find_custom_node_by_reference(
-    custom_nodes: list,
-    node_index: int = None,
-    node_name: str = None
-) -> Optional[dict]:
-    """Find custom node by name or index with transformed name."""
-    # Search by name
-    if node_name:
-        for node in custom_nodes:
-            if not is_node_enabled(node):
-                continue
-            proxy = {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS}
-            proxy = ProxyFilter.sanitize_proxy(proxy)
-            transformed = NameTransformer.transform_name(proxy, 'Custom')
-            if transformed.get('name') == node_name:
-                return transformed
-    
-    # Search by index
-    if node_index is not None and 0 <= node_index < len(custom_nodes):
-        node = custom_nodes[node_index]
-        if not is_node_enabled(node):
-            return None
-        proxy = {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS}
-        proxy = ProxyFilter.sanitize_proxy(proxy)
-        return NameTransformer.transform_name(proxy, 'Custom')
-    
-    return None
-
-
-def _find_subscription_node_by_reference(
-    sub_id: str,
-    source_name: str,
-    node_index: int = None,
-    node_name: str = None
-) -> Optional[dict]:
-    """Find subscription node by name or index with transformed name."""
-    try:
-        cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
-        proxies = cfg.get('proxies', []) if cfg else []
-        
-        # Search by name
-        if node_name:
-            for proxy in proxies:
-                if not is_node_enabled(proxy):
-                    continue
-                if not ProxyFilter.is_valid_proxy(proxy):
-                    continue
-                proxy = ProxyFilter.sanitize_proxy(proxy)
-                proxy.pop('enabled', None)
-                transformed = NameTransformer.transform_name(proxy, source_name)
-                if transformed.get('name') == node_name:
-                    return transformed
-        
-        # Search by index
-        if node_index is not None and 0 <= node_index < len(proxies):
-            proxy = proxies[node_index]
-            if not is_node_enabled(proxy):
-                return None
-            if not ProxyFilter.is_valid_proxy(proxy):
-                return None
-            proxy = ProxyFilter.sanitize_proxy(proxy)
-            proxy.pop('enabled', None)
-            return NameTransformer.transform_name(proxy, source_name)
-    except Exception as e:
-        logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
-    
-    return None
-
-
-def find_node_by_reference(
-    sub_id: str,
-    node_index: int = None,
-    node_name: str = None
-) -> Optional[dict]:
-    """Get a proxy node by reference (sub_id + node_name/node_index) with transformed name.
-
-    Returns a proxy dict aligned with ConfigMerger naming, or None if not found/invalid.
-    """
-    config = load_config()
-    
-    # Custom nodes
-    if sub_id == 'custom':
-        return _find_custom_node_by_reference(
-            config.get('custom_nodes', []),
-            node_index,
-            node_name
-        )
-    
-    # Subscription nodes
-    sub = find_subscription_by_id(config, sub_id)
-    source_name = sub['name'] if sub else sub_id
-    return _find_subscription_node_by_reference(sub_id, source_name, node_index, node_name)
-
-def normalize_alloc_name(name: str) -> str:
-    """Normalize node name for allocation matching (remove flags and trim)."""
-    return NameTransformer.remove_flags(name or '').strip()
-
-def is_name_allocated(name: str, allocated_nodes: list | None) -> bool:
-    """Check if a node name is in allocation list (supports legacy partial matches)."""
-    if not allocated_nodes:
-        return False
-    if allocated_nodes == ['*']:
-        return True
-    if not name:
-        return False
-    name_clean = normalize_alloc_name(name)
-    for alloc in allocated_nodes:
-        if not alloc:
-            continue
-        if alloc == name:
-            return True
-        if alloc in name:
-            return True
-        alloc_clean = normalize_alloc_name(alloc)
-        if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
-            return True
-    return False
-
-# ==================== Request Deduplication ====================
-
-class RefreshAlreadyInProgress(RuntimeError):
-    """Raised when the same subscription is already being refreshed."""
-
-
-REFRESH_LOCK_DIR = os.path.join(DATA_DIR, 'refresh_locks')
-
-
-def _refresh_lock_path(sub_id: str) -> str:
-    safe_id = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(sub_id or 'unknown'))
-    return os.path.join(REFRESH_LOCK_DIR, f'{safe_id}.lock')
-
-
-def _acquire_refresh_file_lock(sub_id: str, *, wait: bool = False) -> FileLock:
-    os.makedirs(REFRESH_LOCK_DIR, exist_ok=True)
-    timeout = AppConfig.FILE_LOCK_TIMEOUT if wait else 0
-    lock = FileLock(_refresh_lock_path(sub_id), timeout=timeout)
-    try:
-        lock.acquire()
-        return lock
-    except FileLockTimeout as exc:
-        raise RefreshAlreadyInProgress(f"Subscription {sub_id} refresh is already in progress") from exc
-
-
-@asynccontextmanager
-async def subscription_refresh_lock(sub_id: str):
-    """Async per-subscription refresh lock used by API routes."""
-    try:
-        lock = await asyncio.to_thread(_acquire_refresh_file_lock, sub_id, wait=False)
-    except RefreshAlreadyInProgress as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    try:
-        yield
-    finally:
-        await asyncio.to_thread(lock.release)
-
-
-@asynccontextmanager
-async def subscription_refresh_wait_lock(sub_id: str):
-    """Async per-subscription refresh lock that waits briefly for auto-refresh paths."""
-    try:
-        lock = await asyncio.to_thread(_acquire_refresh_file_lock, sub_id, wait=True)
-    except RefreshAlreadyInProgress as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    try:
-        yield
-    finally:
-        await asyncio.to_thread(lock.release)
-
-
-@contextmanager
-def subscription_refresh_lock_sync(sub_id: str):
-    """Sync per-subscription refresh lock used by scheduler jobs."""
-    lock = _acquire_refresh_file_lock(sub_id, wait=False)
-    try:
-        yield
-    finally:
-        lock.release()
 
 # ==================== Stats Cache ====================
 # Use unified stats cache from services module
@@ -693,14 +576,21 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
     existing_nodes = _load_existing_nodes(sub_id)
     
     # Fetch subscription using SubscriptionFetcher (supports proxy fallback, consistent with manual refresh)
-    refresh_timeout = Constants.TIMEOUT_SUBSCRIPTION_FETCH + 10
-    
     try:
         from helpers_ua import get_subscription_user_agent
         
         config = load_config()
         proxy_url = config.get('settings', {}).get('subscription_proxy_url')
         user_agent = get_subscription_user_agent()
+        fetch_attempts = AppConfig.SUBSCRIPTION_FETCH_RETRIES + 1
+        retry_backoff = (
+            AppConfig.SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS
+            * (2 ** AppConfig.SUBSCRIPTION_FETCH_RETRIES - 1)
+        )
+        connection_paths = 2 if proxy_url else 1
+        refresh_timeout = connection_paths * (
+            fetch_attempts * Constants.TIMEOUT_SUBSCRIPTION_FETCH + retry_backoff
+        ) + 10
         
         async def _do_fetch():
             # Create a dedicated client for this thread's event loop.
@@ -730,8 +620,8 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         content, sub_info, node_count = asyncio.run(
             asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
         )
-    except Exception as e:
-        raise Exception(f"Failed to fetch subscription: {e}")
+    except Exception as exc:
+        raise FetchError(f"Failed to fetch subscription: {exc}") from None
     
     # Apply region history
     content, remembered, inherited = apply_region_history_to_yaml_content(
@@ -746,36 +636,36 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         existing_nodes=existing_nodes,
     )
     
-    return content, sub_info, node_count, remembered, inherited, visibility_inherited
+    return (
+        content,
+        sub_info,
+        node_count,
+        remembered,
+        inherited,
+        visibility_inherited,
+        existing_nodes,
+    )
 
 
-def _build_success_updates(sub_info: dict, node_count: int, sub_id: str) -> dict:
+def _build_success_updates(
+    sub_info: dict,
+    node_count: int,
+    subscription: dict,
+    attempted_at: int,
+) -> dict:
     """Build success updates dict for subscription."""
-    updates = {
+    return {
         'upload': sub_info.get('upload', 0),
         'download': sub_info.get('download', 0),
         'total': sub_info.get('total', 0),
         'expire': sub_info.get('expire', 0),
         'node_count': node_count,
-        'last_update': int(time.time()),
-        'update_status': 'success'
+        **refresh_success_fields(
+            subscription,
+            attempted_at=attempted_at,
+            succeeded_at=int(time.time()),
+        ),
     }
-    
-    # Get next scheduled run time
-    try:
-        task_id = f"sub_refresh_{sub_id}"
-        scheduler = get_scheduler()
-        job_info = scheduler.get_job_info(task_id)
-        if job_info and job_info.get('next_run'):
-            updates['next_update'] = int(job_info['next_run'].timestamp())
-        else:
-            job = scheduler.scheduler.get_job(f"task_{task_id}") or scheduler.scheduler.get_job(task_id)
-            updates['next_update'] = int(job.next_run_time.timestamp()) if job and job.next_run_time else None
-    except Exception as e:
-        logger.debug("Failed to update next scheduled run for %s: %s", sub_id, e)
-        updates['next_update'] = None
-    
-    return updates
 
 
 def refresh_subscription_job(sub_id: str):
@@ -783,43 +673,103 @@ def refresh_subscription_job(sub_id: str):
     Job function for scheduled subscription refresh.
     This is called by the scheduler and runs in a background thread.
     """
+    logger.info("Scheduled refresh triggered for subscription %s", sub_id)
+    attempted_at = int(time.time())
+    current_subscription = None
     try:
-        logger.info(f"Scheduled refresh triggered for subscription {sub_id}")
-        
-        config = load_config()
-        sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
-        
-        if not sub:
-            logger.error(f"Subscription {sub_id} not found for scheduled refresh")
-            return
-        
-        if sub.get('type') == 'local':
-            logger.warning(f"Skipping scheduled refresh for local subscription {sub_id}")
-            return
-        
-        try:
-            content, sub_info, node_count, remembered, inherited, visibility_inherited = \
-                _fetch_and_process_subscription(sub)
-            
-            success_updates = _build_success_updates(sub_info, node_count, sub_id)
-            
-            if remembered or inherited or visibility_inherited:
-                logger.info(
-                    "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
-                    sub_id, remembered, inherited, visibility_inherited,
+        with wait_for_scheduled_refresh_slot(sub_id):
+            config = load_config()
+            sub = next((candidate for candidate in config.get('subscriptions', []) if candidate['id'] == sub_id), None)
+            current_subscription = sub
+
+            if not sub:
+                logger.warning("Subscription %s no longer exists; removing its scheduled job", sub_id)
+                get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+                return
+
+            if not sub.get('enabled', True):
+                logger.info("Skipping scheduled refresh for disabled subscription %s", sub_id)
+                return
+
+            if sub.get('type') == 'local':
+                logger.warning("Skipping scheduled refresh for local subscription %s", sub_id)
+                get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+                return
+
+            try:
+                record_refresh_attempt(sub, attempted_at)
+                content, sub_info, node_count, remembered, inherited, visibility_inherited, existing_nodes = \
+                    _fetch_and_process_subscription(sub)
+                refreshed_nodes = subscription_nodes_from_yaml_content(content)
+
+                success_updates = _build_success_updates(sub_info, node_count, sub, attempted_at)
+
+                if remembered or inherited or visibility_inherited:
+                    logger.info(
+                        "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
+                        sub_id, remembered, inherited, visibility_inherited,
+                    )
+
+                def commit_scheduled_refresh(latest_config: dict) -> dict:
+                    latest_subscription = next(
+                        (
+                            candidate
+                            for candidate in latest_config.get('subscriptions', [])
+                            if candidate.get('id') == sub_id
+                        ),
+                        None,
+                    )
+                    if latest_subscription is None:
+                        raise HTTPException(status_code=404, detail="Subscription not found")
+                    subscription_name = str(latest_subscription.get('name') or sub_id)
+                    reconcile_subscription_node_references(
+                        latest_config,
+                        sub_id,
+                        old_nodes=existing_nodes,
+                        new_nodes=refreshed_nodes,
+                        old_subscription_name=subscription_name,
+                        new_subscription_name=subscription_name,
+                    )
+                    latest_subscription.update(success_updates)
+                    clear_user_subscription_caches(latest_config)
+                    return dict(latest_subscription)
+
+                persist_subscription_content_and_record(
+                    sub_id,
+                    content,
+                    YAML_SOURCE_DIR,
+                    lambda: update_config(commit_scheduled_refresh),
                 )
-            
-            save_subscription_content(sub_id, content, YAML_SOURCE_DIR)
-            update_subscription_fields(sub_id, success_updates)
-            invalidate_stats_cache()
-            
-            logger.info(f"Scheduled refresh completed for subscription {sub_id}, got {node_count} nodes")
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Scheduled refresh failed for subscription {sub_id}: {error_msg}", exc_info=True)
-            update_subscription_fields(sub_id, {'update_status': f'error: {error_msg}'})
-    except Exception as e:
-        logger.error(f"Fatal error in scheduled refresh job for {sub_id}: {e}", exc_info=True)
+                invalidate_stats_cache()
+
+                logger.info("Scheduled refresh completed for subscription %s, got %s nodes", sub_id, node_count)
+            except Exception as exc:
+                error_message = describe_refresh_error(exc)
+                logger.error(
+                    "Scheduled refresh failed for subscription %s: %s",
+                    sub_id,
+                    error_message,
+                    exc_info=True,
+                )
+                record_refresh_failure(sub, exc, attempted_at)
+    except SubscriptionRefreshInProgress as exc:
+        logger.warning("Scheduled refresh skipped because subscription %s is already refreshing", sub_id)
+        if current_subscription is None:
+            current_subscription = find_subscription_by_id(load_config(), sub_id)
+        if current_subscription:
+            record_refresh_failure(current_subscription, exc, attempted_at)
+    except Exception as exc:
+        logger.error(
+            "Fatal error in scheduled refresh job for %s: %s",
+            sub_id,
+            describe_refresh_error(exc),
+            exc_info=True,
+        )
+        if current_subscription:
+            try:
+                record_refresh_failure(current_subscription, exc, attempted_at)
+            except Exception:
+                logger.error("Failed to persist scheduled refresh failure for %s", sub_id, exc_info=True)
 
 
 # ==================== Config Management ====================
@@ -918,7 +868,7 @@ def migrate_legacy_sub_token():
     log_migration("migrate_legacy_sub_token: migrated legacy token")
 
 def migrate_subscription_fields():
-    """Migrate subscriptions to add missing cron_expr and next_update fields"""
+    """Migrate subscriptions to the structured refresh status schema."""
     config = load_config()
     subs = config.get('subscriptions', [])
 
@@ -934,10 +884,64 @@ def migrate_subscription_fields():
             sub['next_update'] = None
             updated = True
 
+        if 'last_attempt' not in sub:
+            sub['last_attempt'] = sub.get('last_update')
+            updated = True
+
+        if 'last_success' not in sub:
+            status = str(sub.get('update_status') or '')
+            sub['last_success'] = None if status.startswith('error') else sub.get('last_update')
+            updated = True
+
+        if 'last_error' not in sub:
+            status = str(sub.get('update_status') or '')
+            sub['last_error'] = (
+                describe_refresh_error(RuntimeError(status.partition(':')[2].strip() or status))
+                if status.startswith('error')
+                else None
+            )
+            updated = True
+
     if updated:
         save_config(config)
-        logger.info("Subscription fields migrated: added cron_expr and next_update to %s subscriptions", len(subs))
+        logger.info("Subscription refresh fields migrated for %s subscriptions", len(subs))
         log_migration(f"migrate_subscription_fields: updated {len(subs)} subscriptions")
+
+
+def migrate_stable_node_references():
+    """Assign missing custom-node IDs and migrate proxy chains off array indexes."""
+    from services.node_reference_migration import ensure_custom_node_ids, migrate_proxy_chain_node_ids
+    from services.configuration_validation import remove_legacy_stale_references
+    from services.proxy_chain_references import (
+        ensure_proxy_chain_component_ids,
+        reconcile_proxy_chain_references,
+        snapshot_with_chain_component_ids,
+    )
+
+    config = load_config()
+    original_config = deepcopy(config)
+    removed_stale_references = remove_legacy_stale_references(config)
+    added_node_ids = ensure_custom_node_ids(config)
+    added_chain_component_ids = ensure_proxy_chain_component_ids(config)
+    migrated_references = migrate_proxy_chain_node_ids(config)
+    stable_chain_snapshot = snapshot_with_chain_component_ids(config)
+    reconcile_proxy_chain_references(config, stable_chain_snapshot)
+    if config == original_config:
+        return
+    save_config(config)
+    logger.info(
+        "Stable node reference migration completed: stale_references=%s custom_ids=%s chain_components=%s chain_references=%s",
+        removed_stale_references,
+        added_node_ids,
+        added_chain_component_ids,
+        migrated_references,
+    )
+    log_migration(
+        f"migrate_stable_node_references: stale_references={removed_stale_references} "
+        f"custom_ids={added_node_ids} "
+        f"chain_components={added_chain_component_ids} "
+        f"chain_references={migrated_references}"
+    )
 
 def migrate_proxy_chain_group_ids():
     """Add missing group_id for proxy chain group nodes."""
@@ -967,62 +971,53 @@ def migrate_proxy_chain_group_ids():
         logger.info("Proxy chain group_id migration completed")
         log_migration(f"migrate_proxy_chain_group_ids: added {added} group_id")
 
-# Run migration on startup
-migrate_old_config()
-migrate_legacy_sub_token()
-migrate_subscription_fields()
-migrate_proxy_chain_group_ids()
-
-
-def _cleanup_stale_refresh_locks():
-    """Remove leftover lock files from crashed processes."""
-    try:
-        if os.path.exists(REFRESH_LOCK_DIR):
-            for f in os.listdir(REFRESH_LOCK_DIR):
-                if f.endswith('.lock'):
-                    os.remove(os.path.join(REFRESH_LOCK_DIR, f))
-            logger.info("Cleaned up stale refresh lock files")
-    except Exception as e:
-        logger.warning("Failed to cleanup stale refresh locks: %s", e)
-
-
-_cleanup_stale_refresh_locks()
-
 # Initialize GeoIP config from saved config
 def init_geoip_config():
     """Load GeoIP configuration from saved config on startup"""
-    from geoip_service import set_online_geoip_config
+    from geoip_service import apply_geoip_runtime_config
     config = load_config()
-    geoip_config = config.get('geoip_config', {})
+    geoip_config = apply_geoip_runtime_config(config)
 
     if geoip_config:
-        set_online_geoip_config(
-            ipinfo_token=geoip_config.get('ipinfo_token'),
-            preferred_api=geoip_config.get('preferred_api'),
-            custom_apis=geoip_config.get('custom_apis'),
-            api_settings=geoip_config.get('api_settings')
-        )
         logger.info("GeoIP config loaded: preferred_api=%s, custom_apis=%d",
                    geoip_config.get('preferred_api', 'ip-api.com'),
                    len(geoip_config.get('custom_apis', [])))
 
-init_geoip_config()
+
+def reload_runtime_configuration() -> None:
+    """Rebuild derived runtime state after a backup restore or config import."""
+    migrate_subscription_fields()
+    migrate_proxy_chain_group_ids()
+    migrate_stable_node_references()
+    init_geoip_config()
+    update_custom_nodes_yaml()
+    _restore_scheduled_jobs()
+    invalidate_stats_cache()
 
 # ==================== Country Detection (imported from services) ====================
 # COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP are now in services/country_data.py
 
 def filter_underscore_fields(data: dict) -> dict:
     """
-    Filter out fields starting with underscore from a dictionary.
-    Used to remove internal fields like _editable, _icon, _description from template output.
+    Remove application-only metadata before serializing a client configuration.
 
     Args:
         data: Dictionary that may contain underscore-prefixed fields
 
     Returns:
-        New dictionary with underscore fields removed
+        New dictionary containing only client-facing fields
     """
-    return {k: v for k, v in data.items() if not k.startswith('_')}
+    metadata_fields = {
+        'id', 'link', 'enabled', 'display_name', 'index',
+        'last_latency', 'last_latency_time', 'last_speed',
+        'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip',
+        'region', 'city',
+    }
+    return {
+        key: value
+        for key, value in data.items()
+        if not key.startswith('_') and key not in metadata_fields
+    }
 
 def process_template_proxy_groups(template_groups: List[dict], all_proxies: List[str],
                                    country_groups: Dict[str, List[str]],
@@ -1135,66 +1130,6 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
 
 # Auth API moved to api/auth.py
 
-# ==================== Proxy Node Settings ====================
-
-def _get_custom_node_by_id(node_id: str, custom_nodes: list) -> Optional[dict]:
-    """Get custom node by ID."""
-    try:
-        idx = int(node_id.rsplit('_', 1)[1])
-        if 0 <= idx < len(custom_nodes):
-            node = custom_nodes[idx]
-            if not is_node_enabled(node):
-                return None
-            node = dict(node)
-            node.pop('enabled', None)
-            return node
-    except (ValueError, IndexError) as e:
-        logger.warning(f"Invalid custom node ID format: {node_id}, error: {e}")
-    except Exception as e:
-        logger.error(f"Error getting custom node {node_id}: {e}", exc_info=True)
-    return None
-
-
-def _get_subscription_node_by_id(node_id: str, yaml_source_dir: str) -> Optional[dict]:
-    """Get subscription node by ID."""
-    sub_id = None
-    try:
-        node_ref, node_idx_text = node_id.rsplit('_', 1)
-        if not node_ref or node_ref == 'sub':
-            raise ValueError("missing subscription id")
-        node_idx = int(node_idx_text)
-        
-        # Support both sub_<id>_<index> and <id>_<index> formats
-        raw_sub_id = node_ref[4:] if node_ref.startswith('sub_') else node_ref
-        candidate_sub_ids = []
-        for candidate in (raw_sub_id, f"sub_{raw_sub_id}", node_ref):
-            if candidate and candidate not in candidate_sub_ids:
-                candidate_sub_ids.append(candidate)
-        
-        for sub_id in candidate_sub_ids:
-            sub_file = os.path.join(yaml_source_dir, f"{sub_id}.yaml")
-            if not os.path.exists(sub_file):
-                continue
-            sub_data = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=True)
-            proxies = sub_data.get('proxies', [])
-            if 0 <= node_idx < len(proxies):
-                proxy = proxies[node_idx]
-                if not is_node_enabled(proxy):
-                    return None
-                proxy = dict(proxy)
-                proxy.pop('enabled', None)
-                return proxy
-            logger.warning(f"Node index {node_idx} out of range for subscription {sub_id}")
-            break
-    except (ValueError, IndexError) as e:
-        logger.warning(f"Invalid subscription node ID format: {node_id}, error: {e}")
-    except yaml.YAMLError as e:
-        logger.error(f"Failed to parse subscription YAML {sub_id}: {e}")
-    except Exception as e:
-        logger.error(f"Error getting subscription node {node_id}: {e}", exc_info=True)
-    return None
-
-
 # Node Parsing moved to services/node_parser.py
 
 # ==================== Subscription Helper Functions ====================
@@ -1254,8 +1189,8 @@ async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
 
         logger.info(f"Successfully fetched subscription, got {node_count} nodes")
         return content, sub_info, node_count
-    except Exception as e:
-        raise Exception(f"Failed to fetch subscription: {e}")
+    except Exception as exc:
+        raise FetchError(f"Failed to fetch subscription: {exc}") from None
 
 
 def _process_subscription_content(response) -> str:
@@ -1378,25 +1313,9 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
 
 def update_custom_nodes_yaml():
     """Update custom nodes yaml file"""
-    config = load_config()
-    nodes = config.get('custom_nodes', [])
-    proxies = []
+    from services.custom_node_storage import rebuild_custom_nodes_yaml
 
-    # Fields to exclude from proxy config (metadata fields)
-    exclude_fields = ['id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-                      'last_peak_speed', 'last_speed_time', 'geoip', 'enabled']
-
-    for node in nodes:
-        if not is_node_enabled(node):
-            continue
-        # Use stored node config instead of re-parsing to avoid performance issues
-        # Exclude metadata fields which are not part of proxy config
-        proxy = {k: v for k, v in node.items() if k not in exclude_fields}
-        proxy = ProxyFilter.sanitize_proxy(proxy)
-        if proxy and 'type' in proxy:  # Ensure it's a valid proxy config
-            proxies.append(proxy)
-
-    save_subscription_yaml('custom_nodes', {'proxies': proxies}, YAML_SOURCE_DIR)
+    rebuild_custom_nodes_yaml()
 
 def get_ordered_sources() -> List[dict]:
     """Get all sources in order"""
@@ -1476,7 +1395,7 @@ app.include_router(create_subscription_output_router(
     extract_country_from_name=extract_country_from_name,
     split_template=split_template,
     logger=logger,
-    subscription_refresh_lock=subscription_refresh_wait_lock,
+    subscription_refresh_lock=wait_for_refresh_slot,
 ))
 app.include_router(create_template_router(
     yaml_source_dir=YAML_SOURCE_DIR,
@@ -1565,4 +1484,6 @@ if __name__ == "__main__":
     host = os.getenv('HOST', '0.0.0.0')
 
     logger.info(f"Starting server on {host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+    # Subscription clients authenticate in the URL. Uvicorn's default access
+    # log records the full query string, so it must stay disabled here.
+    uvicorn.run(app, host=host, port=port, access_log=False)

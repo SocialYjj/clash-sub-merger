@@ -7,12 +7,16 @@ import os
 import re
 import time
 import json
+import ipaddress
+import socket
 import unicodedata
 import httpx
 import asyncio
 import threading
+from copy import deepcopy
 from typing import Optional, Dict
 from functools import lru_cache
+from urllib.parse import urlsplit
 from core.config import env_int
 from logger_config import get_logger
 
@@ -755,12 +759,12 @@ def load_geoip_cache_from_disk():
 async def save_geoip_cache_to_disk():
     """Save GeoIP cache to disk with in-process serialization and atomic replace."""
     async with _online_geoip_save_lock:
+        tmp_file = f"{GEOIP_CACHE_FILE}.{os.getpid()}.tmp"
         try:
             with _online_geoip_cache_lock:
                 cache_snapshot = dict(_online_geoip_cache)
 
             os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
-            tmp_file = f"{GEOIP_CACHE_FILE}.tmp"
             with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(
                     {
@@ -771,10 +775,22 @@ async def save_geoip_cache_to_disk():
                     ensure_ascii=False,
                     indent=2,
                 )
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(tmp_file, 0o600)
+            except OSError:
+                logger.warning("Could not restrict GeoIP cache file permissions")
             os.replace(tmp_file, GEOIP_CACHE_FILE)
             logger.debug(f"Saved {len(cache_snapshot)} GeoIP cache entries to disk")
-        except Exception as e:
-            logger.error(f"Failed to save GeoIP cache to disk: {e}")
+        except Exception as exc:
+            logger.error("Failed to save GeoIP cache to disk: %s", type(exc).__name__)
+        finally:
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    logger.debug("Failed to remove GeoIP cache temp file")
 
 # Load cache on module import
 load_geoip_cache_from_disk()
@@ -816,22 +832,20 @@ _online_geoip_config: Dict = {
     "api_settings": {},  # Per-API settings like enabled/disabled
 }
 
-def set_online_geoip_config(ipinfo_token: str = None, preferred_api: str = None, 
-                            custom_apis: list = None, api_settings: dict = None):
-    """Set online GeoIP API configuration"""
-    global _online_geoip_config
-    if ipinfo_token is not None:
-        _online_geoip_config["ipinfo_token"] = ipinfo_token
-    if preferred_api is not None:
-        _online_geoip_config["preferred_api"] = preferred_api
-    if custom_apis is not None:
-        _online_geoip_config["custom_apis"] = custom_apis
-    if api_settings is not None:
-        _online_geoip_config["api_settings"] = api_settings
 
-def get_online_geoip_config() -> Dict:
-    """Get current online GeoIP API configuration"""
-    return _online_geoip_config.copy()
+def apply_geoip_runtime_config(config: Dict) -> Dict:
+    """Replace runtime GeoIP state from one complete persisted config snapshot."""
+    global _online_geoip_config
+    persisted = config.get("geoip_config", {}) if isinstance(config, dict) else {}
+    if not isinstance(persisted, dict):
+        persisted = {}
+    _online_geoip_config = {
+        "ipinfo_token": str(persisted.get("ipinfo_token") or ""),
+        "preferred_api": str(persisted.get("preferred_api") or "ip-api.com"),
+        "custom_apis": deepcopy(persisted.get("custom_apis") or []),
+        "api_settings": deepcopy(persisted.get("api_settings") or {}),
+    }
+    return deepcopy(_online_geoip_config)
 
 def get_all_geoip_apis() -> list:
     """Get all available GeoIP APIs (builtin + custom)"""
@@ -858,81 +872,6 @@ def get_all_geoip_apis() -> list:
     
     return apis
 
-def add_custom_geoip_api(api_config: dict) -> dict:
-    """Add a custom GeoIP API"""
-    global _online_geoip_config
-    
-    # Validate required fields - only name and url are required now
-    required = ["name", "url"]
-    for field in required:
-        if not api_config.get(field):
-            raise ValueError(f"Missing required field: {field}")
-    
-    # Generate ID
-    api_id = f"custom_{int(time.time() * 1000)}"
-    
-    new_api = {
-        "id": api_id,
-        "name": api_config["name"],
-        "url": api_config["url"],  # URL template with {ip} placeholder
-        "token": api_config.get("token", ""),  # Optional token/API key
-        "limit": api_config.get("limit", ""),  # Optional usage limit display
-        "method": api_config.get("method", "GET"),
-        "headers": api_config.get("headers", {}),
-        "country_code_path": api_config.get("country_code_path", ""),  # JSON path, auto-detected if empty
-        "country_name_path": api_config.get("country_name_path", ""),
-        "city_path": api_config.get("city_path", ""),
-        "success_check": api_config.get("success_check", ""),  # Optional: path to check for success
-        "enabled": True,
-        "builtin": False,
-    }
-    
-    if "custom_apis" not in _online_geoip_config:
-        _online_geoip_config["custom_apis"] = []
-    _online_geoip_config["custom_apis"].append(new_api)
-    
-    return new_api
-
-def update_custom_geoip_api(api_id: str, api_config: dict) -> dict:
-    """Update a custom GeoIP API"""
-    global _online_geoip_config
-    
-    custom_apis = _online_geoip_config.get("custom_apis", [])
-    for i, api in enumerate(custom_apis):
-        if api["id"] == api_id:
-            # Update fields
-            for key in ["name", "url", "token", "limit", "method", "headers", "country_code_path", 
-                       "country_name_path", "city_path", "success_check", "enabled"]:
-                if key in api_config:
-                    custom_apis[i][key] = api_config[key]
-            return custom_apis[i]
-    
-    raise ValueError(f"API not found: {api_id}")
-
-def delete_custom_geoip_api(api_id: str) -> bool:
-    """Delete a custom GeoIP API"""
-    global _online_geoip_config
-    
-    custom_apis = _online_geoip_config.get("custom_apis", [])
-    for i, api in enumerate(custom_apis):
-        if api["id"] == api_id:
-            custom_apis.pop(i)
-            return True
-    
-    return False
-
-def set_api_enabled(api_id: str, enabled: bool):
-    """Enable or disable an API"""
-    global _online_geoip_config
-    
-    if "api_settings" not in _online_geoip_config:
-        _online_geoip_config["api_settings"] = {}
-    
-    if api_id not in _online_geoip_config["api_settings"]:
-        _online_geoip_config["api_settings"][api_id] = {}
-    
-    _online_geoip_config["api_settings"][api_id]["enabled"] = enabled
-
 def _get_json_path(data: dict, path: str):
     """Get value from nested dict using dot notation path"""
     if not path:
@@ -947,6 +886,64 @@ def _get_json_path(data: dict, path: str):
             return None
     return value
 
+CUSTOM_GEOIP_MAX_RESPONSE_BYTES = env_int(
+    'CUSTOM_GEOIP_MAX_RESPONSE_BYTES',
+    1024 * 1024,
+    minimum=1024,
+    maximum=10 * 1024 * 1024,
+)
+
+
+async def _is_public_custom_api_url(url: str) -> bool:
+    """Resolve the destination immediately before use and reject local networks."""
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        port = parsed.port or (443 if parsed.scheme.lower() == 'https' else 80)
+        host = parsed.hostname
+        if host.lower() == 'localhost':
+            return False
+        try:
+            addresses = {ipaddress.ip_address(host)}
+        except ValueError:
+            address_info = await asyncio.to_thread(
+                socket.getaddrinfo,
+                host,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+            addresses = {
+                ipaddress.ip_address(item[4][0].split('%', 1)[0])
+                for item in address_info
+            }
+        return bool(addresses) and all(address.is_global for address in addresses)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+async def _read_limited_json_response(response: httpx.Response) -> dict | None:
+    content_length = response.headers.get('content-length')
+    if content_length:
+        try:
+            if int(content_length) > CUSTOM_GEOIP_MAX_RESPONSE_BYTES:
+                return None
+        except ValueError:
+            return None
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > CUSTOM_GEOIP_MAX_RESPONSE_BYTES:
+            return None
+    try:
+        decoded = json.loads(body.decode(response.encoding or 'utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
 async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Optional[Dict]:
     """Lookup using a custom API configuration"""
     try:
@@ -958,21 +955,26 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
         else:
             # Remove empty placeholders
             url = url.replace("{key}", "").replace("{token}", "")
+        if not await _is_public_custom_api_url(url):
+            logger.warning("Rejected custom GeoIP request to a non-public destination")
+            return None
         
         method = api_config.get("method", "GET").upper()
         headers = api_config.get("headers", {})
         
-        async with httpx.AsyncClient() as client:
-            if method == "GET":
-                resp = await client.get(url, headers=headers, timeout=timeout)
+        if method not in {'GET', 'POST'}:
+            return None
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=httpx.Timeout(timeout),
+            trust_env=False,
+        ) as client:
+            async with client.stream(method, url, headers=headers) as resp:
                 if resp.status_code != 200:
                     return None
-                data = resp.json()
-            else:
-                resp = await client.post(url, headers=headers, timeout=timeout)
-                if resp.status_code != 200:
+                data = await _read_limited_json_response(resp)
+                if data is None:
                     return None
-                data = resp.json()
             
             # Check success condition if specified
             success_check = api_config.get("success_check", "")
@@ -1012,8 +1014,10 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
                 "country": country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
                 "city": city
             }
-    except Exception as e:
-        logger.debug("Custom API lookup error for %s: %s", ip, e)
+    except Exception as exc:
+        # The URL may contain a substituted token, so never log the exception
+        # text produced by the HTTP client.
+        logger.debug("Custom API lookup error for %s: %s", ip, type(exc).__name__)
         return None
 
 
@@ -1123,10 +1127,11 @@ async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
         logger.debug("ipwhois.app lookup error for %s: %s", ip, e)
     return None
 
-async def _lookup_ipinfo(ip: str, timeout: int = 5) -> Optional[Dict]:
+async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None) -> Optional[Dict]:
     """Lookup using ipinfo.io (free 50k/month with token)"""
     try:
-        token = _online_geoip_config.get("ipinfo_token", "")
+        if token is None:
+            token = _online_geoip_config.get("ipinfo_token", "")
         url = f"https://ipinfo.io/{ip}/json"
         if token:
             url += f"?token={token}"
@@ -1352,22 +1357,34 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         raw_data = None
 
         async with _online_geoip_semaphore:
-            if target_api in builtin_api_map:
-                raw_data = await builtin_api_map[target_api](ip, timeout)
-            else:
-                custom_apis = _online_geoip_config.get("custom_apis", [])
-                custom_api = next((a for a in custom_apis if a["id"] == target_api), None)
-                if custom_api and custom_api.get("enabled", True):
-                    raw_data = await _lookup_custom_api(ip, custom_api, timeout)
+            api_settings = _online_geoip_config.get("api_settings", {})
+            custom_apis = {
+                api.get("id"): api
+                for api in _online_geoip_config.get("custom_apis", [])
+                if isinstance(api, dict) and api.get("id")
+            }
 
-            if not raw_data and not api_id:
-                for api_name, api_func in builtin_api_map.items():
-                    if api_name != target_api:
-                        api_settings = _online_geoip_config.get("api_settings", {})
-                        if api_settings.get(api_name, {}).get("enabled", True):
-                            raw_data = await api_func(ip, timeout)
-                            if raw_data:
-                                break
+            async def query_api(candidate_id: str):
+                if candidate_id in builtin_api_map:
+                    if not api_settings.get(candidate_id, {}).get("enabled", True):
+                        return None
+                    return await builtin_api_map[candidate_id](ip, timeout)
+                custom_api = custom_apis.get(candidate_id)
+                if custom_api and custom_api.get("enabled", True):
+                    return await _lookup_custom_api(ip, custom_api, timeout)
+                return None
+
+            candidate_ids = [target_api]
+            if not api_id:
+                candidate_ids.extend(
+                    candidate_id
+                    for candidate_id in [*builtin_api_map, *custom_apis]
+                    if candidate_id != target_api
+                )
+            for candidate_id in candidate_ids:
+                raw_data = await query_api(candidate_id)
+                if raw_data:
+                    break
 
         if not raw_data:
             return None

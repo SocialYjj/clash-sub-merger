@@ -1,6 +1,7 @@
 """Input validation tests for speedtest API resource limits."""
 
 import asyncio
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import api.speedtest as speedtest_api
 from core.dependencies import verify_session
+from services.node_identity import subscription_node_id
 
 
 class SpeedtestValidationTests(unittest.TestCase):
@@ -93,6 +95,10 @@ class SpeedtestValidationTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["node"]["name"], "Demo")
 
     def test_subscription_speedtest_uses_canonical_prefixed_node_ids(self):
+        nodes = [
+            {"name": "a", "type": "http", "server": "a.example.com", "port": 8080},
+            {"name": "b", "type": "http", "server": "b.example.com", "port": 8080},
+        ]
         async def fake_batch(node_ids, test_speed=False, timeout=10, concurrency=10):
             return {"node_ids": node_ids, "test_speed": test_speed, "timeout": timeout, "concurrency": concurrency}
 
@@ -102,15 +108,19 @@ class SpeedtestValidationTests(unittest.TestCase):
                     "subscriptions": [{"id": "my_sub_1", "name": "Demo"}]
                 }),
                 patch.object(speedtest_api, "load_subscription_yaml", return_value={
-                    "proxies": [{"name": "a"}, {"name": "b"}]
+                    "proxies": nodes
                 }),
                 patch.object(speedtest_api, "_speedtest_batch", side_effect=fake_batch),
             ):
-                return await speedtest_api.speedtest_subscription("my_sub_1", request=None, _=True)
+                endpoint = inspect.unwrap(speedtest_api.speedtest_subscription)
+                return await endpoint("my_sub_1", request=None, _=True)
 
         result = asyncio.run(run_test())
 
-        self.assertEqual(result["node_ids"], ["sub_my_sub_1_0", "sub_my_sub_1_1"])
+        self.assertEqual(
+            result["node_ids"],
+            [subscription_node_id("my_sub_1", node) for node in nodes],
+        )
 
 
 if __name__ == "__main__":

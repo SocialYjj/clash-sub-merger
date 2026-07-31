@@ -333,20 +333,24 @@ const AllocationModal = ({ user, onClose, showToast }) => {
     });
   };
 
-  const toggleNode = (subId, nodeName, allNodes) => {
+  const toggleNode = (subId, node, allNodes) => {
     setAllocations(prev => {
       const current = prev[subId] || [];
       let nextList;
+      const explicitIds = allNodes
+        .filter(candidate => current.includes(candidate.id) || current.includes(candidate.name))
+        .map(candidate => candidate.id);
+      const selected = current.includes(node.id) || current.includes(node.name);
 
       if (current.includes('*')) {
         // If currently all selected, unselecting one means we need to explicitly list the others
-        nextList = allNodes.filter(n => n !== nodeName);
-      } else if (current.includes(nodeName)) {
+        nextList = allNodes.filter(candidate => candidate.id !== node.id).map(candidate => candidate.id);
+      } else if (selected) {
         // Unselect specific
-        nextList = current.filter(n => n !== nodeName);
+        nextList = explicitIds.filter(nodeId => nodeId !== node.id);
       } else {
         // Select specific
-        nextList = [...current, nodeName];
+        nextList = [...explicitIds, node.id];
         // Check if we selected all
         if (nextList.length === allNodes.length) {
           nextList = ['*'];
@@ -376,11 +380,11 @@ const AllocationModal = ({ user, onClose, showToast }) => {
     return current && !current.includes('*') && current.length > 0;
   };
 
-  const isNodeSelected = (subId, nodeName) => {
+  const isNodeSelected = (subId, node) => {
     const current = allocations[subId];
     if (!current) return false;
     if (current.includes('*')) return true;
-    return current.includes(nodeName);
+    return current.includes(node.id) || current.includes(node.name);
   };
 
   if (loading) {
@@ -442,20 +446,20 @@ const AllocationModal = ({ user, onClose, showToast }) => {
 
               {expandedSubs[subId] && (
                 <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-gray-800/50">
-                  {data.nodes.map(nodeName => (
+                  {data.nodes.map(node => (
                     <div
-                      key={nodeName}
+                      key={node.id}
                       className="flex items-center p-2 rounded hover:bg-gray-700/50 cursor-pointer"
-                      onClick={() => toggleNode(subId, nodeName, data.nodes)}
+                      onClick={() => toggleNode(subId, node, data.nodes)}
                     >
-                      <div className={`w-4 h-4 rounded border mr-2 flex items-center justify-center transition-colors ${isNodeSelected(subId, nodeName)
+                      <div className={`w-4 h-4 rounded border mr-2 flex items-center justify-center transition-colors ${isNodeSelected(subId, node)
                         ? 'bg-blue-600 border-blue-600 text-white'
                         : 'border-gray-500'
                         }`}>
-                        {isNodeSelected(subId, nodeName) && <Check size={12} />}
+                        {isNodeSelected(subId, node) && <Check size={12} />}
                       </div>
-                      <span className="text-sm text-gray-300 truncate" title={nodeName}>
-                        {nodeName}
+                      <span className="text-sm text-gray-300 truncate" title={node.name}>
+                        {node.name}
                       </span>
                     </div>
                   ))}

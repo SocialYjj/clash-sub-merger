@@ -73,6 +73,11 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertIsNone(server.app.redoc_url)
         self.assertIsNone(server.app.openapi_url)
 
+    def test_builtin_access_log_is_disabled_to_protect_subscription_tokens(self):
+        source = Path(server.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("uvicorn.run(app, host=host, port=port, access_log=False)", source)
+
     def test_container_healthchecks_do_not_depend_on_curl(self):
         repo_root = Path(__file__).resolve().parents[1]
         dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
@@ -84,17 +89,29 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertIn("urllib.request", compose)
 
     def test_runtime_container_uses_unprivileged_user(self):
-        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        repo_root = Path(__file__).resolve().parents[1]
+        dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+        entrypoint = (repo_root / "docker-entrypoint.sh").read_text(encoding="utf-8")
 
         self.assertIn("useradd --create-home --uid 1000", dockerfile)
         self.assertIn("chown -R appuser:appuser /app", dockerfile)
-        self.assertIn("USER appuser", dockerfile)
+        self.assertIn("gosu", dockerfile)
+        self.assertIn('ENTRYPOINT ["docker-entrypoint.sh"]', dockerfile)
+        self.assertIn('chown -R appuser:appuser "$data_dir"', entrypoint)
+        self.assertIn('gosu appuser touch "$write_probe"', entrypoint)
+        self.assertIn('exec gosu appuser "$@"', entrypoint)
 
-    def test_server_uses_filelock_timeout_alias(self):
-        content = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    def test_subscription_refresh_lock_uses_async_filelock_and_timeout_alias(self):
+        content = (
+            Path(__file__).resolve().parents[1]
+            / "services"
+            / "subscription_refresh_lock.py"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("from filelock import FileLock, Timeout as FileLockTimeout", content)
-        self.assertIn("except FileLockTimeout as exc:", content)
+        self.assertIn("AsyncFileLock", content)
+        self.assertIn("Timeout as FileLockTimeout", content)
+        self.assertIn("except FileLockTimeout:", content)
+        self.assertIn("await file_lock.release(force=True)", content)
 
     def test_health_endpoint_returns_503_when_required_speedtest_is_down(self):
         class DownClient:
@@ -105,7 +122,7 @@ class ServerSecurityTests(unittest.TestCase):
             with (
                 patch.object(health_api, "_http_client", DownClient()),
                 patch.object(health_api.AppConfig, "GO_SPEEDTEST_ENABLED", True),
-                patch.object(health_api.os.path, "exists", return_value=True),
+                patch.object(health_api, "load_config", return_value={"auth": {"password_hash": "set"}}),
             ):
                 return await health_api.health_check()
 
@@ -131,7 +148,7 @@ class ServerSecurityTests(unittest.TestCase):
             with (
                 patch.object(health_api, "_http_client", client),
                 patch.object(health_api.AppConfig, "GO_SPEEDTEST_ENABLED", True),
-                patch.object(health_api.os.path, "exists", return_value=True),
+                patch.object(health_api, "load_config", return_value={"auth": {"password_hash": "set"}}),
             ):
                 response = await health_api.health_check()
             return response, client
@@ -168,7 +185,8 @@ class ServerSecurityTests(unittest.TestCase):
             config_file = data_dir / "config.json"
             config_file.write_text(json.dumps({"auth": {"old": True}}), encoding="utf-8")
             backup_file = backup_dir / "config_20260101_restore.json"
-            backup_file.write_text(json.dumps({"auth": {"restored": True}}), encoding="utf-8")
+            restored_config = {"auth": {"password_hash": "a" * 64, "restored": True}}
+            backup_file.write_text(json.dumps(restored_config), encoding="utf-8")
 
             with (
                 patch.object(backup_service, "CONFIG_FILE", str(config_file)),
@@ -176,7 +194,7 @@ class ServerSecurityTests(unittest.TestCase):
             ):
                 self.assertTrue(backup_service.restore_backup(backup_file.name))
 
-            self.assertEqual(json.loads(config_file.read_text(encoding="utf-8")), {"auth": {"restored": True}})
+            self.assertEqual(json.loads(config_file.read_text(encoding="utf-8")), restored_config)
             self.assertFalse(Path(f"{config_file}.restore.tmp").exists())
             pre_restore_backups = list(backup_dir.glob("config_*_pre_restore.json"))
             self.assertEqual(len(pre_restore_backups), 1)

@@ -105,15 +105,6 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
     }
   };
 
-  const updateYamlPreview = async () => {
-    try {
-      const response = await request.get(`/api/users/${user.id}/preview-yaml`);
-      setYamlPreview(response.data.yaml);
-    } catch (error) {
-      console.error('Failed to update YAML preview:', error);
-    }
-  };
-
   const handleEditGroup = (groupName) => {
     const group = groups.find(g => g.name === groupName);
     if (group) {

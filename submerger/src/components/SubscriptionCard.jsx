@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { RefreshCw, Trash2, Clock, Calendar, Edit2, GripVertical, Copy, FileText } from 'lucide-react';
+import { RefreshCw, Trash2, Clock, Calendar, Edit2, GripVertical, Copy, FileText, AlertTriangle } from 'lucide-react';
 import { getTrafficInfo, getAvatarTheme, formatDate } from '../utils/format';
 
 export default function SubscriptionCard({
@@ -24,6 +24,8 @@ export default function SubscriptionCard({
     const isDragging = draggedItem === index;
     const isDragOver = dragOverItem === index;
     const isLocal = sub.type === 'local';
+    const lastAttempt = sub.last_attempt ?? sub.last_update;
+    const lastSuccess = sub.last_success ?? sub.last_update;
 
     const theme = getAvatarTheme(sub.name);
     const firstChar = sub.name.charAt(0).toUpperCase();
@@ -90,18 +92,37 @@ export default function SubscriptionCard({
                     )}
                 </div>
 
+                {sub.last_error && (
+                    <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300" title={sub.last_error}>
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        <span className="break-words">{sub.last_error}</span>
+                    </div>
+                )}
+
                 {/* Time Info */}
-                <div className="grid grid-cols-2 gap-4 text-xs">
+                <div className={`grid ${isLocal ? 'grid-cols-2' : 'grid-cols-3'} gap-3 text-xs`}>
                     <div>
                         <div className="text-gray-500 mb-1 flex items-center gap-1">
                             <Clock size={12} />
-                            {isLocal ? '导入时间' : '上次运行'}
+                            {isLocal ? '导入时间' : '最近尝试'}
                         </div>
                         <div className="text-gray-300 font-medium">
-                            {sub.last_update ? formatDate(sub.last_update).split(' ')[0] : '-'}
+                            {lastAttempt ? formatDate(lastAttempt).split(' ')[0] : '-'}
                         </div>
                         <div className="text-gray-400 scale-90 origin-top-left">
-                            {sub.last_update ? formatDate(sub.last_update).split(' ')[1] : ''}
+                            {lastAttempt ? formatDate(lastAttempt).split(' ')[1] : ''}
+                        </div>
+                    </div>
+                    <div>
+                        <div className="text-gray-500 mb-1 flex items-center gap-1">
+                            <Clock size={12} />
+                            最近成功
+                        </div>
+                        <div className="text-gray-300 font-medium">
+                            {lastSuccess ? formatDate(lastSuccess).split(' ')[0] : '-'}
+                        </div>
+                        <div className="text-gray-400 scale-90 origin-top-left">
+                            {lastSuccess ? formatDate(lastSuccess).split(' ')[1] : ''}
                         </div>
                     </div>
                     {!isLocal && (

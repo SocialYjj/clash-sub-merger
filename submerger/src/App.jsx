@@ -22,7 +22,7 @@ const Templates = lazy(() => import('./pages/Templates'));
 const API_BASE = '/api';
 
 // Login Page Component
-function LoginPage({ hasPassword, onLogin, onSetup }) {
+function LoginPage({ hasPassword, onLogin }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -36,11 +36,7 @@ function LoginPage({ hasPassword, onLogin, onSetup }) {
     setLoading(true);
 
     try {
-      if (hasPassword) {
-        await onLogin(password);
-      } else {
-        await onSetup(password);
-      }
+      await onLogin(password);
     } catch (err) {
       setError(err.response?.data?.detail || '操作失败');
     } finally {
@@ -57,20 +53,20 @@ function LoginPage({ hasPassword, onLogin, onSetup }) {
               <Lock size={32} className="text-blue-500" />
             </div>
             <h1 className="text-2xl font-bold text-white">
-              {hasPassword ? '登录' : '设置密码'}
+              {hasPassword ? '登录' : '管理员未初始化'}
             </h1>
             <p className="text-gray-400 mt-2">
-              {hasPassword ? '请输入密码以继续' : '首次使用，请设置管理密码'}
+              {hasPassword ? '请输入密码以继续' : '请在 .env 中配置 INITIAL_ADMIN_PASSWORD，然后重启服务'}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {hasPassword && <form onSubmit={handleSubmit} className="space-y-4">
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={hasPassword ? '输入密码' : '设置密码'}
+                placeholder="输入密码"
                 className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 pr-12"
                 autoFocus
               />
@@ -92,9 +88,9 @@ function LoginPage({ hasPassword, onLogin, onSetup }) {
               disabled={!password.trim() || loading}
               className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
             >
-              {loading ? '处理中...' : (hasPassword ? '登录' : '设置密码')}
+              {loading ? '处理中...' : '登录'}
             </button>
-          </form>
+          </form>}
         </div>
       </div>
     </div>
@@ -106,10 +102,6 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [hasPassword, setHasPassword] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
-  const [subToken, setSubToken] = useState('');
-  const [subFilename, setSubFilename] = useState('config.yaml');
-  const [subName, setSubName] = useState('机场聚合');
-
   // Data state
   const [subscriptions, setSubscriptions] = useState([]);
   const [customNodes, setCustomNodes] = useState([]);
@@ -168,9 +160,6 @@ export default function App() {
       const res = await request.get(`${API_BASE}/auth/status`, { signal });
       if (signal?.aborted) return;
       setHasPassword(res.data.has_password);
-      setSubToken(res.data.sub_token || '');
-      setSubFilename(res.data.sub_filename || 'config.yaml');
-      setSubName(res.data.sub_name || '机场聚合');
 
       const session = localStorage.getItem('session');
       if (session && res.data.has_password) {
@@ -196,14 +185,6 @@ export default function App() {
   const handleLogin = async (password) => {
     const res = await request.post(`${API_BASE}/auth/login`, { password });
     localStorage.setItem('session', res.data.session);
-    setIsLoggedIn(true);
-  };
-
-  const handleSetup = async (password) => {
-    const res = await request.post(`${API_BASE}/auth/setup`, { password });
-    localStorage.setItem('session', res.data.session);
-    setSubToken(res.data.sub_token);
-    setHasPassword(true);
     setIsLoggedIn(true);
   };
 
@@ -267,7 +248,7 @@ export default function App() {
       await fetchSubscriptions();
       showToast('订阅添加成功');
     } catch (err) {
-      showToast('添加失败: ' + (err.response?.data?.detail || err.message), 'error');
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -288,11 +269,19 @@ export default function App() {
   const refreshSubscription = async (id) => {
     setLoading(true);
     try {
-      await request.post(`${API_BASE}/subscriptions/${id}/refresh`);
+      await request.post(
+        `${API_BASE}/subscriptions/${id}/refresh`,
+        null,
+        { timeout: 180000 }
+      );
       await fetchSubscriptions();
       showToast('订阅已更新');
     } catch (err) {
-      showToast('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
+      if (err.response?.status === 409) {
+        showToast('该订阅正在更新，请等待当前更新完成后再试', 'info');
+      } else {
+        showToast('更新失败: ' + getErrorMessage(err, '未知错误'), 'error');
+      }
     } finally {
       setLoading(false);
     }
@@ -301,11 +290,31 @@ export default function App() {
   const refreshAllSubscriptions = async () => {
     setLoading(true);
     try {
-      await request.post(`${API_BASE}/subscriptions/refresh-all`);
+      const response = await request.post(
+        `${API_BASE}/subscriptions/refresh-all`,
+        null,
+        { timeout: 300000 }
+      );
       await fetchSubscriptions();
-      showToast('全部订阅已更新');
+      const {
+        status,
+        success_count: successCount,
+        failure_count: failureCount,
+        results = [],
+      } = response.data;
+      const failureDetails = results
+        .filter(item => item.status === 'error')
+        .map(item => `${item.name}: ${item.error}`)
+        .join('；');
+      if (status === 'success') {
+        showToast(`全部 ${successCount} 个订阅已更新`);
+      } else if (status === 'partial') {
+        showToast(`更新完成：成功 ${successCount} 个，失败 ${failureCount} 个。${failureDetails}`, 'info');
+      } else {
+        showToast(`更新失败：${failureCount} 个订阅均未更新。${failureDetails}`, 'error');
+      }
     } catch (err) {
-      showToast('更新失败', 'error');
+      showToast('更新失败: ' + getErrorMessage(err, '未知错误'), 'error');
     } finally {
       setLoading(false);
     }
@@ -388,39 +397,6 @@ export default function App() {
     }, 'warning');
   };
 
-  // Settings handlers
-  const updateFilename = async (filename) => {
-    try {
-      const res = await request.post(`${API_BASE}/auth/sub-filename`, { filename });
-      setSubFilename(res.data.sub_filename);
-      showToast('文件名已更新');
-    } catch (err) {
-      showToast('更新失败', 'error');
-    }
-  };
-
-  const updateSubName = async (name) => {
-    try {
-      const res = await request.post(`${API_BASE}/auth/sub-name`, { name });
-      setSubName(res.data.sub_name);
-      showToast('配置名称已更新');
-    } catch (err) {
-      showToast('更新失败', 'error');
-    }
-  };
-
-  const regenerateToken = async () => {
-    showConfirm('重新生成订阅 Token', '重新生成 token 后，旧的订阅地址将失效，确定继续？', async () => {
-      try {
-        const res = await request.post(`${API_BASE}/auth/regenerate-token`);
-        setSubToken(res.data.sub_token);
-        showToast('订阅 token 已重新生成');
-      } catch (err) {
-        showToast('生成失败', 'error');
-      }
-    }, 'warning');
-  };
-
   const changePassword = async (currentPassword, newPassword) => {
     try {
       await request.post(`${API_BASE}/auth/change-password`, {
@@ -451,7 +427,7 @@ export default function App() {
 
   // Not logged in
   if (!isLoggedIn) {
-    return <LoginPage hasPassword={hasPassword} onLogin={handleLogin} onSetup={handleSetup} />;
+    return <LoginPage hasPassword={hasPassword} onLogin={handleLogin} />;
   }
 
   // Main app
@@ -504,12 +480,6 @@ export default function App() {
             } />
             <Route path="/settings" element={
               <Settings
-                subToken={subToken}
-                subFilename={subFilename}
-                subName={subName}
-                onUpdateFilename={updateFilename}
-                onUpdateSubName={updateSubName}
-                onRegenerateToken={regenerateToken}
                 onChangePassword={changePassword}
                 showToast={showToast}
               />

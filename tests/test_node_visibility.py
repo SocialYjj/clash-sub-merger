@@ -13,6 +13,8 @@ from services.node_visibility import (
     filter_enabled_nodes,
     is_node_enabled,
 )
+from services.node_identity import subscription_node_id
+from services.node_visibility import clear_user_subscription_caches
 
 
 class NodeVisibilityTests(unittest.TestCase):
@@ -129,7 +131,7 @@ class NodeVisibilityTests(unittest.TestCase):
 
         saved_payloads = []
 
-        with patch.object(server, "load_config", return_value={
+        with patch("services.custom_node_storage.load_config", return_value={
             "custom_nodes": [
                 {
                     "id": "node_1",
@@ -150,7 +152,7 @@ class NodeVisibilityTests(unittest.TestCase):
                     "enabled": True,
                 },
             ]
-        }), patch.object(server, "save_subscription_yaml", side_effect=lambda *args: saved_payloads.append(args)):
+        }), patch("services.custom_node_storage.save_subscription_yaml", side_effect=lambda *args: saved_payloads.append(args)):
             server.update_custom_nodes_yaml()
 
         self.assertEqual(saved_payloads[0][0], "custom_nodes")
@@ -166,18 +168,19 @@ class NodeVisibilityTests(unittest.TestCase):
             "custom_nodes": [{"id": "node_1", "name": "US 01"}],
             "users": [{"id": "u1", "sub_cache": {"content": "old"}}],
         }
-        calls = {"yaml": 0, "stats": 0}
+        calls = {"stats": 0}
 
-        def update_config(mutator):
-            return mutator(config)
+        def update_custom_nodes(mutator):
+            response = mutator(config)
+            clear_user_subscription_caches(config)
+            return response
 
         fake_server = SimpleNamespace(
-            update_custom_nodes_yaml=lambda: calls.__setitem__("yaml", calls["yaml"] + 1),
             invalidate_stats_cache=lambda: calls.__setitem__("stats", calls["stats"] + 1),
         )
 
         with (
-            patch.object(nodes_api, "update_config", side_effect=update_config),
+            patch.object(nodes_api, "update_custom_nodes", side_effect=update_custom_nodes),
             patch.object(nodes_api, "_get_server", return_value=fake_server),
         ):
             response = nodes_api.toggle_custom_node("node_1", _=True)
@@ -185,7 +188,7 @@ class NodeVisibilityTests(unittest.TestCase):
         self.assertFalse(response["enabled"])
         self.assertFalse(config["custom_nodes"][0]["enabled"])
         self.assertNotIn("sub_cache", config["users"][0])
-        self.assertEqual(calls, {"yaml": 1, "stats": 1})
+        self.assertEqual(calls, {"stats": 1})
 
     def test_subscription_node_toggle_persists_visibility_and_clears_user_cache(self):
         import api.nodes as nodes_api
@@ -197,12 +200,11 @@ class NodeVisibilityTests(unittest.TestCase):
         sub_data = {"proxies": [{"name": "US 01", "type": "http", "server": "example.com", "port": 8080}]}
         calls = {"stats": 0}
 
-        def update_config(mutator):
-            return mutator(config)
-
-        def update_subscription_yaml(sub_id, yaml_dir, mutator):
+        def update_subscription_yaml(sub_id, mutator):
             self.assertEqual(sub_id, "sub_1")
-            return mutator(sub_data)
+            response = mutator(sub_data)
+            clear_user_subscription_caches(config)
+            return response
 
         fake_server = SimpleNamespace(
             invalidate_stats_cache=lambda: calls.__setitem__("stats", calls["stats"] + 1),
@@ -210,11 +212,18 @@ class NodeVisibilityTests(unittest.TestCase):
 
         with (
             patch.object(nodes_api, "load_config", return_value=config),
-            patch.object(nodes_api, "update_config", side_effect=update_config),
-            patch.object(nodes_api, "update_subscription_yaml", side_effect=update_subscription_yaml),
+            patch.object(
+                nodes_api,
+                "update_subscription_yaml_with_references",
+                side_effect=update_subscription_yaml,
+            ),
             patch.object(nodes_api, "_get_server", return_value=fake_server),
         ):
-            response = nodes_api.toggle_subscription_node("sub_1", 0, _=True)
+            response = nodes_api.toggle_subscription_node(
+                "sub_1",
+                subscription_node_id("sub_1", sub_data["proxies"][0]),
+                _=True,
+            )
 
         self.assertFalse(response["enabled"])
         self.assertFalse(sub_data["proxies"][0]["enabled"])

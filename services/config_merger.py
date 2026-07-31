@@ -12,6 +12,7 @@ from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
 from services.node_visibility import filter_enabled_nodes
+from services.node_identity import custom_node_id, subscription_node_id
 from services.proxy_chain_utils import unique_name
 
 logger = get_logger(__name__)
@@ -330,9 +331,19 @@ rule-providers:
                 disabled_count,
             )
             
-            # Add source prefix
-            transformed_proxies = NameTransformer.transform_proxies(enabled_proxies, source_name)
             source_id = self._source_id_from_filename(file_name)
+            identified_proxies = []
+            for proxy in enabled_proxies:
+                identified_proxy = dict(proxy)
+                identified_proxy['_allocation_id'] = (
+                    custom_node_id(proxy)
+                    if source_id == 'custom_nodes'
+                    else subscription_node_id(source_id, proxy)
+                )
+                identified_proxies.append(identified_proxy)
+
+            # Add source prefix after deriving identity from the stored node.
+            transformed_proxies = NameTransformer.transform_proxies(identified_proxies, source_name)
             for proxy in transformed_proxies:
                 proxy['name'] = self._make_unique_proxy_name(proxy.get('name', ''), used_names)
                 if self.include_source_metadata:

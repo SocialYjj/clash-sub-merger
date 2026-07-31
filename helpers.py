@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from dotenv import load_dotenv
 from logger_config import get_logger
 from core.proxy_compat import normalize_subscription_data
-from core.config import env_int
+from core.config import AppConfig, env_int
 from core import (
     cache_hits_total, cache_misses_total,
     file_operations_total, file_operation_duration_seconds
@@ -59,10 +59,10 @@ class Constants:
     MAX_SUBSCRIPTION_NAME_LENGTH = 100
     MAX_NODE_NAME_LENGTH = 200
     MIN_CHAIN_NODES = 2
-    MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_REQUEST_SIZE = AppConfig.MAX_REQUEST_SIZE
     
     # Defaults
-    DEFAULT_CACHE_DURATION = env_int('CONFIG_CACHE_DURATION', 60, minimum=0)
+    DEFAULT_CACHE_DURATION = AppConfig.YAML_CACHE_DURATION
     DEFAULT_PAGE_SIZE = 50
     SLOW_REQUEST_THRESHOLD = 1.0  # seconds
     
@@ -200,6 +200,10 @@ def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = 'ut
             tmp.write(content)
             tmp.flush()
             os.fsync(tmp.fileno())
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            logger.warning("Could not restrict permissions for %s", target.name)
         os.replace(tmp_name, target)
     except Exception:
         if tmp_name:
@@ -230,7 +234,7 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
     
     # Check cache first
     if use_cache:
-        cached = yaml_cache.get(sub_id)
+        cached = yaml_cache.get(sub_id, max_age=Constants.DEFAULT_CACHE_DURATION)
         if cached is not None:
             logger.debug(f"YAML cache hit for {sub_id}")
             cache_hits_total.labels(cache_type='yaml').inc()
@@ -371,14 +375,17 @@ def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
 
 
 def update_subscription_yaml(sub_id: str, yaml_source_dir: str, mutator):
-    """Atomically load, mutate, and save a subscription YAML file under one lock."""
-    with subscription_yaml_lock(sub_id, yaml_source_dir):
-        cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=False)
-        if not isinstance(cfg, dict):
-            cfg = {}
-        result = mutator(cfg)
-        save_subscription_yaml(sub_id, cfg, yaml_source_dir)
-        return result
+    """Atomically mutate YAML under both process-local and cross-process locks."""
+    from services.subscription_refresh_lock import subscription_write_slot
+
+    with subscription_write_slot(sub_id):
+        with subscription_yaml_lock(sub_id, yaml_source_dir):
+            cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=False)
+            if not isinstance(cfg, dict):
+                cfg = {}
+            result = mutator(cfg)
+            save_subscription_yaml(sub_id, cfg, yaml_source_dir)
+            return result
 
 
 def generate_timestamp_id(prefix: str = '') -> str:

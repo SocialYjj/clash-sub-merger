@@ -5,7 +5,7 @@ import request, { isRequestCanceled } from '../utils/request';
 
 const API_BASE = '/api';
 
-export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
+export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }) {
     const [cronValue, setCronValue] = useState('');
     const [nextRun, setNextRun] = useState(null);
     const [error, setError] = useState('');
@@ -129,7 +129,7 @@ export default function ScheduleModal({ sub, onClose, onRefresh, showToast }) {
 
             showToast?.(valueToSave ? '定时更新已设置' : '定时更新已清除');
             onClose();
-            onRefresh?.(sub.id);
+            onRefreshList?.();
         } catch (err) {
             console.error('Save failed:', err);
             showToast?.('设置失败: ' + (err.response?.data?.detail || err.message), 'error');

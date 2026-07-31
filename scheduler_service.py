@@ -10,6 +10,8 @@ from threading import RLock
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.executors.pool import ThreadPoolExecutor
+from core.config import AppConfig
 from logger_config import get_logger
 
 # Setup logger
@@ -23,7 +25,16 @@ class SchedulerManager:
     """
     
     def __init__(self):
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = AsyncIOScheduler(
+            executors={
+                'default': ThreadPoolExecutor(max_workers=AppConfig.SCHEDULED_REFRESH_WORKERS),
+            },
+            job_defaults={
+                'coalesce': True,
+                'max_instances': 1,
+                'misfire_grace_time': AppConfig.SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS,
+            },
+        )
         self.jobs: Dict[str, str] = {}  # {task_id: job_id}
         self._lock = RLock()
         self._started = False
@@ -146,9 +157,11 @@ class SchedulerManager:
                 logger.info(f"Removed existing job {task_id}")
             
             try:
+                trigger = CronTrigger.from_crontab(cleaned)
+                trigger.jitter = AppConfig.SCHEDULED_REFRESH_JITTER_SECONDS or None
                 job = self.scheduler.add_job(
                     func,
-                    CronTrigger.from_crontab(cleaned),
+                    trigger,
                     args=args,
                     kwargs=kwargs,
                     id=f"task_{task_id}",

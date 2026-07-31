@@ -43,6 +43,7 @@ class UserAllocationRoutesTest(unittest.TestCase):
         self.assertIn("custom_nodes", sources)
         nodes = sources["custom_nodes"]["nodes"]
         self.assertEqual(len(nodes), 1)
-        self.assertIn("US 01", nodes[0])
-        self.assertNotIn("US Disabled", nodes)
-        self.assertNotIn("剩余流量", nodes[0])
+        self.assertIn("US 01", nodes[0]["name"])
+        self.assertTrue(nodes[0]["id"])
+        self.assertNotIn("US Disabled", [node["name"] for node in nodes])
+        self.assertNotIn("剩余流量", nodes[0]["name"])

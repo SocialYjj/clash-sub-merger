@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24.5-alpine3.22 AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o speedtest .
 
 # Final image
-FROM alpine:latest
+FROM alpine:3.22.1
 
 RUN apk add --no-cache ca-certificates
 

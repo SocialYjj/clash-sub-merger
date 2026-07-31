@@ -17,15 +17,19 @@ DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
 YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+LOG_DIR = os.path.join(DATA_DIR, 'logs')
+REFRESH_LOCK_DIR = os.path.join(DATA_DIR, 'refresh_locks')
 
-# Ensure directories exist - wrapped in try/except for Docker volume mount scenarios
+# Ensure directories exist. Docker repairs bind-mount ownership in its entrypoint;
+# direct deployments should fail immediately with a useful path and cause.
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
-except PermissionError:
-    # Directories will be created by Docker volume mount or already exist
-    pass
+    os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs(REFRESH_LOCK_DIR, exist_ok=True)
+except OSError as exc:
+    raise RuntimeError(f"Cannot initialize DATA_DIR '{DATA_DIR}': {exc}") from exc
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -62,6 +66,8 @@ class AppConfig:
     YAML_SOURCE_DIR = YAML_SOURCE_DIR
     CONFIG_FILE = CONFIG_FILE
     BACKUP_DIR = BACKUP_DIR
+    LOG_DIR = LOG_DIR
+    REFRESH_LOCK_DIR = REFRESH_LOCK_DIR
     
     # Go Speedtest Service
     GO_SPEEDTEST_URL = os.environ.get('GO_SPEEDTEST_URL', 'http://localhost:9876')
@@ -77,13 +83,50 @@ class AppConfig:
     READ_TIMEOUT = env_int('READ_TIMEOUT', 30, minimum=1)
     WRITE_TIMEOUT = env_int('WRITE_TIMEOUT', 10, minimum=1)
     
-    # Retry settings
-    MAX_RETRIES = env_int('MAX_RETRIES', 3, minimum=0)
-    RETRY_DELAY = env_int('RETRY_DELAY', 1, minimum=0)
+    # Subscription refresh concurrency
+    SUBSCRIPTION_REFRESH_CONCURRENCY = env_int(
+        'SUBSCRIPTION_REFRESH_CONCURRENCY',
+        4,
+        minimum=1,
+        maximum=20,
+    )
+    SCHEDULED_REFRESH_WORKERS = env_int('SCHEDULED_REFRESH_WORKERS', 4, minimum=1, maximum=20)
+    SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS = env_int(
+        'SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS',
+        300,
+        minimum=1,
+    )
+    SCHEDULED_REFRESH_JITTER_SECONDS = env_int(
+        'SCHEDULED_REFRESH_JITTER_SECONDS',
+        120,
+        minimum=0,
+        maximum=900,
+    )
+    SUBSCRIPTION_FETCH_RETRIES = env_int(
+        'SUBSCRIPTION_FETCH_RETRIES',
+        1,
+        minimum=0,
+        maximum=5,
+    )
+    SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS = env_int(
+        'SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS',
+        1,
+        minimum=0,
+        maximum=30,
+    )
     
     # Cache settings
     STATS_CACHE_DURATION = env_int('STATS_CACHE_DURATION', 60, minimum=0)
     CONFIG_CACHE_DURATION = env_int('CONFIG_CACHE_DURATION', 5, minimum=0)
+    YAML_CACHE_DURATION = env_int('YAML_CACHE_DURATION', 60, minimum=0)
+
+    # Input/output limits
+    MAX_REQUEST_SIZE = env_int('MAX_REQUEST_SIZE', 10 * 1024 * 1024, minimum=1024)
+    SUBSCRIPTION_MAX_BYTES = env_int(
+        'SUBSCRIPTION_MAX_BYTES',
+        10 * 1024 * 1024,
+        minimum=1024,
+    )
     
     # File lock timeout
     FILE_LOCK_TIMEOUT = env_int('FILE_LOCK_TIMEOUT', 10, minimum=0)
@@ -93,6 +136,9 @@ class AppConfig:
     RATE_LIMIT_REFRESH_SINGLE = os.environ.get('RATE_LIMIT_REFRESH_SINGLE', '10/minute')
     RATE_LIMIT_REFRESH_ALL = os.environ.get('RATE_LIMIT_REFRESH_ALL', '5/minute')
     RATE_LIMIT_SPEEDTEST = os.environ.get('RATE_LIMIT_SPEEDTEST', '5/minute')
+    RATE_LIMIT_NODE_TEST = os.environ.get('RATE_LIMIT_NODE_TEST', '600/minute')
+    RATE_LIMIT_NODE_SAVE = os.environ.get('RATE_LIMIT_NODE_SAVE', '30/minute')
+    RATE_LIMIT_GEOIP = os.environ.get('RATE_LIMIT_GEOIP', '30/minute')
     RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
     
     # CORS settings
@@ -105,6 +151,10 @@ class AppConfig:
     # Optional HMAC signing key for newly issued admin session tokens.
     # Existing unsigned sessions remain compatible when upgrading.
     SESSION_SECRET = os.environ.get('SESSION_SECRET', '').strip()
+    INITIAL_ADMIN_PASSWORD = os.environ.get('INITIAL_ADMIN_PASSWORD', '').strip()
+    SESSION_TTL_SECONDS = env_int('SESSION_TTL_SECONDS', 86400, minimum=300)
+    MAX_ACTIVE_SESSIONS = env_int('MAX_ACTIVE_SESSIONS', 20, minimum=1, maximum=200)
+    METRICS_TOKEN = os.environ.get('METRICS_TOKEN', '').strip()
     
     # GZip compression threshold (bytes)
     GZIP_MIN_SIZE = env_int('GZIP_MIN_SIZE', 500, minimum=0)

@@ -8,20 +8,19 @@ import httpx
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from pydantic import BaseModel, Field, field_validator
 
 from core.config import AppConfig
 from core.dependencies import verify_session
 from core.database import load_config, update_config
+from core.rate_limit import limiter
 from helpers import handle_api_errors, load_subscription_yaml
 from logger_config import get_logger
 from services.node_manager import get_proxy_node_by_id
+from services.node_identity import subscription_node_id
 
 logger = get_logger(__name__)
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
 
 MAX_SPEEDTEST_TIMEOUT = 60
 MAX_SPEEDTEST_CONCURRENCY = 100
@@ -46,12 +45,20 @@ class BatchSpeedTestRequest(BaseModel):
 
 
 class SpeedTestProfile(BaseModel):
-    name: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = ""
     subscription_ids: Optional[List[str]] = None
     test_speed: Optional[bool] = False
     timeout: Optional[int] = Field(default=10, ge=1, le=MAX_SPEEDTEST_TIMEOUT)
     concurrency: Optional[int] = Field(default=10, ge=1, le=MAX_SPEEDTEST_CONCURRENCY)
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, value):
+        normalized_name = value.strip()
+        if not normalized_name:
+            raise ValueError('Name cannot be empty')
+        return normalized_name
 
 
 # ==================== Helper Functions ====================
@@ -90,6 +97,17 @@ def _get_ipv6_proxy() -> tuple:
     return None, True
 
 
+def build_node_speedtest_payload(node: dict) -> tuple[dict, bool]:
+    """Build a Go-service payload and apply the configured IPv6 dialer policy."""
+    server = str(node.get('server') or '')
+    ipv6_proxy, ipv6_only = _get_ipv6_proxy()
+    use_proxy = bool(ipv6_proxy and (not ipv6_only or _is_ipv6_address(server)))
+    payload = {"node": node}
+    if use_proxy:
+        payload["dialer_proxy"] = ipv6_proxy
+    return payload, use_proxy
+
+
 async def _speedtest_single(node_id: str, test_speed: bool = False, timeout: int = 10):
     """Test a single node"""
     timeout = _bounded_int(timeout, default=10, minimum=1, maximum=MAX_SPEEDTEST_TIMEOUT)
@@ -114,7 +132,7 @@ async def _get_speedtest_client() -> httpx.AsyncClient:
     """Get or create a shared httpx.AsyncClient for Go speedtest requests."""
     global _speedtest_client
     if _speedtest_client is None or _speedtest_client.is_closed:
-        _speedtest_client = httpx.AsyncClient()
+        _speedtest_client = httpx.AsyncClient(trust_env=False)
     return _speedtest_client
 
 
@@ -149,20 +167,10 @@ async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int =
         "bytes_downloaded": 0,
     }
 
-    # Check if we should use proxy for this node
-    server = node.get('server', '')
-    is_ipv6 = _is_ipv6_address(server)
-    ipv6_proxy, ipv6_only = _get_ipv6_proxy()
-    
-    # Determine if this node should use proxy
-    use_proxy = ipv6_proxy and (not ipv6_only or is_ipv6)
-    
-    # Build base payload
-    base_payload = {"node": node}
+    base_payload, use_proxy = build_node_speedtest_payload(node)
     if use_proxy:
-        base_payload["dialer_proxy"] = ipv6_proxy
         result["using_proxy"] = True
-        logger.info(f"Testing node {node.get('name')} via dialer proxy: {ipv6_proxy}")
+        logger.info("Testing node %s through the configured IPv6 dialer proxy", node.get('name'))
     
     # Latency test
     latency_result = await _go_speedtest_request(
@@ -247,6 +255,7 @@ async def _speedtest_batch(node_ids: List[str], test_speed: bool = False, timeou
 # ==================== API Endpoints ====================
 
 @router.post("/single")
+@limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
 @handle_api_errors
 async def speedtest_single(data: SpeedTestRequest, request: Request, _: bool = Depends(verify_session)):
     """Test a single node"""
@@ -254,6 +263,7 @@ async def speedtest_single(data: SpeedTestRequest, request: Request, _: bool = D
 
 
 @router.post("/batch")
+@limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
 @handle_api_errors
 async def speedtest_batch(data: BatchSpeedTestRequest, request: Request, _: bool = Depends(verify_session)):
     """Test multiple nodes"""
@@ -261,6 +271,7 @@ async def speedtest_batch(data: BatchSpeedTestRequest, request: Request, _: bool
 
 
 @router.post("/subscription/{sub_id}")
+@limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
 @handle_api_errors
 async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depends(verify_session)):
     """Test all nodes in a subscription"""
@@ -273,7 +284,11 @@ async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depend
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
     nodes = sub_data.get('proxies', []) if sub_data else []
     
-    node_ids = [f"sub_{sub_id}_{i}" for i in range(len(nodes))]
+    node_ids = [
+        subscription_node_id(sub_id, node)
+        for node in nodes
+        if isinstance(node, dict)
+    ]
     return await _speedtest_batch(node_ids, test_speed=False, timeout=10, concurrency=10)
 
 
@@ -386,6 +401,7 @@ def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session))
 
 
 @router.post("/profiles/{profile_id}/run")
+@limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
 @handle_api_errors
 async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Depends(verify_session)):
     """Run a speed test profile"""

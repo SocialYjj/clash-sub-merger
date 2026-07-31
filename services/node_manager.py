@@ -10,13 +10,19 @@ from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.proxy_filter import ProxyFilter
 from services.node_visibility import is_node_enabled
+from services.node_identity import (
+    custom_node_id,
+    is_node_allocated,
+    subscription_node_id,
+)
 
 logger = get_logger(__name__)
 
 # Fields to exclude from proxy config (metadata fields)
 NODE_METADATA_FIELDS = {
     'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'geoip', 'enabled'
+    'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip', 'region',
+    'city', 'display_name', 'index', 'enabled'
 }
 
 
@@ -36,7 +42,8 @@ def strip_metadata(node: dict) -> dict:
 def find_custom_node(
     custom_nodes: List[dict],
     node_index: int = None,
-    node_name: str = None
+    node_name: str = None,
+    node_id: str = None,
 ) -> Optional[dict]:
     """
     Find a custom node by index or name.
@@ -49,15 +56,26 @@ def find_custom_node(
     Returns:
         Transformed node dict or None
     """
+    # Stable ID is authoritative. Name/index remain read-only migration fallbacks.
+    if node_id:
+        for node in custom_nodes:
+            if custom_node_id(node) != node_id or not is_node_enabled(node):
+                continue
+            proxy = ProxyFilter.sanitize_proxy(dict(node))
+            transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
+            transformed['_allocation_id'] = custom_node_id(node)
+            return transformed
+        return None
+
     # Search by name
     if node_name:
         for node in custom_nodes:
             if not is_node_enabled(node):
                 continue
-            proxy = strip_metadata(node)
-            proxy = ProxyFilter.sanitize_proxy(proxy)
-            transformed = NameTransformer.transform_name(proxy, 'Custom')
+            proxy = ProxyFilter.sanitize_proxy(dict(node))
+            transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
             if transformed.get('name') == node_name:
+                transformed['_allocation_id'] = custom_node_id(node)
                 return transformed
     
     # Search by index
@@ -65,9 +83,10 @@ def find_custom_node(
         node = custom_nodes[node_index]
         if not is_node_enabled(node):
             return None
-        proxy = strip_metadata(node)
-        proxy = ProxyFilter.sanitize_proxy(proxy)
-        return NameTransformer.transform_name(proxy, 'Custom')
+        proxy = ProxyFilter.sanitize_proxy(dict(node))
+        transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
+        transformed['_allocation_id'] = custom_node_id(node)
+        return transformed
     
     return None
 
@@ -76,7 +95,8 @@ def find_subscription_node(
     sub_id: str,
     node_index: int = None,
     node_name: str = None,
-    yaml_source_dir: str = None
+    yaml_source_dir: str = None,
+    node_id: str = None,
 ) -> Optional[dict]:
     """
     Find a subscription node by index or name.
@@ -103,29 +123,51 @@ def find_subscription_node(
         cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=True)
         proxies = cfg.get('proxies', []) if cfg else []
         
+        if node_id:
+            matching_nodes = [
+                proxy
+                for proxy in proxies
+                if isinstance(proxy, dict) and subscription_node_id(sub_id, proxy) == node_id
+            ]
+            if len(matching_nodes) > 1:
+                logger.warning("Ambiguous stable node reference in subscription %s", sub_id)
+                return None
+            if matching_nodes:
+                proxy = matching_nodes[0]
+                if not is_node_enabled(proxy) or not ProxyFilter.is_valid_proxy(proxy):
+                    return None
+                proxy = ProxyFilter.sanitize_proxy(dict(proxy))
+                transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
+                transformed['_allocation_id'] = node_id
+                return transformed
+            return None
+
         # Search by name
         if node_name:
             for proxy in proxies:
+                raw_proxy = proxy
                 if not is_node_enabled(proxy):
                     continue
                 if not ProxyFilter.is_valid_proxy(proxy):
                     continue
-                proxy = ProxyFilter.sanitize_proxy(proxy)
-                proxy.pop('enabled', None)
-                transformed = NameTransformer.transform_name(proxy, source_name)
+                proxy = ProxyFilter.sanitize_proxy(dict(proxy))
+                transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
                 if transformed.get('name') == node_name:
+                    transformed['_allocation_id'] = subscription_node_id(sub_id, raw_proxy)
                     return transformed
         
         # Search by index
         if node_index is not None and 0 <= node_index < len(proxies):
             proxy = proxies[node_index]
+            raw_proxy = proxy
             if not is_node_enabled(proxy):
                 return None
             if not ProxyFilter.is_valid_proxy(proxy):
                 return None
-            proxy = ProxyFilter.sanitize_proxy(proxy)
-            proxy.pop('enabled', None)
-            return NameTransformer.transform_name(proxy, source_name)
+            proxy = ProxyFilter.sanitize_proxy(dict(proxy))
+            transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
+            transformed['_allocation_id'] = subscription_node_id(sub_id, raw_proxy)
+            return transformed
             
     except Exception as e:
         logger.warning("Failed to load node %s[%s]: %s", sub_id, node_index, e)
@@ -137,7 +179,8 @@ def find_node_by_reference(
     sub_id: str,
     node_index: int = None,
     node_name: str = None,
-    yaml_source_dir: str = None
+    yaml_source_dir: str = None,
+    node_id: str = None,
 ) -> Optional[dict]:
     """
     Get a proxy node by reference (sub_id + node_name/node_index).
@@ -156,10 +199,10 @@ def find_node_by_reference(
     # Custom nodes
     if sub_id == 'custom':
         custom_nodes = config.get('custom_nodes', [])
-        return find_custom_node(custom_nodes, node_index, node_name)
+        return find_custom_node(custom_nodes, node_index, node_name, node_id)
     
     # Subscription nodes
-    return find_subscription_node(sub_id, node_index, node_name, yaml_source_dir)
+    return find_subscription_node(sub_id, node_index, node_name, yaml_source_dir, node_id)
 
 
 def normalize_alloc_name(name: str) -> str:
@@ -175,7 +218,11 @@ def normalize_alloc_name(name: str) -> str:
     return NameTransformer.remove_flags(name or '').strip()
 
 
-def is_name_allocated(name: str, allocated_nodes: List[str] = None) -> bool:
+def is_name_allocated(
+    name: str,
+    allocated_nodes: List[str] = None,
+    node_id: str = None,
+) -> bool:
     """
     Check if a node name is in allocation list.
     
@@ -186,28 +233,7 @@ def is_name_allocated(name: str, allocated_nodes: List[str] = None) -> bool:
     Returns:
         True if node is allocated
     """
-    if not allocated_nodes:
-        return False
-    if allocated_nodes == ['*']:
-        return True
-    if not name:
-        return False
-    
-    name_clean = normalize_alloc_name(name)
-    
-    for alloc in allocated_nodes:
-        if not alloc:
-            continue
-        if alloc == name:
-            return True
-        if alloc in name:
-            return True
-        
-        alloc_clean = normalize_alloc_name(alloc)
-        if alloc_clean and (alloc_clean == name_clean or alloc_clean in name_clean):
-            return True
-    
-    return False
+    return is_node_allocated(name, allocated_nodes, node_id)
 
 
 def get_all_final_node_names(yaml_source_dir: str = None) -> Set[str]:
@@ -270,63 +296,24 @@ def get_proxy_node_by_id(node_id: str, yaml_source_dir: str = None) -> Optional[
     if not node_id:
         return None
     
-    # Custom nodes
-    if node_id.startswith('custom_'):
-        config = load_config()
-        custom_nodes = config.get('custom_nodes', [])
+    config = load_config()
+    for node in config.get('custom_nodes', []):
+        if custom_node_id(node) == node_id:
+            if not is_node_enabled(node):
+                return None
+            return strip_metadata(ProxyFilter.sanitize_proxy(node))
+
+    for subscription in config.get('subscriptions', []):
+        subscription_id = subscription.get('id')
+        if not subscription_id:
+            continue
         try:
-            idx = int(node_id.rsplit('_', 1)[1])
-            if 0 <= idx < len(custom_nodes):
-                node = custom_nodes[idx]
+            subscription_data = load_subscription_yaml(subscription_id, yaml_source_dir, use_cache=True)
+        except Exception:
+            continue
+        for node in subscription_data.get('proxies', []):
+            if subscription_node_id(subscription_id, node) == node_id:
                 if not is_node_enabled(node):
                     return None
-                node = dict(node)
-                node.pop('enabled', None)
-                return node
-        except (ValueError, IndexError):
-            pass
-        return None
-    
-    # Subscription nodes
-    if node_id.startswith('sub_'):
-        return _get_subscription_node_by_id(node_id, yaml_source_dir)
-    
-    return None
-
-
-def _get_subscription_node_by_id(node_id: str, yaml_source_dir: str) -> Optional[dict]:
-    """Get subscription node by ID."""
-    sub_id = None
-    try:
-        node_ref, node_idx_text = node_id.rsplit('_', 1)
-        if not node_ref or node_ref == 'sub':
-            return None
-        node_idx = int(node_idx_text)
-        
-        # Support both sub_<id>_<index> and <id>_<index> formats
-        raw_sub_id = node_ref[4:] if node_ref.startswith('sub_') else node_ref
-        candidate_sub_ids = []
-        for candidate in (raw_sub_id, f"sub_{raw_sub_id}", node_ref):
-            if candidate and candidate not in candidate_sub_ids:
-                candidate_sub_ids.append(candidate)
-        
-        for sub_id in candidate_sub_ids:
-            import os
-            sub_file = os.path.join(yaml_source_dir, f"{sub_id}.yaml")
-            if not os.path.exists(sub_file):
-                continue
-            sub_data = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=True)
-            proxies = sub_data.get('proxies', [])
-            if 0 <= node_idx < len(proxies):
-                proxy = proxies[node_idx]
-                if not is_node_enabled(proxy):
-                    return None
-                proxy = dict(proxy)
-                proxy.pop('enabled', None)
-                return proxy
-            break
-    except (ValueError, IndexError):
-        pass
-    except Exception as e:
-        logger.warning("Error getting subscription node %s: %s", node_id, e)
+                return strip_metadata(ProxyFilter.sanitize_proxy(node))
     return None

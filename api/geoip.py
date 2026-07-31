@@ -2,11 +2,18 @@
 GeoIP API
 GeoIP lookup endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+import secrets
+import ipaddress
+from urllib.parse import urlsplit
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field, field_validator
+
+from core.config import AppConfig
+from core.database import load_config, update_config
 from core.dependencies import verify_session
+from core.rate_limit import limiter
 from helpers import handle_api_errors
 from logger_config import get_logger
 
@@ -17,25 +24,46 @@ router = APIRouter()
 # ==================== Data Models ====================
 
 class GeoIPLookupRequest(BaseModel):
-    ip: str
+    ip: str = Field(min_length=1, max_length=45)
+
+    @field_validator('ip')
+    @classmethod
+    def validate_ip(cls, value):
+        return _normalize_ip_address(value)
 
 
 class BatchGeoIPRequest(BaseModel):
-    ips: list
+    ips: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator('ips')
+    @classmethod
+    def validate_ips(cls, values):
+        return [_normalize_ip_address(value) for value in values]
+
+
+def _normalize_ip_address(value: str) -> str:
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_address(str(value).strip()))
+    except ValueError as exc:
+        raise ValueError('Invalid IP address') from exc
 
 
 # ==================== API Endpoints ====================
 
 @router.post("/lookup")
+@limiter.limit(AppConfig.RATE_LIMIT_GEOIP)
 @handle_api_errors
-async def lookup_ip_post(data: GeoIPLookupRequest, _: bool = Depends(verify_session)):
+async def lookup_ip_post(data: GeoIPLookupRequest, request: Request, _: bool = Depends(verify_session)):
     """Lookup GeoIP info for an IP address (POST)"""
     return await _do_lookup(data.ip)
 
 
 @router.get("/lookup/{ip:path}")
+@limiter.limit(AppConfig.RATE_LIMIT_GEOIP)
 @handle_api_errors
-async def lookup_ip_get(ip: str, _: bool = Depends(verify_session)):
+async def lookup_ip_get(ip: str, request: Request, _: bool = Depends(verify_session)):
     """Lookup GeoIP info for an IP address (GET)"""
     from urllib.parse import unquote
     ip = unquote(ip)  # Handle URL-encoded IPv6
@@ -45,27 +73,33 @@ async def lookup_ip_get(ip: str, _: bool = Depends(verify_session)):
 async def _do_lookup(ip: str):
     """Internal lookup function"""
     from geoip_service import lookup_ip_online
+
+    try:
+        ip = _normalize_ip_address(ip)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid IP address") from exc
     
     # Use online lookup
     try:
         result = await lookup_ip_online(ip)
         if result:
             return {"ip": ip, "result": result, "source": "online"}
-    except Exception as e:
-        logger.warning(f"Online GeoIP lookup failed: {e}")
+    except Exception as exc:
+        logger.warning("Online GeoIP lookup failed: %s", type(exc).__name__)
     
     return {"ip": ip, "result": None, "source": None}
 
 
 @router.post("/batch")
+@limiter.limit(AppConfig.RATE_LIMIT_GEOIP)
 @handle_api_errors
-async def batch_lookup_ips(data: BatchGeoIPRequest, _: bool = Depends(verify_session)):
+async def batch_lookup_ips(data: BatchGeoIPRequest, request: Request, _: bool = Depends(verify_session)):
     """Batch lookup GeoIP info for multiple IPs"""
     from geoip_service import lookup_ip_online
     import asyncio
     
     results = {}
-    ips = data.ips[:100]  # Limit to 100 IPs
+    ips = data.ips
     tasks = [asyncio.create_task(lookup_ip_online(ip)) for ip in ips]
     try:
         task_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -235,15 +269,66 @@ def export_geoip_cache_entries(
 # ==================== Online GeoIP Config ====================
 
 class OnlineGeoIPConfig(BaseModel):
-    preferred_api: str = None
-    ipinfo_token: str = None
+    preferred_api: str | None = Field(None, max_length=100)
+    ipinfo_token: str | None = Field(None, max_length=4096)
+
+    @field_validator('preferred_api')
+    @classmethod
+    def normalize_preferred_api(cls, value):
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('Preferred API cannot be empty')
+        return normalized
+
+
+class TestGeoIPApiRequest(BaseModel):
+    token: str | None = Field(None, max_length=4096)
+
+
+def _apply_persisted_geoip_config() -> None:
+    from geoip_service import apply_geoip_runtime_config
+
+    apply_geoip_runtime_config(load_config())
+
+
+def _public_geoip_api(api: dict) -> dict:
+    public_api = dict(api)
+    token = str(public_api.pop('token', '') or '')
+    public_api['has_token'] = bool(token or public_api.get('has_token'))
+    return public_api
+
+
+def _find_persisted_custom_api(config: dict, api_id: str) -> dict | None:
+    return next(
+        (
+            api for api in config.get('geoip_config', {}).get('custom_apis', [])
+            if isinstance(api, dict) and api.get('id') == api_id
+        ),
+        None,
+    )
+
+
+def _enabled_geoip_api_ids(geoip_config: dict) -> list[str]:
+    api_settings = geoip_config.get('api_settings', {})
+    enabled_ids = [
+        api_id
+        for api_id in ('ip-api.com', 'ipwhois', 'ipinfo')
+        if api_settings.get(api_id, {}).get('enabled', True)
+    ]
+    enabled_ids.extend(
+        api.get('id')
+        for api in geoip_config.get('custom_apis', [])
+        if isinstance(api, dict) and api.get('id') and api.get('enabled', True)
+    )
+    return enabled_ids
 
 
 @router.get("/online-config")
 @handle_api_errors
 def get_online_geoip_config(_: bool = Depends(verify_session)):
     """Get online GeoIP configuration"""
-    from core.database import load_config
     from geoip_service import get_all_geoip_apis
     
     config = load_config()
@@ -252,10 +337,15 @@ def get_online_geoip_config(_: bool = Depends(verify_session)):
     # Get APIs from geoip_service (includes builtin + custom)
     apis = get_all_geoip_apis()
     
+    public_apis = [_public_geoip_api(api) for api in apis]
+    for api in public_apis:
+        if api.get('id') == 'ipinfo':
+            api['has_token'] = bool(geoip_config.get('ipinfo_token'))
+
     return {
-        "apis": apis,
+        "apis": public_apis,
         "preferred_api": geoip_config.get('preferred_api', 'ip-api.com'),
-        "ipinfo_token": geoip_config.get('ipinfo_token', '')
+        "has_ipinfo_token": bool(geoip_config.get('ipinfo_token')),
     }
 
 
@@ -263,34 +353,35 @@ def get_online_geoip_config(_: bool = Depends(verify_session)):
 @handle_api_errors
 def update_online_geoip_config(data: OnlineGeoIPConfig, _: bool = Depends(verify_session)):
     """Update online GeoIP configuration"""
-    from core.database import update_config
-    from geoip_service import set_online_geoip_config
-
-    if data.preferred_api is not None:
-        set_online_geoip_config(preferred_api=data.preferred_api)
-    if data.ipinfo_token is not None:
-        set_online_geoip_config(ipinfo_token=data.ipinfo_token)
-
     def set_geoip_config(config: dict):
         geoip_config = config.setdefault('geoip_config', {})
         if data.preferred_api is not None:
+            if data.preferred_api not in _enabled_geoip_api_ids(geoip_config):
+                raise HTTPException(status_code=400, detail="GeoIP API is unknown or disabled")
             geoip_config['preferred_api'] = data.preferred_api
         if data.ipinfo_token is not None:
             geoip_config['ipinfo_token'] = data.ipinfo_token
 
     update_config(set_geoip_config)
+    _apply_persisted_geoip_config()
     return {"status": "success"}
 
 
 # ==================== API Test Endpoints ====================
 
 @router.post("/apis/{api_id}/test")
+@limiter.limit(AppConfig.RATE_LIMIT_GEOIP)
 @handle_api_errors
-async def test_geoip_api(api_id: str, _: bool = Depends(verify_session)):
+async def test_geoip_api(
+    api_id: str,
+    request: Request,
+    data: TestGeoIPApiRequest | None = None,
+    _: bool = Depends(verify_session),
+):
     """Test a GeoIP API with a sample IP"""
     from geoip_service import (
         _lookup_ip_api_com, _lookup_ipwhois, _lookup_ipinfo,
-        _lookup_custom_api, get_all_geoip_apis
+        _lookup_custom_api,
     )
     
     # Test IP (Google DNS)
@@ -304,13 +395,13 @@ async def test_geoip_api(api_id: str, _: bool = Depends(verify_session)):
         elif api_id == "ipwhois":
             result = await _lookup_ipwhois(test_ip)
         elif api_id == "ipinfo":
-            # _lookup_ipinfo reads token from global config internally
-            result = await _lookup_ipinfo(test_ip)
+            temporary_token = data.token if data and data.token is not None else None
+            result = await _lookup_ipinfo(test_ip, token=temporary_token)
         else:
-            # Check custom APIs
-            apis = get_all_geoip_apis()
-            custom_api = next((a for a in apis if a.get("id") == api_id), None)
-            if custom_api and not custom_api.get("builtin"):
+            # Read the persisted record because public API descriptions never
+            # contain the real token.
+            custom_api = _find_persisted_custom_api(load_config(), api_id)
+            if custom_api:
                 result = await _lookup_custom_api(test_ip, custom_api)
             else:
                 raise HTTPException(status_code=404, detail="API not found")
@@ -329,11 +420,12 @@ async def test_geoip_api(api_id: str, _: bool = Depends(verify_session)):
             }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as exc:
+        logger.warning("GeoIP API test failed for %s: %s", api_id, type(exc).__name__)
         return {
             "success": False,
             "test_ip": test_ip,
-            "error": str(e)
+            "error": "GeoIP API test failed"
         }
 
 
@@ -341,43 +433,64 @@ async def test_geoip_api(api_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def toggle_geoip_api(api_id: str, _: bool = Depends(verify_session)):
     """Toggle a GeoIP API enabled/disabled"""
-    from geoip_service import set_api_enabled, get_all_geoip_apis
-    from core.database import update_config
-    
-    apis = get_all_geoip_apis()
-    api = next((a for a in apis if a.get("id") == api_id), None)
-    
-    if not api:
-        raise HTTPException(status_code=404, detail="API not found")
-    
-    new_enabled = not api.get("enabled", True)
-    set_api_enabled(api_id, new_enabled)
-
-    def set_api_enabled_config(config: dict):
+    def set_api_enabled_config(config: dict) -> bool:
         geoip_config = config.setdefault('geoip_config', {})
-        api_settings = geoip_config.setdefault('api_settings', {})
-        api_settings[api_id] = {"enabled": new_enabled}
+        if api_id in {'ip-api.com', 'ipwhois', 'ipinfo'}:
+            api_settings = geoip_config.setdefault('api_settings', {})
+            current_enabled = api_settings.get(api_id, {}).get('enabled', True)
+            new_enabled = not current_enabled
+            api_settings[api_id] = {"enabled": new_enabled}
+        else:
+            custom_api = _find_persisted_custom_api(config, api_id)
+            if not custom_api:
+                raise HTTPException(status_code=404, detail="API not found")
+            custom_api['enabled'] = not custom_api.get('enabled', True)
+            new_enabled = custom_api['enabled']
 
-    update_config(set_api_enabled_config)
-    
+        enabled_ids = _enabled_geoip_api_ids(geoip_config)
+        if not enabled_ids:
+            raise HTTPException(status_code=400, detail="At least one GeoIP API must remain enabled")
+        if not new_enabled and geoip_config.get('preferred_api', 'ip-api.com') == api_id:
+            geoip_config['preferred_api'] = enabled_ids[0]
+        return new_enabled
+
+    new_enabled = update_config(set_api_enabled_config)
+    _apply_persisted_geoip_config()
     return {"status": "success", "enabled": new_enabled}
 
 
 # ==================== Custom API Test Endpoint ====================
 
 class TestCustomApiRequest(BaseModel):
-    url: str
-    token: str = ""
-    country_code_path: str = ""
-    country_name_path: str = ""
-    city_path: str = ""
-    success_check: str = ""
-    test_ip: str = "8.8.8.8"
+    url: str = Field(min_length=1, max_length=4000)
+    token: str = Field("", max_length=4096)
+    country_code_path: str = Field("", max_length=200)
+    country_name_path: str = Field("", max_length=200)
+    city_path: str = Field("", max_length=200)
+    success_check: str = Field("", max_length=500)
+    test_ip: str = Field("8.8.8.8", max_length=45)
+
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, value):
+        return _validate_geoip_api_url(value)
+
+    @field_validator('test_ip')
+    @classmethod
+    def validate_test_ip(cls, value):
+        import ipaddress
+
+        normalized = value.strip()
+        try:
+            return str(ipaddress.ip_address(normalized))
+        except ValueError as exc:
+            raise ValueError('Invalid IP address') from exc
 
 
 @router.post("/test-custom-api")
+@limiter.limit(AppConfig.RATE_LIMIT_GEOIP)
 @handle_api_errors
-async def test_custom_api(data: TestCustomApiRequest, _: bool = Depends(verify_session)):
+async def test_custom_api(data: TestCustomApiRequest, request: Request, _: bool = Depends(verify_session)):
     """Test a custom GeoIP API configuration before saving"""
     from geoip_service import _lookup_custom_api
     
@@ -408,144 +521,209 @@ async def test_custom_api(data: TestCustomApiRequest, _: bool = Depends(verify_s
                 "test_ip": data.test_ip,
                 "error": "No result returned - check URL and field paths"
             }
-    except Exception as e:
+    except Exception as exc:
+        logger.warning("Temporary GeoIP API test failed: %s", type(exc).__name__)
         return {
             "success": False,
             "test_ip": data.test_ip,
-            "error": str(e)
+            "error": "GeoIP API test failed"
         }
 
 
 # ==================== Custom API CRUD Endpoints ====================
 
 class CustomApiConfig(BaseModel):
-    name: str
-    url: str
-    token: str = ""
-    limit: str = ""
-    country_code_path: str = ""
-    country_name_path: str = ""
-    city_path: str = ""
-    success_check: str = ""
+    name: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1, max_length=4000)
+    token: str | None = Field(None, max_length=4096)
+    limit: str = Field("", max_length=100)
+    country_code_path: str = Field("", max_length=200)
+    country_name_path: str = Field("", max_length=200)
+    city_path: str = Field("", max_length=200)
+    success_check: str = Field("", max_length=500)
+
+    @field_validator('name')
+    @classmethod
+    def normalize_name(cls, value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        return normalized
+
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, value):
+        return _validate_geoip_api_url(value)
+
+
+def _validate_geoip_api_url(value: str) -> str:
+    normalized = value.strip()
+    if any(character.isspace() or ord(character) < 32 for character in normalized):
+        raise ValueError('API URL cannot contain whitespace or control characters')
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError as exc:
+        raise ValueError('Invalid API URL') from exc
+    if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+        raise ValueError('API URL must use HTTP or HTTPS')
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError('Put API credentials in the token field, not in the URL')
+    if parsed.hostname.lower() == 'localhost':
+        raise ValueError('API URL must use a public host')
+    try:
+        literal_ip = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None and not literal_ip.is_global:
+        raise ValueError('API URL must use a public host')
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError('Invalid API URL port') from exc
+    return normalized
+
+
+def _geoip_url_key(value: str) -> tuple | None:
+    """Return a comparison key without trusting historical persisted URLs."""
+    try:
+        parsed = urlsplit(str(value or '').strip())
+        if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    return (
+        parsed.scheme.lower(),
+        parsed.hostname.lower(),
+        port,
+        parsed.path,
+        parsed.query,
+    )
 
 
 @router.post("/apis")
 @handle_api_errors
 def create_custom_api(data: CustomApiConfig, _: bool = Depends(verify_session)):
     """Create a new custom GeoIP API"""
-    from geoip_service import add_custom_geoip_api
-    from core.database import update_config
-    
-    api_config = {
-        "name": data.name,
-        "url": data.url,
-        "token": data.token,
-        "limit": data.limit,
-        "country_code_path": data.country_code_path,
-        "country_name_path": data.country_name_path,
-        "city_path": data.city_path,
-        "success_check": data.success_check,
-    }
-    
-    new_api = add_custom_geoip_api(api_config)
-
-    def add_custom_api_config(config: dict):
+    def add_custom_api_config(config: dict) -> dict:
         geoip_config = config.setdefault('geoip_config', {})
-        geoip_config.setdefault('custom_apis', []).append(new_api)
+        custom_apis = geoip_config.setdefault('custom_apis', [])
+        requested_url_key = _geoip_url_key(data.url)
+        if any(
+            str(api.get('name') or '').strip().casefold() == data.name.casefold()
+            for api in custom_apis if isinstance(api, dict)
+        ):
+            raise HTTPException(status_code=409, detail="GeoIP API name already exists")
+        if any(
+            requested_url_key is not None
+            and _geoip_url_key(str(api.get('url') or '')) == requested_url_key
+            for api in custom_apis if isinstance(api, dict)
+        ):
+            raise HTTPException(status_code=409, detail="GeoIP API URL already exists")
+        known_ids = {
+            api.get('id') for api in custom_apis
+            if isinstance(api, dict)
+        }
+        api_id = f"custom_{secrets.token_urlsafe(9)}"
+        while api_id in known_ids:
+            api_id = f"custom_{secrets.token_urlsafe(9)}"
+        new_api = {
+            "id": api_id,
+            "name": data.name,
+            "url": data.url,
+            "token": data.token or "",
+            "limit": data.limit,
+            "method": "GET",
+            "headers": {},
+            "country_code_path": data.country_code_path,
+            "country_name_path": data.country_name_path,
+            "city_path": data.city_path,
+            "success_check": data.success_check,
+            "enabled": True,
+            "builtin": False,
+        }
+        custom_apis.append(new_api)
+        return dict(new_api)
 
-    update_config(add_custom_api_config)
-    
-    return {"status": "success", "api": new_api}
+    new_api = update_config(add_custom_api_config)
+    _apply_persisted_geoip_config()
+    return {"status": "success", "api": _public_geoip_api(new_api)}
 
 
 @router.put("/apis/{api_id}")
 @handle_api_errors
 def update_custom_api(api_id: str, data: CustomApiConfig, _: bool = Depends(verify_session)):
     """Update an existing custom GeoIP API"""
-    from geoip_service import update_custom_geoip_api, get_all_geoip_apis
-    from core.database import update_config
-    
-    # Check if it's a builtin API (only allow updating ipinfo token)
-    apis = get_all_geoip_apis()
-    api = next((a for a in apis if a.get("id") == api_id), None)
-    
-    if not api:
-        raise HTTPException(status_code=404, detail="API not found")
-    
-    if api.get("builtin"):
-        # For builtin APIs, only allow updating token (for ipinfo)
-        if api_id == "ipinfo" and data.token:
-            from geoip_service import set_online_geoip_config
-            set_online_geoip_config(ipinfo_token=data.token)
+    if api_id in {'ip-api.com', 'ipwhois'}:
+        raise HTTPException(status_code=400, detail="Cannot modify builtin API")
+    if api_id == 'ipinfo':
+        if data.token is None:
+            return {"status": "success", "message": "Token unchanged"}
 
-            def set_ipinfo_token(config: dict):
-                config.setdefault('geoip_config', {})['ipinfo_token'] = data.token
+        def set_ipinfo_token(config: dict):
+            config.setdefault('geoip_config', {})['ipinfo_token'] = data.token
 
-            update_config(set_ipinfo_token)
-            
-            return {"status": "success", "message": "Token updated"}
-        else:
-            raise HTTPException(status_code=400, detail="Cannot modify builtin API")
-    
-    # Update custom API
-    api_config = {
-        "name": data.name,
-        "url": data.url,
-        "limit": data.limit,
-        "country_code_path": data.country_code_path,
-        "country_name_path": data.country_name_path,
-        "city_path": data.city_path,
-        "success_check": data.success_check,
-    }
-    
-    # Only update token if provided (don't clear existing token)
-    if data.token:
-        api_config["token"] = data.token
-    
-    updated_api = update_custom_geoip_api(api_id, api_config)
+        update_config(set_ipinfo_token)
+        _apply_persisted_geoip_config()
+        return {"status": "success", "message": "Token updated"}
 
-    def update_custom_api_config(config: dict):
-        geoip_config = config.setdefault('geoip_config', {})
-        custom_apis = geoip_config.setdefault('custom_apis', [])
+    def update_custom_api_config(config: dict) -> dict:
+        custom_api = _find_persisted_custom_api(config, api_id)
+        if not custom_api:
+            raise HTTPException(status_code=404, detail="API not found")
+        custom_apis = config.setdefault('geoip_config', {}).setdefault('custom_apis', [])
+        requested_url_key = _geoip_url_key(data.url)
+        if any(
+            api.get('id') != api_id
+            and str(api.get('name') or '').strip().casefold() == data.name.casefold()
+            for api in custom_apis if isinstance(api, dict)
+        ):
+            raise HTTPException(status_code=409, detail="GeoIP API name already exists")
+        if any(
+            api.get('id') != api_id
+            and requested_url_key is not None
+            and _geoip_url_key(str(api.get('url') or '')) == requested_url_key
+            for api in custom_apis if isinstance(api, dict)
+        ):
+            raise HTTPException(status_code=409, detail="GeoIP API URL already exists")
+        custom_api.update({
+            "name": data.name,
+            "url": data.url,
+            "limit": data.limit,
+            "country_code_path": data.country_code_path,
+            "country_name_path": data.country_name_path,
+            "city_path": data.city_path,
+            "success_check": data.success_check,
+        })
+        # Omitted means unchanged; an explicitly empty string clears the token.
+        if data.token is not None:
+            custom_api['token'] = data.token
+        return dict(custom_api)
 
-        # Update in config
-        for i, api in enumerate(custom_apis):
-            if api.get('id') == api_id:
-                custom_apis[i] = updated_api
-                break
-
-    update_config(update_custom_api_config)
-    
-    return {"status": "success", "api": updated_api}
+    updated_api = update_config(update_custom_api_config)
+    _apply_persisted_geoip_config()
+    return {"status": "success", "api": _public_geoip_api(updated_api)}
 
 
 @router.delete("/apis/{api_id}")
 @handle_api_errors
 def delete_custom_api(api_id: str, _: bool = Depends(verify_session)):
     """Delete a custom GeoIP API"""
-    from geoip_service import delete_custom_geoip_api, get_all_geoip_apis
-    from core.database import update_config
-    
-    # Check if it's a builtin API
-    apis = get_all_geoip_apis()
-    api = next((a for a in apis if a.get("id") == api_id), None)
-    
-    if not api:
-        raise HTTPException(status_code=404, detail="API not found")
-    
-    if api.get("builtin"):
+    if api_id in {'ip-api.com', 'ipwhois', 'ipinfo'}:
         raise HTTPException(status_code=400, detail="Cannot delete builtin API")
-    
-    # Delete from memory
-    if not delete_custom_geoip_api(api_id):
-        raise HTTPException(status_code=404, detail="API not found")
-    
+
     def delete_custom_api_config(config: dict):
-        if 'geoip_config' in config and 'custom_apis' in config['geoip_config']:
-            config['geoip_config']['custom_apis'] = [
-                a for a in config['geoip_config']['custom_apis'] if a.get('id') != api_id
-            ]
+        custom_apis = config.setdefault('geoip_config', {}).setdefault('custom_apis', [])
+        remaining = [api for api in custom_apis if api.get('id') != api_id]
+        if len(remaining) == len(custom_apis):
+            raise HTTPException(status_code=404, detail="API not found")
+        config['geoip_config']['custom_apis'] = remaining
+        if config['geoip_config'].get('preferred_api') == api_id:
+            enabled_ids = _enabled_geoip_api_ids(config['geoip_config'])
+            if not enabled_ids:
+                raise HTTPException(status_code=400, detail="At least one GeoIP API must remain enabled")
+            config['geoip_config']['preferred_api'] = enabled_ids[0]
 
     update_config(delete_custom_api_config)
-    
+    _apply_persisted_geoip_config()
     return {"status": "success"}

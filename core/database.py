@@ -21,8 +21,13 @@ logger = get_logger(__name__)
 # Config cache for performance
 _config_cache: Optional[dict] = None
 _config_mtime: Optional[float] = None
+_config_cached_at: Optional[float] = None
 _config_cache_lock = threading.RLock()
 T = TypeVar("T")
+
+
+class ConfigLoadError(RuntimeError):
+    """Raised when an existing configuration cannot be read safely."""
 
 
 def get_default_config() -> dict:
@@ -62,28 +67,50 @@ def _load_config_from_disk() -> dict:
 
 def _write_config_locked(config: dict):
     """Write config to disk. Caller must already hold the file lock."""
-    global _config_cache, _config_mtime
+    global _config_cache, _config_mtime, _config_cached_at
 
     temp_file = f"{CONFIG_FILE}.tmp"
-    with open(temp_file, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
+    backup_temp_file = f"{CONFIG_FILE}.backup.tmp"
+    try:
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(temp_file, 0o600)
+        except OSError:
+            logger.warning("Could not restrict temporary configuration permissions")
 
-    if os.path.exists(CONFIG_FILE):
-        backup_file = f"{CONFIG_FILE}.backup"
-        shutil.copy(CONFIG_FILE, backup_file)
+        if os.path.exists(CONFIG_FILE):
+            backup_file = f"{CONFIG_FILE}.backup"
+            # Build the fallback backup separately, then atomically publish it.
+            # copy()/copy2() are intentionally avoided because bind mounts can
+            # reject their metadata operations even when content writes work.
+            shutil.copyfile(CONFIG_FILE, backup_temp_file)
+            try:
+                os.chmod(backup_temp_file, 0o600)
+            except OSError:
+                logger.warning("Could not restrict configuration backup permissions")
+            os.replace(backup_temp_file, backup_file)
 
-    os.replace(temp_file, CONFIG_FILE)
+        os.replace(temp_file, CONFIG_FILE)
+    finally:
+        for unpublished_file in (temp_file, backup_temp_file):
+            if os.path.exists(unpublished_file):
+                try:
+                    os.remove(unpublished_file)
+                except OSError:
+                    logger.debug("Failed to remove unpublished configuration file")
 
     with _config_cache_lock:
         _config_cache = None
         _config_mtime = None
+        _config_cached_at = None
 
 
 def load_config() -> dict:
     """Load unified config with caching"""
-    global _config_cache, _config_mtime
+    global _config_cache, _config_mtime, _config_cached_at
     
     default = get_default_config()
     
@@ -93,30 +120,31 @@ def load_config() -> dict:
     
     try:
         current_mtime = os.path.getmtime(CONFIG_FILE)
+        current_time = time.monotonic()
 
         with _config_cache_lock:
-            if _config_cache is not None and _config_mtime == current_mtime:
+            cache_is_fresh = (
+                AppConfig.CONFIG_CACHE_DURATION > 0
+                and _config_cached_at is not None
+                and current_time - _config_cached_at < AppConfig.CONFIG_CACHE_DURATION
+            )
+            if _config_cache is not None and _config_mtime == current_mtime and cache_is_fresh:
                 return copy.deepcopy(_config_cache)
 
             config = _load_config_from_disk()
 
             _config_cache = config
             _config_mtime = current_mtime
+            _config_cached_at = current_time
 
             logger.debug("Config loaded successfully from %s", CONFIG_FILE)
             return copy.deepcopy(config)
     except json.JSONDecodeError as e:
-        logger.error("Config file is corrupted (invalid JSON): %s, error: %s", CONFIG_FILE, e)
-        backup_file = f"{CONFIG_FILE}.corrupted.{int(time.time())}"
-        try:
-            shutil.copy(CONFIG_FILE, backup_file)
-            logger.info("Corrupted config backed up to: %s", backup_file)
-        except Exception as backup_error:
-            logger.error("Failed to backup corrupted config: %s", backup_error)
-        return default
-    except Exception as e:
-        logger.error("Unexpected error loading config: %s", e, exc_info=True)
-        return default
+        logger.critical("Configuration file contains invalid JSON", exc_info=True)
+        raise ConfigLoadError("Configuration file contains invalid JSON") from e
+    except (OSError, ValueError, TypeError) as e:
+        logger.critical("Configuration file cannot be read safely", exc_info=True)
+        raise ConfigLoadError("Configuration file cannot be read safely") from e
 
 
 def save_config(config: dict):
@@ -136,15 +164,16 @@ def save_config(config: dict):
         raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
     except Exception as e:
         logger.error("Failed to save config: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to save configuration")
 
 
 def invalidate_config_cache():
     """Invalidate config cache"""
-    global _config_cache, _config_mtime
+    global _config_cache, _config_mtime, _config_cached_at
     with _config_cache_lock:
         _config_cache = None
         _config_mtime = None
+        _config_cached_at = None
 
 
 def update_config(mutator: Callable[[dict], T]) -> T:
@@ -175,7 +204,7 @@ def update_config(mutator: Callable[[dict], T]) -> T:
         raise HTTPException(status_code=500, detail="Configuration file is corrupted")
     except Exception as e:
         logger.error("Failed to atomically update config: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update configuration")
 
 
 def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:
@@ -208,7 +237,7 @@ def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:
         raise HTTPException(status_code=500, detail="Configuration file is corrupted")
     except Exception as e:
         logger.error("Failed to atomically update subscription %s: %s", sub_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update subscription")
 
 
 # Helper functions for finding items

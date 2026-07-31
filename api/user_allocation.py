@@ -8,7 +8,8 @@ from core.dependencies import verify_session
 from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
-from services.proxy_chain_utils import unique_group_name, unique_name
+from services.node_identity import custom_node_id, subscription_node_id
+from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 
 def create_user_allocation_router(
@@ -44,7 +45,7 @@ def create_user_allocation_router(
         # Get custom nodes first
         custom_nodes = config.get('custom_nodes', [])
         if custom_nodes:
-            node_names = []
+            available_nodes = []
             for node in custom_nodes:
                 if not is_node_enabled(node):
                     continue
@@ -52,11 +53,14 @@ def create_user_allocation_router(
                 if is_info_node(original_name):
                     continue
                 transformed = NameTransformer.transform_name(node, 'Custom')
-                node_names.append(transformed.get('name', original_name))
-            if node_names:
+                available_nodes.append({
+                    'id': custom_node_id(node),
+                    'name': transformed.get('name', original_name),
+                })
+            if available_nodes:
                 sources['custom_nodes'] = {
                     'name': '自建节点',
-                    'nodes': node_names
+                    'nodes': available_nodes
                 }
 
         # Get subscription nodes
@@ -68,7 +72,7 @@ def create_user_allocation_router(
                 cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
                 proxies = cfg.get('proxies', []) if cfg else []
 
-                node_names = []
+                available_nodes = []
                 for proxy in proxies:
                     if not is_node_enabled(proxy):
                         continue
@@ -76,85 +80,48 @@ def create_user_allocation_router(
                     if is_info_node(original_name):
                         continue
                     transformed = NameTransformer.transform_name(proxy, sub['name'])
-                    node_names.append(transformed.get('name', original_name))
+                    available_nodes.append({
+                        'id': subscription_node_id(sub['id'], proxy),
+                        'name': transformed.get('name', original_name),
+                    })
 
-                if node_names:
+                if available_nodes:
                     sources[sub['id']] = {
                         'name': sub['name'],
-                        'nodes': node_names
+                        'nodes': available_nodes
                     }
             except Exception as e:
                 logger.warning(f"Failed to load subscription {sub['id']}: {e}")
 
         # Get chain nodes and chain pools
-        proxy_chains = config.get('proxy_chains', [])
-        if proxy_chains:
-            chain_nodes = []
-            chain_pools = []
-
-            existing_names = get_all_final_node_names()
-            existing_group_names = set()
-
-            for chain in proxy_chains:
-                if not chain.get('enabled', True):
-                    continue
-
-                rows = chain.get('rows', [])
-                for row_idx, row in enumerate(rows):
-                    nodes = row.get('nodes', [])
-                    if len(nodes) < 2:
-                        continue
-
-                    chain_name = chain.get('name', '')
-                    if len(rows) > 1:
-                        chain_name = f"{chain_name} #{row_idx + 1}"
-
-                    # Collect transit groups and terminal group
-                    terminal_group = None
-                    transit_groups = []
-                    for idx, node_ref in enumerate(nodes):
-                        if isinstance(node_ref, dict) and node_ref.get('type') == 'group':
-                            if idx == len(nodes) - 1:
-                                terminal_group = node_ref
-                            else:
-                                transit_groups.append(node_ref)
-
-                    # Record transit pools
-                    for t_idx, spec in enumerate(transit_groups):
-                        base_name = spec.get('group_name') or f"{chain_name} 中转池{t_idx + 1}"
-                        group_name = unique_group_name(
-                            f"🔀 {base_name}",
-                            existing_group_names,
-                            spec.get('group_id'),
-                        )
-                        if group_name not in chain_pools:
-                            chain_pools.append(group_name)
-
-                    # Record terminal pool
-                    if terminal_group:
-                        group_base_name = terminal_group.get('group_name') or f"{chain_name} 落地池"
-                        group_name = unique_group_name(
-                            f"🔀 {group_base_name}",
-                            existing_group_names,
-                            terminal_group.get('group_id'),
-                        )
-                        if group_name not in chain_pools:
-                            chain_pools.append(group_name)
-                    else:
-                        # Normal chain (no terminal pool)
-                        chain_name_full = f"🔗 {chain_name}"
-                        chain_nodes.append(unique_name(chain_name_full, existing_names))
-
-            if chain_nodes:
-                sources['chain_nodes'] = {
-                    'name': '链式代理单节点',
-                    'nodes': chain_nodes
-                }
-            if chain_pools:
-                sources['chain_pools'] = {
-                    'name': '链式代理池',
-                    'nodes': chain_pools
-                }
+        chain_references = list_proxy_chain_virtual_references(
+            config,
+            base_node_names=get_all_final_node_names(),
+        )
+        chain_nodes = [
+            reference for reference in chain_references
+            if reference.enabled and reference.source_id == 'chain_nodes'
+        ]
+        chain_pools = [
+            reference for reference in chain_references
+            if reference.enabled and reference.source_id == 'chain_pools'
+        ]
+        if chain_nodes:
+            sources['chain_nodes'] = {
+                'name': '链式代理单节点',
+                'nodes': [
+                    {'id': reference.stable_id, 'name': reference.name}
+                    for reference in chain_nodes
+                ]
+            }
+        if chain_pools:
+            sources['chain_pools'] = {
+                'name': '链式代理池',
+                'nodes': [
+                    {'id': reference.stable_id, 'name': reference.name}
+                    for reference in chain_pools
+                ]
+            }
 
         return {"sources": sources}
 

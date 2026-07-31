@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import api.settings as settings_api
 from core.dependencies import verify_session
+from services.node_identity import proxy_chain_virtual_node_id
 
 
 class PortMappingsRoutesTest(unittest.TestCase):
@@ -79,6 +80,44 @@ class PortMappingsRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mappings = response.json()["mappings"]
         self.assertEqual(mappings, [{"final_name": "🔗 美国家宽", "port": 42000, "active": False}])
+
+    def test_chain_mapping_is_persisted_by_stable_row_identity(self):
+        config = {
+            "subscriptions": [],
+            "custom_nodes": [],
+            "proxy_chains": [{
+                "id": "chain_1",
+                "name": "Chain",
+                "enabled": True,
+                "rows": [{
+                    "row_id": "row_1",
+                    "nodes": [{"node_name": "A"}, {"node_name": "B"}],
+                }],
+            }],
+            "port_mappings": {},
+        }
+        client, load_config_patch = self.make_client(config)
+
+        def update_config(mutator):
+            return mutator(config)
+
+        with (
+            load_config_patch,
+            patch.object(settings_api, "update_config", side_effect=update_config),
+        ):
+            response = client.post(
+                "/api/port-mappings",
+                json={"final_name": "🔗 Chain", "port": 42000},
+            )
+            listed_response = client.get("/api/port-mappings")
+
+        stable_id = proxy_chain_virtual_node_id("chain_nodes", "chain_1", "row_1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(config["port_mappings"], {stable_id: 42000})
+        self.assertEqual(
+            listed_response.json()["mappings"],
+            [{"final_name": "🔗 Chain", "port": 42000, "active": True}],
+        )
 
 
 if __name__ == "__main__":

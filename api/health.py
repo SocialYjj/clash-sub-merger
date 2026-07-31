@@ -1,13 +1,14 @@
 """
 Health check and metrics API
 """
-import os
 import time
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from core.config import AppConfig, CONFIG_FILE
+from core.config import AppConfig
+from core.database import ConfigLoadError, load_config
+from core.token_utils import constant_time_equal
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -50,8 +51,13 @@ async def health_check():
         except Exception:
             speedtest_healthy = False
     
-    # Check if config file is accessible
-    config_healthy = os.path.exists(CONFIG_FILE)
+    # Parse the real configuration. A present but unreadable/corrupt file is
+    # unhealthy and must not be mistaken for a ready instance.
+    try:
+        config = load_config()
+        config_healthy = bool(config.get('auth', {}).get('password_hash'))
+    except ConfigLoadError:
+        config_healthy = False
     
     is_healthy = config_healthy and speedtest_healthy
 
@@ -72,9 +78,13 @@ async def health_check():
 
 
 @router.get("/metrics", summary="Prometheus Metrics")
-def metrics():
+def metrics(authorization: str | None = Header(None)):
     """
-    Prometheus metrics endpoint.
-    Does not require authentication.
+    Prometheus metrics endpoint protected by a dedicated bearer token.
     """
+    if not AppConfig.METRICS_TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+    scheme, _, supplied_token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not constant_time_equal(supplied_token, AppConfig.METRICS_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid metrics token")
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

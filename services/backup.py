@@ -5,6 +5,7 @@ Handles config backup, restore, and cleanup
 import os
 import json
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from datetime import datetime as dt
 from typing import Optional, List
@@ -12,10 +13,20 @@ from typing import Optional, List
 from filelock import FileLock, Timeout
 
 from core.config import AppConfig, CONFIG_FILE, BACKUP_DIR
-from core.database import load_config, save_config, invalidate_config_cache
+from core.database import load_config, invalidate_config_cache
 from logger_config import get_logger
+from services.configuration_validation import (
+    remove_legacy_stale_references,
+    validate_and_normalize_configuration,
+)
 
 logger = get_logger(__name__)
+
+
+def _apply_geoip_runtime_config(config: dict) -> None:
+    from geoip_service import apply_geoip_runtime_config
+
+    apply_geoip_runtime_config(config)
 
 
 def _config_file_lock() -> FileLock:
@@ -56,7 +67,12 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
     backup_filename = _backup_filename(reason)
     backup_path = os.path.join(BACKUP_DIR, backup_filename)
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    shutil.copy2(CONFIG_FILE, backup_path)
+    # Bind mounts such as CIFS may permit writes but reject metadata changes.
+    shutil.copyfile(CONFIG_FILE, backup_path)
+    try:
+        os.chmod(backup_path, 0o600)
+    except OSError:
+        logger.warning("Could not restrict backup file permissions")
     logger.info(f"Backup created: {backup_filename}")
     return backup_filename
 
@@ -68,6 +84,12 @@ def _atomic_restore_config_locked(config_data: dict):
     try:
         with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp_file, 0o600)
+        except OSError:
+            logger.warning("Could not restrict restored configuration permissions")
 
         os.replace(tmp_file, CONFIG_FILE)
         invalidate_config_cache()
@@ -167,6 +189,9 @@ def restore_backup(filename: str) -> bool:
         raise ValueError("Invalid backup file")
     if not isinstance(backup_config, dict):
         raise ValueError("Invalid backup file")
+    remove_legacy_stale_references(backup_config)
+    backup_config = validate_and_normalize_configuration(backup_config)
+    backup_config.setdefault('auth', {}).pop('sessions', None)
     
     try:
         with _config_file_lock():
@@ -177,7 +202,8 @@ def restore_backup(filename: str) -> bool:
             _atomic_restore_config_locked(backup_config)
     except Timeout:
         raise TimeoutError("Configuration is being updated, please try again")
-    
+
+    _apply_geoip_runtime_config(backup_config)
     logger.info(f"Config restored from backup: {filename}")
     return True
 
@@ -197,7 +223,11 @@ def delete_backup(filename: str) -> bool:
 def export_config() -> dict:
     """Export full configuration for migration"""
     import time
-    config = load_config()
+    config = deepcopy(load_config())
+    # Login sessions are runtime credentials, not migration data. Password
+    # hashes and subscription tokens remain because this is a full migration.
+    config.setdefault('auth', {}).pop('sessions', None)
+    remove_legacy_stale_references(config)
     
     return {
         'version': AppConfig.VERSION,
@@ -221,41 +251,69 @@ def import_config(import_data: dict, merge: bool = False) -> str:
         raise ValueError("Invalid import data: missing 'config' field")
     
     new_config = import_data['config']
-    
-    # Create backup before import
-    create_backup('pre_import')
-    
-    if merge:
-        current_config = load_config()
-        
-        # Merge subscriptions
-        existing_urls = {s['url'] for s in current_config.get('subscriptions', [])}
-        for sub in new_config.get('subscriptions', []):
-            if sub.get('url') and sub['url'] not in existing_urls:
-                current_config.setdefault('subscriptions', []).append(sub)
-        
-        # Merge custom nodes
-        existing_names = {n['name'] for n in current_config.get('custom_nodes', [])}
-        for node in new_config.get('custom_nodes', []):
-            if node.get('name') and node['name'] not in existing_names:
-                current_config.setdefault('custom_nodes', []).append(node)
-        
-        # Merge users
-        existing_user_names = {u['name'] for u in current_config.get('users', [])}
-        for user in new_config.get('users', []):
-            if user.get('name') and user['name'] not in existing_user_names:
-                current_config.setdefault('users', []).append(user)
-        
-        # Merge templates
-        existing_template_names = {t['name'] for t in current_config.get('templates', [])}
-        for template in new_config.get('templates', []):
-            if template.get('name') and template['name'] not in existing_template_names:
-                current_config.setdefault('templates', []).append(template)
-        
-        save_config(current_config)
-        logger.info("Config merged from import")
-        return 'merge'
-    else:
-        save_config(new_config)
-        logger.info("Config replaced from import")
-        return 'replace'
+    if not isinstance(new_config, dict):
+        raise ValueError("Invalid import data: config must be an object")
+    new_config = validate_and_normalize_configuration(new_config)
+
+    try:
+        with _config_file_lock():
+            _create_backup_locked('pre_import')
+            if merge:
+                if os.path.exists(CONFIG_FILE):
+                    with open(CONFIG_FILE, 'r', encoding='utf-8') as config_file:
+                        merged_config = json.load(config_file)
+                    if not isinstance(merged_config, dict):
+                        raise ValueError("Existing configuration is invalid")
+                else:
+                    merged_config = {}
+                remove_legacy_stale_references(merged_config)
+
+                merge_specs = (
+                    ('subscriptions', 'url'),
+                    ('custom_nodes', 'name'),
+                    ('users', 'name'),
+                    ('templates', 'name'),
+                )
+                for collection_name, unique_field in merge_specs:
+                    destination = merged_config.setdefault(collection_name, [])
+                    if not isinstance(destination, list):
+                        raise ValueError(f"Existing {collection_name} configuration is invalid")
+                    known_values = {
+                        item.get(unique_field) for item in destination if isinstance(item, dict)
+                    }
+                    incoming = new_config.get(collection_name, [])
+                    if not isinstance(incoming, list):
+                        raise ValueError(f"Imported {collection_name} must be a list")
+                    for item in incoming:
+                        if not isinstance(item, dict):
+                            raise ValueError(f"Imported {collection_name} contains an invalid item")
+                        unique_value = item.get(unique_field)
+                        if unique_value and unique_value not in known_values:
+                            destination.append(item)
+                            known_values.add(unique_value)
+                final_config = validate_and_normalize_configuration(merged_config)
+                mode = 'merge'
+            else:
+                final_config = new_config
+                final_config.setdefault('auth', {}).pop('sessions', None)
+                mode = 'replace'
+
+            _atomic_restore_config_locked(final_config)
+    except Timeout:
+        raise TimeoutError("Configuration is being updated, please try again")
+
+    _apply_geoip_runtime_config(final_config)
+    logger.info("Config %sd from import", 'merge' if mode == 'merge' else 'replace')
+    return mode
+
+
+def restore_config_snapshot(config_snapshot: dict) -> None:
+    """Restore a trusted in-memory snapshot after a runtime reload failure."""
+    if not isinstance(config_snapshot, dict):
+        raise ValueError("Configuration snapshot must be an object")
+    try:
+        with _config_file_lock():
+            _atomic_restore_config_locked(deepcopy(config_snapshot))
+    except Timeout as exc:
+        raise TimeoutError("Configuration is being updated, please try again") from exc
+    _apply_geoip_runtime_config(config_snapshot)

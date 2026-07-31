@@ -5,7 +5,7 @@ Admin token management endpoints
 import time
 from typing import Optional, Dict, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
@@ -16,6 +16,13 @@ from core.token_utils import (
 )
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
+from services.group_config_builder import build_group_config_view, render_group_config_preview
+from services.user_configuration_validation import (
+    MAX_EDITABLE_GROUPS,
+    MAX_GROUP_NODES,
+    MAX_REFERENCE_LENGTH,
+    normalize_group_config,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -30,6 +37,24 @@ class CreateAdminToken(BaseModel):
     sub_filename: Optional[str] = ""
     sub_name: Optional[str] = ""
 
+    @field_validator('name')
+    @classmethod
+    def normalize_name(cls, value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        return normalized
+
+    @field_validator('sub_filename', 'sub_name')
+    @classmethod
+    def normalize_optional_names(cls, value):
+        if value is None:
+            return value
+        normalized = value.strip()
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
+            raise ValueError('Name contains invalid characters')
+        return normalized
+
 
 class UpdateAdminToken(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
@@ -38,9 +63,43 @@ class UpdateAdminToken(BaseModel):
     sub_name: Optional[str] = None
     enabled: Optional[bool] = None
 
+    @field_validator('name')
+    @classmethod
+    def normalize_name(cls, value):
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        return normalized
+
+    @field_validator('sub_filename', 'sub_name')
+    @classmethod
+    def normalize_optional_names(cls, value):
+        if value is None:
+            return None
+        normalized = value.strip()
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
+            raise ValueError('Name contains invalid characters')
+        return normalized
+
 
 class UpdateAdminTokenGroupConfig(BaseModel):
-    group_config: Dict[str, List[str]]
+    model_config = ConfigDict(extra='forbid')
+
+    group_config: Dict[str, List[str]] = Field(max_length=MAX_EDITABLE_GROUPS)
+
+    @field_validator('group_config')
+    @classmethod
+    def validate_group_config_shape(cls, group_config):
+        for group_name, references in group_config.items():
+            if not isinstance(group_name, str) or not group_name.strip() or len(group_name) > 200:
+                raise ValueError('Invalid proxy group name')
+            if len(references) > MAX_GROUP_NODES:
+                raise ValueError('Too many nodes in proxy group')
+            if any(not isinstance(reference, str) or len(reference) > MAX_REFERENCE_LENGTH for reference in references):
+                raise ValueError('Invalid proxy group reference')
+        return group_config
 
 
 class RegenerateAdminTokenRequest(BaseModel):
@@ -68,6 +127,39 @@ def get_admin_token(token_id: str, _: bool = Depends(verify_session)):
         if token['id'] == token_id:
             return {"token": token}
     raise HTTPException(status_code=404, detail="Token not found")
+
+
+def _get_admin_token_group_view(token_id: str) -> dict:
+    config = load_config()
+    admin_token = next(
+        (candidate for candidate in config.get('admin_tokens', []) if candidate['id'] == token_id),
+        None,
+    )
+    if not admin_token:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    from api.templates import get_builtin_template
+
+    return build_group_config_view(
+        config,
+        admin_token,
+        allocations=None,
+        builtin_template=get_builtin_template(),
+    )
+
+
+@router.get("/{token_id}/group-config")
+@handle_api_errors
+def get_admin_token_group_config(token_id: str, _: bool = Depends(verify_session)):
+    """Get the visual proxy-group configuration for an admin token."""
+    return _get_admin_token_group_view(token_id)
+
+
+@router.get("/{token_id}/preview-yaml")
+@handle_api_errors
+def preview_admin_token_group_config(token_id: str, _: bool = Depends(verify_session)):
+    """Render the admin token's visual proxy-group configuration as YAML."""
+    return {"yaml": render_group_config_preview(_get_admin_token_group_view(token_id))}
 
 
 @router.post("")
@@ -182,7 +274,15 @@ def update_admin_token_group_config(token_id: str, data: UpdateAdminTokenGroupCo
     def update_group_config(config: dict) -> dict:
         for token in config.get('admin_tokens', []):
             if token['id'] == token_id:
-                token['group_config'] = data.group_config
+                from api.templates import get_builtin_template
+
+                token['group_config'] = normalize_group_config(
+                    config,
+                    token,
+                    data.group_config,
+                    allocations=None,
+                    builtin_template=get_builtin_template(),
+                )
                 return dict(token['group_config'])
 
         raise HTTPException(status_code=404, detail="Token not found")

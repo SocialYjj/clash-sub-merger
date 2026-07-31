@@ -55,8 +55,11 @@ request.interceptors.response.use(
     }
 
     // Check if we should retry
+    const method = config?.method?.toLowerCase() || 'get';
+    const isSafeRead = ['get', 'head', 'options'].includes(method);
     const shouldRetry =
       config &&
+      isSafeRead &&
       config.__retryCount < RETRY_CONFIG.maxRetries &&
       (
         !error.response ||

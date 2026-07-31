@@ -5,7 +5,7 @@ User management endpoints
 import time
 from typing import Optional, Dict, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from core.dependencies import verify_session
 from core.database import load_config, update_config
@@ -16,6 +16,16 @@ from core.token_utils import (
 )
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
+from services.group_config_builder import build_group_config_view, render_group_config_preview
+from services.user_configuration_validation import (
+    MAX_ALLOCATION_SOURCES,
+    MAX_EDITABLE_GROUPS,
+    MAX_GROUP_NODES,
+    MAX_NODES_PER_SOURCE,
+    MAX_REFERENCE_LENGTH,
+    normalize_group_config,
+    normalize_user_allocations,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -41,9 +51,12 @@ class CreateUser(BaseModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v):
-        if '/' in v or '\\' in v or '..' in v:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
             raise ValueError('Name contains invalid characters')
-        return v.strip()
+        return normalized
 
 
 class UpdateUser(BaseModel):
@@ -56,18 +69,51 @@ class UpdateUser(BaseModel):
     
     @field_validator('name', 'sub_name', 'sub_filename')
     @classmethod
-    def validate_names(cls, v):
-        if v and ('/' in v or '\\' in v or '..' in v):
+    def validate_names(cls, v, info: ValidationInfo):
+        if v is None:
+            return None
+        normalized = v.strip()
+        if not normalized and info.field_name == 'name':
+            raise ValueError('Name cannot be empty')
+        if '/' in normalized or '\\' in normalized or '..' in normalized:
             raise ValueError('Name contains invalid characters')
-        return v.strip() if v else v
+        return normalized
 
 
 class UserNodeAllocation(BaseModel):
-    subscriptions: Dict[str, List[str]]
+    model_config = ConfigDict(extra='forbid')
+
+    subscriptions: Dict[str, List[str]] = Field(max_length=MAX_ALLOCATION_SOURCES)
+
+    @field_validator('subscriptions')
+    @classmethod
+    def validate_allocation_shape(cls, subscriptions):
+        for source_id, references in subscriptions.items():
+            if not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 200:
+                raise ValueError('Invalid allocation source')
+            if len(references) > MAX_NODES_PER_SOURCE:
+                raise ValueError('Too many nodes in allocation source')
+            if any(not isinstance(reference, str) or len(reference) > MAX_REFERENCE_LENGTH for reference in references):
+                raise ValueError('Invalid allocation reference')
+        return subscriptions
 
 
 class UpdateUserGroupConfig(BaseModel):
-    group_config: Dict[str, List[str]]
+    model_config = ConfigDict(extra='forbid')
+
+    group_config: Dict[str, List[str]] = Field(max_length=MAX_EDITABLE_GROUPS)
+
+    @field_validator('group_config')
+    @classmethod
+    def validate_group_config_shape(cls, group_config):
+        for group_name, references in group_config.items():
+            if not isinstance(group_name, str) or not group_name.strip() or len(group_name) > 200:
+                raise ValueError('Invalid proxy group name')
+            if len(references) > MAX_GROUP_NODES:
+                raise ValueError('Too many nodes in proxy group')
+            if any(not isinstance(reference, str) or len(reference) > MAX_REFERENCE_LENGTH for reference in references):
+                raise ValueError('Invalid proxy group reference')
+        return group_config
 
 
 class RegenerateTokenRequest(BaseModel):
@@ -95,6 +141,36 @@ def get_user(user_id: str, _: bool = Depends(verify_session)):
         if user['id'] == user_id:
             return {"user": user}
     raise HTTPException(status_code=404, detail="User not found")
+
+
+def _get_user_group_view(user_id: str) -> dict:
+    config = load_config()
+    user = next((candidate for candidate in config.get('users', []) if candidate['id'] == user_id), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from api.templates import get_builtin_template
+
+    return build_group_config_view(
+        config,
+        user,
+        allocations=user.get('allocations', {}),
+        builtin_template=get_builtin_template(),
+    )
+
+
+@router.get("/{user_id}/group-config")
+@handle_api_errors
+def get_user_group_config(user_id: str, _: bool = Depends(verify_session)):
+    """Get the visual proxy-group configuration for a user."""
+    return _get_user_group_view(user_id)
+
+
+@router.get("/{user_id}/preview-yaml")
+@handle_api_errors
+def preview_user_group_config(user_id: str, _: bool = Depends(verify_session)):
+    """Render the user's current visual proxy-group configuration as YAML."""
+    return {"yaml": render_group_config_preview(_get_user_group_view(user_id))}
 
 
 @router.post("")
@@ -230,7 +306,11 @@ def update_user_allocations(user_id: str, data: UserNodeAllocation, _: bool = De
     def update_allocations(config: dict) -> dict:
         for user in config.get('users', []):
             if user['id'] == user_id:
-                user['allocations'] = data.subscriptions
+                user['allocations'] = normalize_user_allocations(
+                    config,
+                    data.subscriptions,
+                    existing_allocations=user.get('allocations'),
+                )
                 user.pop('sub_cache', None)
                 return dict(user['allocations'])
 
@@ -247,7 +327,15 @@ def update_user_group_config(user_id: str, data: UpdateUserGroupConfig, _: bool 
     def update_group_config(config: dict) -> dict:
         for user in config.get('users', []):
             if user['id'] == user_id:
-                user['group_config'] = data.group_config
+                from api.templates import get_builtin_template
+
+                user['group_config'] = normalize_group_config(
+                    config,
+                    user,
+                    data.group_config,
+                    allocations=user.get('allocations', {}),
+                    builtin_template=get_builtin_template(),
+                )
                 user.pop('sub_cache', None)
                 return dict(user['group_config'])
 
