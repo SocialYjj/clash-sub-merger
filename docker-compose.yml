@@ -1,10 +1,9 @@
 services:
   clash-merger:
     image: ghcr.io/socialyjj/clash-sub-merger:latest
-    container_name: submerger
     restart: unless-stopped
     ports:
-      - "${HOST_PORT:-8666}:8666"
+      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
     volumes:
       - ./data:/app/data
     env_file:
@@ -13,6 +12,13 @@ services:
       DATA_DIR: /app/data
       HOST: 0.0.0.0
       PORT: 8666
+    mem_limit: "${MEMORY_LIMIT:-512m}"
+    pids_limit: ${PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8666/health', timeout=5)\""]
       interval: 30s

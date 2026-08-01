@@ -128,10 +128,9 @@ EOF
 services:
   submerger:
     image: ghcr.io/socialyjj/clash-sub-merger:latest
-    container_name: submerger
     restart: unless-stopped
     ports:
-      - "8666:8666"
+      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
     volumes:
       - ./data:/app/data
     env_file:
@@ -140,6 +139,13 @@ services:
       DATA_DIR: /app/data
       HOST: 0.0.0.0
       PORT: 8666
+    mem_limit: "${MEMORY_LIMIT:-512m}"
+    pids_limit: ${PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
 ```
 
 3. Start:
@@ -199,7 +205,12 @@ docker compose up -d --build
 | --- | --- | --- |
 | `TZ` | `UTC` | Timezone |
 | `DATA_DIR` | `/app/data` | Data directory |
+| `BIND_ADDRESS` | `0.0.0.0` | Docker Compose listen address; use `127.0.0.1` behind a reverse proxy |
 | `HOST_PORT` | `8666` | Docker Compose host port |
+| `MEMORY_LIMIT` | `512m` | Docker Compose memory limit |
+| `PIDS_LIMIT` | `256` | Docker Compose process limit |
+| `LOG_MAX_SIZE` | `10m` | Maximum size of each Docker log file |
+| `LOG_MAX_FILES` | `3` | Number of rotated Docker log files |
 | `INITIAL_ADMIN_PASSWORD` | required on first start | Initial administrator password |
 | `SESSION_SECRET` | empty | Optional session signing secret; recommended in production |
 | `SESSION_TTL_SECONDS` | `86400` | Administrator session lifetime in seconds |

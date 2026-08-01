@@ -2,14 +2,10 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, master]
     tags: ['v*']
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-
-env:
-  IMAGE_NAME: clash-sub-merger
 
 jobs:
   build:
@@ -23,11 +19,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4.2.0
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+            type=semver,pattern={{version}}
+            type=sha,prefix=,format=short
+
+      - name: Build image for security scan
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: local/clash-sub-merger:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate Trivy vulnerability report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: local/clash-sub-merger:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v4.37.4
+        with:
+          sarif_file: 'trivy-results.sarif'
+        if: always() && github.event_name != 'pull_request'
+
+      - name: Block fixable Critical and High vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: local/clash-sub-merger:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
@@ -37,42 +74,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v6.2.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=sha,prefix=,format=short
-
-      - name: Build and push
+      - name: Build and push verified image
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Security scan with Trivy
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-        if: github.event_name != 'pull_request'
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v4.37.4
-        with:
-          sarif_file: 'trivy-results.sarif'
-        if: github.event_name != 'pull_request'
 
   # Auto release on tag push (disabled)
   # release:

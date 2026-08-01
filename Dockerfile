@@ -1,5 +1,5 @@
 # Multi-stage build - Frontend
-FROM node:22.17.1-alpine3.22 AS frontend-builder
+FROM node:22.22.0-alpine3.23 AS frontend-builder
 WORKDIR /app
 # Copy VERSION file first (needed for version sync)
 COPY VERSION ./
@@ -12,7 +12,7 @@ COPY submerger/ ./
 RUN npm run build
 
 # Multi-stage build - Go speedtest service
-FROM golang:1.24.5-alpine3.22 AS go-builder
+FROM golang:1.26.5-alpine3.23 AS go-builder
 WORKDIR /app/speedtest
 COPY speedtest/go.mod speedtest/go.sum ./
 RUN go mod download
@@ -22,6 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o speedtest .
 # Final image - Python backend + Go speedtest
 FROM python:3.12.11-slim-bookworm AS runtime
 WORKDIR /app
+ARG DEBIAN_FRONTEND=noninteractive
 
 # Labels
 LABEL org.opencontainers.image.title="Clash Sub Merger"
@@ -30,9 +31,10 @@ LABEL org.opencontainers.image.source="https://github.com/SocialYjj/clash-sub-me
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install system dependencies (minimal)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     tzdata \
-    curl \
     ca-certificates \
     gosu \
     && rm -rf /var/lib/apt/lists/* \

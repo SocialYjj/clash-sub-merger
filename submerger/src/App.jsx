@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
 import request, { isRequestCanceled } from './utils/request';
 import { copyToClipboard } from './utils/clipboard';

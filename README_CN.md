@@ -131,10 +131,9 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
    services:
      submerger:
        image: ghcr.io/socialyjj/clash-sub-merger:latest
-       container_name: submerger
        restart: unless-stopped
        ports:
-         - "8666:8666"
+         - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
        volumes:
          - ./data:/app/data
        env_file:
@@ -143,6 +142,13 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
          DATA_DIR: /app/data
          HOST: 0.0.0.0
          PORT: 8666
+       mem_limit: "${MEMORY_LIMIT:-512m}"
+       pids_limit: ${PIDS_LIMIT:-256}
+       logging:
+         driver: json-file
+         options:
+           max-size: "${LOG_MAX_SIZE:-10m}"
+           max-file: "${LOG_MAX_FILES:-3}"
    ```
 
 3. **启动服务**：
@@ -193,7 +199,12 @@ docker compose up -d --build
 | :--- | :--- | :--- |
 | `TZ` | `UTC` (建议 Asia/Shanghai) | 容器时区设置 |
 | `DATA_DIR` | `/app/data` | 数据存储路径 |
+| `BIND_ADDRESS` | `0.0.0.0` | Docker Compose 监听地址；反向代理场景建议设为 `127.0.0.1` |
 | `HOST_PORT` | `8666` | Docker Compose 对外端口 |
+| `MEMORY_LIMIT` | `512m` | Docker Compose 内存上限 |
+| `PIDS_LIMIT` | `256` | Docker Compose 进程数上限 |
+| `LOG_MAX_SIZE` | `10m` | 单个 Docker 日志文件上限 |
+| `LOG_MAX_FILES` | `3` | Docker 日志轮转保留数量 |
 | `INITIAL_ADMIN_PASSWORD` | 无，首次启动必填 | 首次初始化管理员密码 |
 | `SESSION_SECRET` | 空 | 管理会话签名密钥，生产环境建议设置 |
 | `SESSION_TTL_SECONDS` | `86400` | 管理会话有效期（秒） |

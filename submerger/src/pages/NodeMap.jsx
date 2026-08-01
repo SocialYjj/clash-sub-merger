@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import request, { isRequestCanceled } from '../utils/request';
 import * as echarts from 'echarts';
 import { RefreshCw, Globe, ExternalLink, X } from 'lucide-react';

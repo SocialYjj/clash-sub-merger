@@ -10,7 +10,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           // 将 React 相关库打包到一起
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'react-vendor': ['react', 'react-dom', 'react-router'],
           // echarts 单独打包，按需加载
           'echarts': ['echarts'],
           // 将 UI 库打包到一起
@@ -44,6 +44,6 @@ export default defineConfig({
   },
   // 优化依赖预构建
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-router-dom', 'axios'],
+    include: ['react', 'react-dom', 'react-router', 'axios'],
   },
 })
