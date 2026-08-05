@@ -1,4 +1,4 @@
-"""Tests to keep default latency-test URLs on Cloudflare."""
+"""Tests for the primary latency URL and provider-specific fallbacks."""
 
 import unittest
 from pathlib import Path
@@ -7,12 +7,6 @@ import speedtest_service
 
 
 CLOUDFLARE_204_URL = "https://cp.cloudflare.com/generate_204"
-FORBIDDEN_LATENCY_URLS = [
-    "http://" + "www.gstatic.com" + "/generate_204",
-    "https://" + "www.gstatic.com" + "/generate_204",
-    "http://" + "cp.cloudflare.com" + "/generate_204",
-    "http://" + "www.google.com" + "/generate_204",
-]
 SOURCE_FILES_WITH_LATENCY_DEFAULTS = [
     Path("api/nodes.py"),
     Path("services/config_merger.py"),
@@ -34,8 +28,12 @@ class LatencyUrlDefaultsTests(unittest.TestCase):
             with self.subTest(source_file=str(source_file)):
                 content = source_file.read_text(encoding="utf-8")
                 self.assertIn(CLOUDFLARE_204_URL, content)
-                for url in FORBIDDEN_LATENCY_URLS:
-                    self.assertNotIn(url, content)
+
+    def test_go_service_keeps_cloudflare_primary_and_has_fallbacks(self):
+        content = Path("speedtest/main.go").read_text(encoding="utf-8")
+        self.assertIn('const defaultLatencyURL = "https://cp.cloudflare.com/generate_204"', content)
+        self.assertIn('"https://www.gstatic.com/generate_204"', content)
+        self.assertIn('"http://cp.cloudflare.com/generate_204"', content)
 
 
 if __name__ == "__main__":

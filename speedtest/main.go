@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+const defaultLatencyURL = "https://cp.cloudflare.com/generate_204"
+
+var fallbackLatencyURLs = []string{
+	"https://www.gstatic.com/generate_204",
+	"http://cp.cloudflare.com/generate_204",
+}
+
 // Request/Response structures
 type DelayRequest struct {
 	Link        string                   `json:"link"`
@@ -139,7 +146,7 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.URL == "" {
-		req.URL = "https://cp.cloudflare.com/generate_204"
+		req.URL = defaultLatencyURL
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = 5000
@@ -148,12 +155,18 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	var latency int
 	var err error
 
-	if len(req.Chain) > 0 {
-		latency, err = testDelayWithChainAndDialer(req.Chain, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
-	} else if req.Node != nil {
-		latency, err = runNodeDelayRequest(req.Node, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
-	} else {
-		latency, err = testDelayWithDialer(req.Link, req.URL, time.Duration(req.Timeout)*time.Millisecond, req.DialerProxy)
+	timeout := time.Duration(req.Timeout) * time.Millisecond
+	for _, candidateURL := range latencyTestURLs(req.URL) {
+		if len(req.Chain) > 0 {
+			latency, err = testDelayWithChainAndDialer(req.Chain, candidateURL, timeout, req.DialerProxy)
+		} else if req.Node != nil {
+			latency, err = runNodeDelayRequest(req.Node, candidateURL, timeout, req.DialerProxy)
+		} else {
+			latency, err = testDelayWithDialer(req.Link, candidateURL, timeout, req.DialerProxy)
+		}
+		if err == nil {
+			break
+		}
 	}
 
 	if err != nil {
@@ -162,6 +175,20 @@ func handleDelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSON(w, DelayResponse{Success: true, Latency: latency})
+}
+
+func latencyTestURLs(requestedURL string) []string {
+	// Some proxy providers can reach the internet but cannot complete a TLS
+	// handshake with Cloudflare's 204 endpoint. Keep that endpoint as the
+	// primary target, then retry with independent 204 endpoints before failing.
+	if requestedURL != defaultLatencyURL {
+		return []string{requestedURL}
+	}
+
+	urls := make([]string, 0, 1+len(fallbackLatencyURLs))
+	urls = append(urls, requestedURL)
+	urls = append(urls, fallbackLatencyURLs...)
+	return urls
 }
 
 func handleIP(w http.ResponseWriter, r *http.Request) {

@@ -17,7 +17,7 @@ from core.rate_limit import limiter
 from helpers import handle_api_errors, load_subscription_yaml
 from logger_config import get_logger
 from services.node_manager import get_proxy_node_by_id
-from services.node_identity import subscription_node_id
+from services.node_identity import subscription_node_ids
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -176,7 +176,7 @@ async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int =
     latency_result = await _go_speedtest_request(
         "/api/delay",
         {**base_payload, "url": "https://cp.cloudflare.com/generate_204", "timeout": timeout_ms},
-        timeout + 2,
+        timeout * 2 + 2,
     )
     if latency_result.get("success"):
         result["latency"] = latency_result.get("latency", -1)
@@ -284,11 +284,7 @@ async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depend
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
     nodes = sub_data.get('proxies', []) if sub_data else []
     
-    node_ids = [
-        subscription_node_id(sub_id, node)
-        for node in nodes
-        if isinstance(node, dict)
-    ]
+    node_ids = subscription_node_ids(sub_id, nodes)
     return await _speedtest_batch(node_ids, test_speed=False, timeout=10, concurrency=10)
 
 

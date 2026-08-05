@@ -21,7 +21,7 @@ from services.node_parser import parse_node_link
 from services.node_identity import (
     custom_node_id as get_custom_node_id,
     find_subscription_node_index,
-    subscription_node_id,
+    subscription_node_ids,
 )
 from services.custom_node_storage import update_custom_nodes
 from services.node_reference_updates import update_subscription_yaml_with_references
@@ -512,12 +512,13 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
         nodes = []
     else:
         nodes = sub_data.get('proxies', []) if sub_data else []
-    
+
+    node_ids = subscription_node_ids(sub_id, nodes)
     enhanced_nodes = []
     for i, node in enumerate(nodes):
         enhanced = dict(node)
         enhanced['index'] = i
-        enhanced['id'] = subscription_node_id(sub_id, node)
+        enhanced['id'] = node_ids[i]
         transformed = NameTransformer.transform_name(node, sub['name'])
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
@@ -617,6 +618,12 @@ class NodeTestRequest(BaseModel):
     test_region: bool = False
     geoip_api: Optional[str] = None
     batch_mode: bool = False  # 批量模式下不立即保存
+    # The node-management UI sends milliseconds, matching the Go delay/IP API.
+    timeout: int = Field(
+        default=AppConfig.SPEEDTEST_TIMEOUT * 1000,
+        ge=1000,
+        le=60000,
+    )
 
 
 class BatchSaveRequest(BaseModel):
@@ -729,6 +736,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
 async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request: Request, _: bool = Depends(verify_session)):
     """Test latency/speed/region for any node (subscription or custom)"""
     import asyncio
+    import math
     from datetime import datetime
     from api.speedtest import (
         _go_speedtest_request,
@@ -771,6 +779,9 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         "success": True,
         "name": node.get('name', 'Unknown')
     }
+
+    timeout_ms = data.timeout
+    timeout_seconds = max(1, math.ceil(timeout_ms / 1000))
     
     need_save = normalization_changed
     
@@ -786,9 +797,9 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 {
                     **base_payload,
                     "url": "https://cp.cloudflare.com/generate_204",
-                    "timeout": AppConfig.SPEEDTEST_TIMEOUT * 1000,
+                    "timeout": timeout_ms,
                 },
-                AppConfig.SPEEDTEST_TIMEOUT + 2,
+                timeout_seconds * 2 + 2,
             )
             latency = latency_result.get('latency', -1)
             result['latency'] = latency
@@ -804,8 +815,8 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         if data.test_region:
             ip_result = await _go_speedtest_request(
                 "/api/ip",
-                {**base_payload, "timeout": AppConfig.SPEEDTEST_TIMEOUT * 1000},
-                AppConfig.SPEEDTEST_TIMEOUT + 2,
+                {**base_payload, "timeout": timeout_ms},
+                timeout_seconds + 2,
             )
             if ip_result.get('success'):
                 exit_ip = ip_result.get('ip')
@@ -846,10 +857,10 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 {
                     **base_payload,
                     "url": "https://speed.cloudflare.com/__down?bytes=10000000",
-                    "timeout": AppConfig.SPEEDTEST_TIMEOUT,
+                    "timeout": timeout_seconds,
                     "mode": "average",
                 },
-                AppConfig.SPEEDTEST_TIMEOUT + 5,
+                timeout_seconds + 5,
             )
             if speed_result.get('success'):
                 speed = speed_result.get('speed', 0)

@@ -12,6 +12,7 @@ from services.proxy_filter import ProxyFilter
 from services.node_visibility import is_node_enabled
 from services.node_identity import (
     custom_node_id,
+    find_subscription_node_index,
     is_node_allocated,
     subscription_node_id,
 )
@@ -124,23 +125,23 @@ def find_subscription_node(
         proxies = cfg.get('proxies', []) if cfg else []
         
         if node_id:
-            matching_nodes = [
-                proxy
-                for proxy in proxies
-                if isinstance(proxy, dict) and subscription_node_id(sub_id, proxy) == node_id
-            ]
-            if len(matching_nodes) > 1:
-                logger.warning("Ambiguous stable node reference in subscription %s", sub_id)
+            try:
+                node_index = find_subscription_node_index(proxies, sub_id, node_id)
+            except ValueError:
+                logger.warning("Ambiguous node reference in subscription %s", sub_id)
                 return None
-            if matching_nodes:
-                proxy = matching_nodes[0]
-                if not is_node_enabled(proxy) or not ProxyFilter.is_valid_proxy(proxy):
-                    return None
-                proxy = ProxyFilter.sanitize_proxy(dict(proxy))
-                transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
-                transformed['_allocation_id'] = node_id
-                return transformed
-            return None
+            if node_index is None:
+                return None
+
+            raw_proxy = proxies[node_index]
+            if not is_node_enabled(raw_proxy) or not ProxyFilter.is_valid_proxy(raw_proxy):
+                return None
+            proxy = ProxyFilter.sanitize_proxy(dict(raw_proxy))
+            transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
+            # Keep durable allocation references on the technical identity;
+            # duplicate technical endpoints use a UI-only disambiguator.
+            transformed['_allocation_id'] = subscription_node_id(sub_id, raw_proxy)
+            return transformed
 
         # Search by name
         if node_name:
@@ -311,9 +312,15 @@ def get_proxy_node_by_id(node_id: str, yaml_source_dir: str = None) -> Optional[
             subscription_data = load_subscription_yaml(subscription_id, yaml_source_dir, use_cache=True)
         except Exception:
             continue
-        for node in subscription_data.get('proxies', []):
-            if subscription_node_id(subscription_id, node) == node_id:
-                if not is_node_enabled(node):
-                    return None
-                return strip_metadata(ProxyFilter.sanitize_proxy(node))
+        nodes = subscription_data.get('proxies', [])
+        try:
+            node_index = find_subscription_node_index(nodes, subscription_id, node_id)
+        except ValueError:
+            logger.warning("Ambiguous node identity %s in subscription %s", node_id, subscription_id)
+            continue
+        if node_index is not None:
+            node = nodes[node_index]
+            if not is_node_enabled(node):
+                return None
+            return strip_metadata(ProxyFilter.sanitize_proxy(node))
     return None

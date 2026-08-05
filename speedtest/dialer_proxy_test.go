@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,36 @@ func TestDelayHandlerPassesDialerProxy(t *testing.T) {
 	}
 	if !payload.Success || payload.Latency != 7 {
 		t.Fatalf("unexpected response: %#v", payload)
+	}
+}
+
+func TestDelayHandlerFallsBackWhenDefaultURLFails(t *testing.T) {
+	original := runNodeDelayRequest
+	t.Cleanup(func() { runNodeDelayRequest = original })
+
+	var testedURLs []string
+	runNodeDelayRequest = func(node map[string]interface{}, testURL string, timeout time.Duration, dialerProxy string) (int, error) {
+		testedURLs = append(testedURLs, testURL)
+		if len(testedURLs) == 1 {
+			return -1, errors.New("TLS handshake timeout")
+		}
+		return 321, nil
+	}
+
+	body := bytes.NewBufferString(`{"node":{"name":"target","type":"http","server":"127.0.0.1","port":8080}}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/delay", body)
+	response := httptest.NewRecorder()
+	handleDelay(response, request)
+
+	var payload DelayResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Success || payload.Latency != 321 {
+		t.Fatalf("unexpected response: %#v", payload)
+	}
+	if len(testedURLs) != 2 || testedURLs[0] != defaultLatencyURL || testedURLs[1] != fallbackLatencyURLs[0] {
+		t.Fatalf("unexpected fallback URLs: %#v", testedURLs)
 	}
 }
 

@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from typing import Optional
+from typing import Optional, Sequence
 
 from services.name_transformer import NameTransformer
 
@@ -10,7 +10,7 @@ from services.name_transformer import NameTransformer
 _VOLATILE_NODE_FIELDS = {
     # A display-name edit must not invalidate allocations, proxy chains, or
     # in-flight test result writes. Technical connection fields still define
-    # the identity; exact duplicate endpoints are rejected as ambiguous.
+    # the stable identity; duplicate endpoints receive a UI-only disambiguator.
     "name",
     "last_latency",
     "last_latency_time",
@@ -53,6 +53,60 @@ def subscription_node_id(subscription_id: str, node: dict) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return f"node_{hashlib.sha256(canonical).hexdigest()}"
+
+
+def subscription_node_ids(subscription_id: str, nodes: Sequence[dict]) -> list[str]:
+    """Return unique UI identities while preserving stable IDs for normal nodes.
+
+    Providers sometimes publish several labels for the same technical endpoint.
+    The technical identity intentionally ignores display metadata, so those
+    entries would otherwise share one ID and every mutation/test request would
+    be ambiguous.  Only duplicate technical identities receive a deterministic
+    name-based suffix; ordinary nodes keep the long-standing stable ID.
+    """
+    materialized_nodes = [node if isinstance(node, dict) else {} for node in (nodes or [])]
+    base_ids = [subscription_node_id(subscription_id, node) for node in materialized_nodes]
+
+    base_counts: dict[str, int] = {}
+    for base_id in base_ids:
+        base_counts[base_id] = base_counts.get(base_id, 0) + 1
+
+    duplicate_name_counts: dict[tuple[str, str], int] = {}
+    for base_id, node in zip(base_ids, materialized_nodes):
+        name_key = normalized_node_name(node.get("name", ""))
+        key = (base_id, name_key)
+        duplicate_name_counts[key] = duplicate_name_counts.get(key, 0) + 1
+
+    duplicate_occurrences: dict[tuple[str, str], int] = {}
+    identities: list[str] = []
+    for base_id, node in zip(base_ids, materialized_nodes):
+        if base_counts[base_id] == 1:
+            identities.append(base_id)
+            continue
+
+        name_key = normalized_node_name(node.get("name", ""))
+        name_group = (base_id, name_key)
+        occurrence = duplicate_occurrences.get(name_group, 0)
+        duplicate_occurrences[name_group] = occurrence + 1
+
+        suffix_payload = {
+            "base_id": base_id,
+            "name": name_key,
+        }
+        if duplicate_name_counts[name_group] > 1:
+            suffix_payload["occurrence"] = occurrence
+
+        suffix = hashlib.sha256(
+            json.dumps(
+                suffix_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        identities.append(f"{base_id}_duplicate_{suffix}")
+
+    return identities
 
 
 def custom_node_id(node: dict) -> str:
@@ -106,11 +160,20 @@ def is_node_allocated(
 
 
 def find_subscription_node_index(nodes: list, subscription_id: str, node_id: str) -> Optional[int]:
-    matches = [
-        index
-        for index, node in enumerate(nodes)
-        if isinstance(node, dict) and subscription_node_id(subscription_id, node) == node_id
-    ]
-    if len(matches) > 1:
+    materialized_nodes = [node if isinstance(node, dict) else {} for node in (nodes or [])]
+    unique_ids = subscription_node_ids(subscription_id, materialized_nodes)
+    unique_matches = [index for index, identity in enumerate(unique_ids) if identity == node_id]
+    if len(unique_matches) == 1:
+        return unique_matches[0]
+    if len(unique_matches) > 1:
         raise ValueError("Node identity is ambiguous")
-    return matches[0] if matches else None
+
+    # Accept legacy technical IDs for persisted allocations and references.
+    legacy_matches = [
+        index
+        for index, node in enumerate(materialized_nodes)
+        if subscription_node_id(subscription_id, node) == node_id
+    ]
+    if len(legacy_matches) > 1:
+        raise ValueError("Node identity is ambiguous")
+    return legacy_matches[0] if legacy_matches else None

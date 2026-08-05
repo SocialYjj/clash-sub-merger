@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 import api.health as health_api
 import server
-from services.node_identity import subscription_node_id
+from services.node_identity import subscription_node_id, subscription_node_ids
 from services.node_manager import find_subscription_node, get_proxy_node_by_id
 
 
@@ -81,6 +81,32 @@ class ServerBugfixTests(unittest.TestCase):
                 )
 
         self.assertIsNone(node)
+
+    def test_subscription_lookup_accepts_ui_id_for_duplicate_endpoint(self):
+        nodes = [
+            {"name": "CF 01", "type": "http", "server": "edge.example.com", "port": 8080},
+            {"name": "CF 02", "type": "http", "server": "edge.example.com", "port": 8080},
+        ]
+        ui_ids = subscription_node_ids("my_sub_1", nodes)
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            sub_file = Path(tempdir) / "my_sub_1.yaml"
+            sub_file.write_text("proxies: []\n", encoding="utf-8")
+
+            with (
+                patch("services.node_manager.load_config", return_value={
+                    "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
+                }),
+                patch("services.node_manager.load_subscription_yaml", return_value={"proxies": nodes}),
+            ):
+                node = find_subscription_node(
+                    "my_sub_1",
+                    node_id=ui_ids[1],
+                    yaml_source_dir=tempdir,
+                )
+
+        self.assertEqual(node["server"], "edge.example.com")
+        self.assertEqual(node["_allocation_id"], subscription_node_id("my_sub_1", nodes[1]))
 
     def test_sync_fetch_wrapper_rejects_running_event_loop(self):
         async def call_sync_wrapper():

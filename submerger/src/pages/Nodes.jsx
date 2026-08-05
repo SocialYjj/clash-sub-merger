@@ -8,7 +8,8 @@ import { COUNTRY_CHINESE_NAMES } from './countryData';
 const API_BASE = '/api';
 
 const INFO_PREFIX_RE = /^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?/i;
-const INFO_DOMAIN_HINT_RE = /^\s*(?:最强备用|备用网址|备用地址|官网地址?)\s*[:：]?\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
+const INFO_DOMAIN_HINT_RE = /^\s*(?:最强备用|备用网址|备用地址|官网地址?|防丢失官网?|防失联官网?|永久官网|永久地址|最新官网|最新地址|网址发布|域名发布|防丢失|防失联)\s*[:：]?\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
+const OFFICIAL_URL_RE = /https?:\/\//i;
 
 const HARD_INVALID_KEYWORDS = [
   '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
@@ -62,7 +63,7 @@ const hasNodeIdentity = (name) => {
 
 const stripLeadingFlagIcon = (value) => String(value || '').replace(LEADING_FLAG_ICON_RE, '').trim();
 
-const isInfoNode = (node) => {
+export const isInfoNode = (node) => {
   if (!node || !node.name) return true;
   const name = String(node.name).trim();
   if (!name) return true;
@@ -74,11 +75,26 @@ const isInfoNode = (node) => {
     return !hasRegionHint(name);
   }
 
+  if (name.includes('官网') && OFFICIAL_URL_RE.test(name) && !hasNodeIdentity(name)) {
+    return true;
+  }
+
   if (HARD_INVALID_KEYWORDS.some(keyword => name.includes(keyword))) {
     return true;
   }
 
   return SOFT_INVALID_KEYWORDS.some(keyword => name.includes(keyword)) && !hasNodeIdentity(name);
+};
+
+const parseNodeTestResponse = (response) => {
+  const testPayload = response?.data || {};
+  if (testPayload.success === false) {
+    const failureMessage = testPayload.error || '节点测试失败';
+    const failure = new Error(failureMessage);
+    failure.response = { data: { detail: failureMessage } };
+    throw failure;
+  }
+  return testPayload;
 };
 
 // Latency color helper
@@ -253,6 +269,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const requestId = ++subNodesRequestSeq.current;
     const subscriptionsSnapshot = [...(subscriptions || [])];
 
+    // Do not render nodes from the previous source set while the new snapshot
+    // is loading; otherwise a source filter can temporarily show stale rows.
+    setSubNodes({});
+    setNodeTestResults({});
+    setSelectedNodes(new Set());
+
     if (!subscriptionsSnapshot.length) {
       if (!signal?.aborted && requestId === subNodesRequestSeq.current) {
         setSubNodes({});
@@ -350,7 +372,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       subNodeList.forEach((node, idx) => {
         if (isInfoNode(node)) return;
 
-        const nodeKey = node.id || `${subId}-${idx}`;
+        const nodeKey = `${subId}|${node.id || `index:${idx}`}`;
         const testResult = nodeTestResults[nodeKey];
 
         // Priority for region: testResult > backend's node.region > geoipData lookup
@@ -407,7 +429,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     customNodes?.forEach((node, idx) => {
       if (isInfoNode(node)) return;
 
-      const nodeKey = `custom-${node.id || idx}`;
+      const nodeKey = `custom|${node.id || `index:${idx}`}`;
       const testResult = nodeTestResults[nodeKey];
 
       // Priority for region: testResult > backend's node.region > geoipData lookup
@@ -536,21 +558,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return ['all', ...Array.from(types)];
   }, [allNodes]);
 
-  const sources = useMemo(() => {
-    // Include all subscriptions, even if they have no nodes
-    const srcs = new Set();
-    
-    // Add all subscription names
-    subscriptions?.forEach(sub => {
-      srcs.add(sub.name);
+  const sourceOptions = useMemo(() => {
+    // Filter by immutable source IDs rather than display names. Names can be
+    // edited or duplicated, which otherwise allows stale rows to pass through.
+    const options = [{ id: 'all', name: '全部来源' }];
+    (subscriptions || []).forEach(sub => {
+      if (sub?.id) options.push({ id: sub.id, name: sub.name || sub.id });
     });
-    
-    // Add custom nodes source
     if (customNodes && customNodes.length > 0) {
-      srcs.add('自建节点');
+      options.push({ id: 'custom', name: '自建节点' });
     }
-    
-    return ['all', ...Array.from(srcs)];
+    return options;
   }, [subscriptions, customNodes]);
 
   const compareNodes = useCallback((a, b) => {
@@ -623,7 +641,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Filter and sort
   const filteredNodes = useMemo(() => {
-    let result = allNodes;
+    // Sorting must not mutate the memoized source list; mutating it can leave
+    // rows from a previous source selection visible after the filter changes.
+    let result = [...allNodes];
 
     if (search) {
       const s = search.toLowerCase();
@@ -636,7 +656,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
 
     if (filterSource !== 'all') {
-      result = result.filter(n => n.source === filterSource);
+      result = result.filter(n => n.sourceId === filterSource);
     }
 
     if (filterType !== 'all') {
@@ -679,7 +699,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // 当过滤条件改变时，重置到第一页
   useEffect(() => {
     setCurrentPage(1);
+    setSelectedNodes(new Set());
   }, [search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
+
+  useEffect(() => {
+    if (!sourceOptions.some(option => option.id === filterSource)) {
+      setFilterSource('all');
+    }
+  }, [filterSource, sourceOptions]);
 
 
   const getTypeColor = (type) => {
@@ -721,24 +748,34 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         payload.geoip_api = selectedGeoipApi;
       }
       const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, payload);
+      const testPayload = parseNodeTestResponse(res);
       setNodeTestResults(prev => {
         const newResult = { ...prev[node.nodeKey] };
         if (isRegionTest) {
-          newResult.region = res.data.region;
-          newResult.city = res.data.city;
-          newResult.exit_ip = res.data.exit_ip;
-          newResult.error = false;
+          newResult.region = testPayload.region;
+          newResult.city = testPayload.city;
+          newResult.exit_ip = testPayload.exit_ip;
+          newResult.regionError = false;
         } else {
-          newResult.latency = res.data.latency;
+          newResult.latency = testPayload.latency;
           newResult.error = false;
         }
         return { ...prev, [node.nodeKey]: newResult };
       });
     } catch (err) {
-      setNodeTestResults(prev => ({
-        ...prev,
-        [node.nodeKey]: { ...prev[node.nodeKey], latency: null, error: true }
-      }));
+      setNodeTestResults(prev => {
+        const failedResult = { ...prev[node.nodeKey] };
+        const failureMessage = err.response?.data?.detail || err.message || '未知错误';
+        if (isRegionTest) {
+          failedResult.regionError = true;
+          failedResult.regionErrorMessage = failureMessage;
+        } else {
+          failedResult.latency = null;
+          failedResult.error = true;
+          failedResult.errorMessage = failureMessage;
+        }
+        return { ...prev, [node.nodeKey]: failedResult };
+      });
       showToast?.(`节点测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
     } finally {
       setTestingNode(null);
@@ -756,14 +793,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         test_region: false,
         timeout: testTimeout
       });
+      const testPayload = parseNodeTestResponse(res);
       setNodeTestResults(prev => ({
         ...prev,
         [node.nodeKey]: {
           ...prev[node.nodeKey],
-          speed: res.data.speed,
-          peak_speed: res.data.peak_speed,
+          speed: testPayload.speed,
+          peak_speed: testPayload.peak_speed,
           speed_error: false,
-          error: false
+          speedErrorMessage: undefined
         }
       }));
     } catch (err) {
@@ -774,7 +812,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           speed: null,
           peak_speed: null,
           speed_error: true,
-          error: true
+          speedErrorMessage: err.response?.data?.detail || err.message || '未知错误'
         }
       }));
       showToast?.(`速度测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
@@ -828,13 +866,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               timeout: testTimeout,
               batch_mode: true  // 批量模式，不立即保存
             });
+            const testPayload = parseNodeTestResponse(res);
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
             if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
-            saveData[node.sourceId][node.id].latency = res.data.latency;
+            saveData[node.sourceId][node.id].latency = testPayload.latency;
             
-            return { nodeKey: node.nodeKey, data: { latency: res.data.latency, error: false } };
+            return { nodeKey: node.nodeKey, data: { latency: testPayload.latency, error: false } };
           } catch {
             return { nodeKey: node.nodeKey, data: { latency: null, error: true } };
           }
@@ -871,15 +910,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               geoip_api: selectedGeoipApi,
               batch_mode: true  // 批量模式
             });
+            const testPayload = parseNodeTestResponse(res);
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
             if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
-            saveData[node.sourceId][node.id].exit_ip = res.data.exit_ip;
-            saveData[node.sourceId][node.id].region = res.data.region;
-            saveData[node.sourceId][node.id].city = res.data.city;
+            saveData[node.sourceId][node.id].exit_ip = testPayload.exit_ip;
+            saveData[node.sourceId][node.id].region = testPayload.region;
+            saveData[node.sourceId][node.id].city = testPayload.city;
             
-            return { nodeKey: node.nodeKey, data: { region: res.data.region, city: res.data.city, exit_ip: res.data.exit_ip, error: false } };
+            return { nodeKey: node.nodeKey, data: { region: testPayload.region, city: testPayload.city, exit_ip: testPayload.exit_ip, regionError: false } };
           } catch {
             return null;
           }
@@ -917,15 +957,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               timeout: testTimeout,
               batch_mode: true  // 批量模式
             });
+            const testPayload = parseNodeTestResponse(res);
             
             // 收集保存数据
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
             if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
-            saveData[node.sourceId][node.id].speed = res.data.speed;
+            saveData[node.sourceId][node.id].speed = testPayload.speed;
             
-            return { nodeKey: node.nodeKey, data: { speed: res.data.speed, peak_speed: res.data.peak_speed, speed_error: false, error: false } };
+            return { nodeKey: node.nodeKey, data: { speed: testPayload.speed, peak_speed: testPayload.peak_speed, speed_error: false } };
           } catch {
-            return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true, error: true } };
+            return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true } };
           }
         }));
         
@@ -1890,8 +1931,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           onChange={(e) => setFilterSource(e.target.value)}
           className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
-          {sources.map(s => (
-            <option key={s} value={s}>{s === 'all' ? '全部来源' : s}</option>
+          {sourceOptions.map(source => (
+            <option key={source.id} value={source.id}>{source.name}</option>
           ))}
         </select>
 
@@ -2142,9 +2183,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            {node.latency !== undefined && node.latency !== null && node.latency > 0 && !node.testError ? (
-                              <span className={`font-mono text-sm ${getLatencyColor(node.latency)}`}>
-                                {node.latency}ms
+                            {displayedLatency !== undefined && displayedLatency !== null && displayedLatency > 0 && !displayedError ? (
+                              <span className={`font-mono text-sm ${getLatencyColor(displayedLatency)}`}>
+                                {displayedLatency}ms
                               </span>
                             ) : (
                               <span className={`px-2 py-0.5 rounded text-xs ${latencyBadge.color}`}>
