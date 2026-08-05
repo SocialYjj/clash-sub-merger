@@ -5,6 +5,7 @@ import inspect
 import unittest
 from unittest.mock import patch
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -62,6 +63,27 @@ class SpeedtestValidationTests(unittest.TestCase):
             ),
             speedtest_api.MAX_SPEEDTEST_CONCURRENCY,
         )
+
+    def test_go_request_reports_timeout_without_empty_error(self):
+        class TimeoutClient:
+            async def post(self, *args, **kwargs):
+                raise httpx.ReadTimeout("request timed out")
+
+        async def get_timeout_client():
+            return TimeoutClient()
+
+        async def run_test():
+            with patch.object(speedtest_api, "_get_speedtest_client", side_effect=get_timeout_client):
+                return await speedtest_api._go_speedtest_request(
+                    "/api/delay",
+                    {"node": {"type": "trojan"}},
+                    timeout=3,
+                )
+
+        result = asyncio.run(run_test())
+
+        self.assertFalse(result["success"])
+        self.assertIn("timed out after 3s", result["error"])
 
     def test_single_speedtest_calls_go_service_with_node_payload(self):
         fake_node = {"name": "Demo", "type": "http", "server": "127.0.0.1", "port": 8080}

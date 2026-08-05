@@ -4,6 +4,7 @@ Filter out invalid info nodes from proxy lists
 """
 import re
 from typing import List, Optional
+from core.proxy_compat import normalize_trojan_proxy
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -222,6 +223,7 @@ class ProxyFilter:
             return proxy
 
         proxy = dict(proxy)
+        normalize_trojan_proxy(proxy)
         proxy_type = proxy.get('type', '')
         network = str(proxy.get('network', '') or '').strip().lower()
 

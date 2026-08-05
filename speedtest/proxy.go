@@ -111,7 +111,7 @@ func dialerProxyConfig(rawProxyURL string) (map[string]interface{}, error) {
 
 func parseTargetProxy(proxyConfig map[string]interface{}, dialerProxy string) (constant.Proxy, error) {
 	if strings.TrimSpace(dialerProxy) == "" {
-		proxyAdapter, err := parseProxyAdapter(normalizeXHTTPNode(proxyConfig))
+		proxyAdapter, err := parseProxyAdapter(normalizeProxyConfig(proxyConfig))
 		if err != nil {
 			return nil, fmt.Errorf("parse proxy error")
 		}
@@ -133,13 +133,46 @@ func parseTargetProxy(proxyConfig map[string]interface{}, dialerProxy string) (c
 	}
 	delete(targetConfig, "dialer-proxy")
 	targetAdapter, err := parseProxyAdapter(
-		normalizeXHTTPNode(targetConfig),
+		normalizeProxyConfig(targetConfig),
 		adapter.WithDialerForAPI(proxydialer.New(upstreamAdapter, true)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy error")
 	}
 	return targetAdapter, nil
+}
+
+func normalizeProxyConfig(node map[string]interface{}) map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+
+	normalized := make(map[string]interface{}, len(node))
+	for key, value := range node {
+		normalized[key] = value
+	}
+
+	if strings.EqualFold(configString(normalized["type"]), "trojan") {
+		if configString(normalized["sni"]) == "" {
+			for _, alias := range []string{"servername", "peer"} {
+				if serverName := configString(normalized[alias]); serverName != "" {
+					normalized["sni"] = serverName
+					break
+				}
+			}
+		}
+		delete(normalized, "servername")
+		delete(normalized, "peer")
+	}
+
+	return normalizeXHTTPNode(normalized)
+}
+
+func configString(value interface{}) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // testDelay tests latency using mihomo's URLTest
@@ -589,7 +622,7 @@ func buildChainAdapterWithDialer(chain []map[string]interface{}, dialerProxy str
 		delete(nodeConfig, "dialer-proxy")
 
 		nextAdapter, err := parseProxyAdapter(
-			normalizeXHTTPNode(nodeConfig),
+			normalizeProxyConfig(nodeConfig),
 			adapter.WithDialerForAPI(proxydialer.New(currentAdapter, true)),
 		)
 		if err != nil {

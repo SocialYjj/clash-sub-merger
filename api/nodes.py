@@ -799,7 +799,9 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                     "url": "https://cp.cloudflare.com/generate_204",
                     "timeout": timeout_ms,
                 },
-                timeout_seconds * 2 + 2,
+                # The Go service can try the primary latency URL plus two
+                # fallbacks, each with the requested node timeout.
+                timeout_seconds * 3 + 2,
             )
             latency = latency_result.get('latency', -1)
             result['latency'] = latency

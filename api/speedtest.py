@@ -140,11 +140,22 @@ async def _go_speedtest_request(endpoint: str, payload: dict, timeout: int) -> d
     """Call the bundled Go speedtest service."""
     go_port = os.environ.get('GO_SPEEDTEST_PORT', str(AppConfig.GO_SPEEDTEST_PORT))
     client = await _get_speedtest_client()
-    response = await client.post(
-        f"http://127.0.0.1:{go_port}{endpoint}",
-        json=payload,
-        timeout=timeout,
-    )
+    try:
+        response = await client.post(
+            f"http://127.0.0.1:{go_port}{endpoint}",
+            json=payload,
+            timeout=timeout,
+        )
+    except httpx.TimeoutException:
+        return {
+            "success": False,
+            "error": f"Go speedtest request timed out after {timeout}s",
+        }
+    except httpx.RequestError as exc:
+        return {
+            "success": False,
+            "error": f"Go speedtest request failed ({type(exc).__name__})",
+        }
     if response.status_code != 200:
         return {"success": False, "error": f"Go service returned HTTP {response.status_code}"}
     try:
@@ -176,7 +187,8 @@ async def _run_go_speedtest(node: dict, test_speed: bool = False, timeout: int =
     latency_result = await _go_speedtest_request(
         "/api/delay",
         {**base_payload, "url": "https://cp.cloudflare.com/generate_204", "timeout": timeout_ms},
-        timeout * 2 + 2,
+        # The Go service may try three latency URLs before returning.
+        timeout * 3 + 2,
     )
     if latency_result.get("success"):
         result["latency"] = latency_result.get("latency", -1)

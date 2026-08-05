@@ -27,3 +27,13 @@ func TestParseVlessXHTTPUsesXHTTPOpts(t *testing.T) {
 		t.Fatalf("host = %v, want www.apple.com", opts["host"])
 	}
 }
+
+func TestParseTrojanUsesPeerAsSNI(t *testing.T) {
+	proxy, err := parseTrojan("trojan://secret@example.com:443?peer=cdn.example.com#trojan")
+	if err != nil {
+		t.Fatalf("parseTrojan returned error: %v", err)
+	}
+	if proxy["sni"] != "cdn.example.com" {
+		t.Fatalf("sni = %v, want cdn.example.com", proxy["sni"])
+	}
+}

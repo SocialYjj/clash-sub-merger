@@ -241,7 +241,11 @@ func parseTrojan(link string) (map[string]interface{}, error) {
 	}
 
 	// SNI
-	if sni := params.Get("sni"); sni != "" {
+	sni := params.Get("sni")
+	if sni == "" {
+		sni = params.Get("peer")
+	}
+	if sni != "" {
 		proxy["sni"] = sni
 	}
 

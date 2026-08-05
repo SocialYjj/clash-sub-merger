@@ -77,6 +77,25 @@ class ProxyCompatTests(unittest.TestCase):
         self.assertEqual(changed_count, 1)
         self.assertEqual(data["proxies"][0]["xhttp-opts"], {"mode": "auto", "path": "/sub"})
 
+    def test_normalize_subscription_data_migrates_trojan_servername(self):
+        data = {
+            "proxies": [
+                {
+                    "type": "trojan",
+                    "server": "example.com",
+                    "port": 443,
+                    "password": "secret",
+                    "servername": "cdn.example.com",
+                }
+            ]
+        }
+
+        changed = normalize_subscription_data(data)
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(data["proxies"][0]["sni"], "cdn.example.com")
+        self.assertNotIn("servername", data["proxies"][0])
+
 
 class CoreDatabaseCompatibilityTests(unittest.TestCase):
     def test_load_config_normalizes_xhttp_nodes_and_returns_deepcopy(self):

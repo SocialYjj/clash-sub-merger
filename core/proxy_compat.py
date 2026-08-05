@@ -57,14 +57,37 @@ def normalize_xhttp_proxy(proxy: dict) -> bool:
     return proxy != before
 
 
+def normalize_trojan_proxy(proxy: dict) -> bool:
+    """Migrate the legacy Trojan SNI alias to Mihomo's canonical ``sni`` key."""
+    if not isinstance(proxy, dict):
+        return False
+
+    if str(proxy.get("type", "") or "").strip().lower() != "trojan":
+        return False
+
+    before = dict(proxy)
+    if not _has_value(proxy.get("sni")):
+        for alias in ("servername", "peer"):
+            if _has_value(proxy.get(alias)):
+                proxy["sni"] = proxy[alias]
+                break
+    proxy.pop("servername", None)
+    proxy.pop("peer", None)
+    return proxy != before
+
+
 def normalize_proxy_list(proxies: Iterable[Any]) -> int:
-    """Normalize xhttp nodes in a proxy iterable in place; return change count."""
+    """Normalize compatibility fields in a proxy iterable in place."""
     changed = 0
     if not isinstance(proxies, list):
         return changed
 
     for proxy in proxies:
-        if isinstance(proxy, dict) and normalize_xhttp_proxy(proxy):
+        if not isinstance(proxy, dict):
+            continue
+        node_changed = normalize_xhttp_proxy(proxy)
+        node_changed = normalize_trojan_proxy(proxy) or node_changed
+        if node_changed:
             changed += 1
     return changed
 

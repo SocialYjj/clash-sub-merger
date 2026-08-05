@@ -62,7 +62,8 @@ class SubscriptionParserDataIntegrityTests(unittest.TestCase):
         proxy = parsed["proxies"][0]
 
         self.assertNotIn("skip-cert-verify", proxy)
-        self.assertEqual(proxy["servername"], "example.com")
+        self.assertEqual(proxy["sni"], "example.com")
+        self.assertNotIn("servername", proxy)
 
     def test_trojan_preserves_explicit_allow_insecure(self):
         parsed = SubscriptionParser.parse_content(

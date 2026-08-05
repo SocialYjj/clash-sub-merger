@@ -575,7 +575,7 @@ def parse_trojan_link(link: str) -> Optional[dict]:
             proxy['tls'] = True
             sni = get_param('sni') or get_param('peer')
             if sni:
-                proxy['servername'] = sni
+                proxy['sni'] = sni
             fp = get_param('fp')
             if fp:
                 proxy['client-fingerprint'] = fp

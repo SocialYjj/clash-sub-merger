@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Optional, Sequence
 
+from core.proxy_compat import normalize_trojan_proxy
 from services.name_transformer import NameTransformer
 
 
@@ -43,10 +44,12 @@ def _identity_payload(value):
 
 def subscription_node_id(subscription_id: str, node: dict) -> str:
     """Hash a subscription node without exposing its server credentials."""
+    identity_node = dict(node or {})
+    normalize_trojan_proxy(identity_node)
     canonical = json.dumps(
         {
             "subscription_id": str(subscription_id),
-            "node": _identity_payload(node or {}),
+            "node": _identity_payload(identity_node),
         },
         ensure_ascii=False,
         sort_keys=True,

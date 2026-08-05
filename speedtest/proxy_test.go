@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/constant"
 )
 
 func TestNormalizeXHTTPNodeMigratesLegacyFields(t *testing.T) {
@@ -62,6 +65,54 @@ func TestNormalizeXHTTPNodePreservesExistingXHTTPOpts(t *testing.T) {
 	}
 	if opts["path"] != "/current" {
 		t.Fatalf("path = %v, want existing /current", opts["path"])
+	}
+}
+
+func TestNormalizeProxyConfigMigratesTrojanServername(t *testing.T) {
+	node := map[string]interface{}{
+		"name":       "legacy-trojan",
+		"type":       "trojan",
+		"server":     "example.com",
+		"port":       443,
+		"password":   "secret",
+		"servername": "cdn.example.com",
+	}
+
+	normalized := normalizeProxyConfig(node)
+	if normalized["sni"] != "cdn.example.com" {
+		t.Fatalf("sni = %v, want cdn.example.com", normalized["sni"])
+	}
+	if _, ok := normalized["servername"]; ok {
+		t.Fatal("legacy servername was not removed")
+	}
+}
+
+func TestGetProxyAdapterNormalizesTrojanServernameBeforeParsing(t *testing.T) {
+	original := parseProxyAdapter
+	t.Cleanup(func() { parseProxyAdapter = original })
+
+	var captured map[string]interface{}
+	parseProxyAdapter = func(mapping map[string]interface{}, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		captured = mapping
+		return nil, nil
+	}
+
+	_, err := getProxyAdapterFromNode(map[string]interface{}{
+		"name":       "legacy-trojan",
+		"type":       "trojan",
+		"server":     "example.com",
+		"port":       443,
+		"password":   "secret",
+		"servername": "cdn.example.com",
+	})
+	if err != nil {
+		t.Fatalf("getProxyAdapterFromNode returned error: %v", err)
+	}
+	if captured["sni"] != "cdn.example.com" {
+		t.Fatalf("captured sni = %v, want cdn.example.com", captured["sni"])
+	}
+	if _, ok := captured["servername"]; ok {
+		t.Fatal("captured mapping retained legacy servername")
 	}
 }
 

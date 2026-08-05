@@ -45,6 +45,24 @@ class SubscriptionNodeIdentityTests(unittest.TestCase):
             [subscription_node_id("sub_cf", nodes[0])],
         )
 
+    def test_trojan_sni_aliases_keep_the_same_stable_id(self):
+        sni_node = {
+            "name": "Trojan",
+            "type": "trojan",
+            "server": "edge.example.com",
+            "port": 443,
+            "password": "secret",
+            "sni": "cdn.example.com",
+        }
+        legacy_node = dict(sni_node)
+        legacy_node.pop("sni")
+        legacy_node["servername"] = "cdn.example.com"
+
+        self.assertEqual(
+            subscription_node_id("sub_cf", sni_node),
+            subscription_node_id("sub_cf", legacy_node),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

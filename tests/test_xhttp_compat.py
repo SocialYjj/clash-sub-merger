@@ -44,6 +44,22 @@ class XHTTPCompatibilityTests(unittest.TestCase):
         self.assertNotIn("path", sanitized)
         self.assertNotIn("host", sanitized)
 
+    def test_trojan_servername_is_migrated_to_sni(self):
+        proxy = {
+            "name": "legacy-trojan",
+            "type": "trojan",
+            "server": "example.com",
+            "port": 443,
+            "password": "secret",
+            "tls": True,
+            "servername": "cdn.example.com",
+        }
+
+        sanitized = ProxyFilter.sanitize_proxy(proxy)
+
+        self.assertEqual(sanitized["sni"], "cdn.example.com")
+        self.assertNotIn("servername", sanitized)
+
 
 class ProxyFilterInfoNodeTests(unittest.TestCase):
     """机场广告/信息节点过滤测试。"""
