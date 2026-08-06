@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import geoip_service
 
@@ -35,6 +35,29 @@ class GeoIPConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(calls, 1)
         self.assertEqual({result["iso_code"] for result in results}, {"JP"})
+
+    def test_explicit_provider_failure_falls_back_to_enabled_provider(self):
+        async def failed_primary(_ip, _timeout):
+            return None
+
+        async def working_fallback(_ip, _timeout):
+            return {"countryCode": "JP", "country": "Japan", "city": "Tokyo"}
+
+        async def run_lookup():
+            with (
+                patch.object(geoip_service, "_lookup_ip_api_com", side_effect=failed_primary),
+                patch.object(geoip_service, "_lookup_ipwhois", side_effect=working_fallback),
+                patch.object(geoip_service, "save_geoip_cache_to_disk", new=AsyncMock()),
+            ):
+                return await geoip_service.lookup_ip_online(
+                    "203.0.113.10",
+                    api_id="ip-api.com",
+                )
+
+        result = asyncio.run(run_lookup())
+
+        self.assertEqual(result["iso_code"], "JP")
+        self.assertEqual(result["api_id"], "ipwhois")
 
     def test_cache_save_uses_atomic_replace(self):
         with tempfile.TemporaryDirectory() as tempdir:

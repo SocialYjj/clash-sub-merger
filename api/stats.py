@@ -27,7 +27,9 @@ YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 
 def _is_info_node(name: str) -> bool:
     """Check if node is an info/advertisement node"""
-    return not ProxyFilter.is_valid_proxy({'name': name})
+    # Only the name is available here. The full proxy validator also requires
+    # type/server/port, so using it would classify every real node as invalid.
+    return ProxyFilter.get_invalid_reason({'name': name}) is not None
 
 
 def _get_all_nodes_with_country():
@@ -136,8 +138,15 @@ def get_stats_overview(_: bool = Depends(verify_session)):
                                 "name": transformed.get('name', proxy.get('name', 'Unknown')),
                                 "latency": int(latency_value)
                             }
-        except Exception:
-            pass
+        except Exception as exc:
+            # Keep the overview endpoint usable, but make a bad subscription
+            # visible in logs instead of silently reporting zero nodes.
+            logger.warning(
+                "Failed to load subscription %s (%s) for overview: %s",
+                sub.get('id', '<unknown>'),
+                sub.get('name', '<unnamed>'),
+                type(exc).__name__,
+            )
     
     # Count custom nodes
     custom_nodes_list = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]

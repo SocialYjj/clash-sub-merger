@@ -27,6 +27,8 @@ logger = get_logger(__name__)
 # Persistent cache configuration
 GEOIP_CACHE_FILE = os.path.join(os.environ.get('DATA_DIR', 'data'), 'geoip_cache.json')
 GEOIP_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
+# A temporary provider/network failure must not poison lookups for a week.
+GEOIP_NEGATIVE_CACHE_TTL = 5 * 60
 GEOIP_CACHE_VERSION = 1
 
 # Traditional to Simplified Chinese converter
@@ -703,6 +705,11 @@ _online_geoip_cache_lock = threading.RLock()
 _online_geoip_inflight_lock = asyncio.Lock()
 _online_geoip_save_lock = asyncio.Lock()
 
+
+def _geoip_cache_ttl(entry: dict) -> int:
+    """Return the TTL appropriate for a positive or negative cache entry."""
+    return GEOIP_NEGATIVE_CACHE_TTL if entry.get('_negative') else GEOIP_CACHE_TTL
+
 def load_geoip_cache_from_disk():
     """Load GeoIP cache from disk on startup"""
     global _online_geoip_cache
@@ -741,7 +748,7 @@ def load_geoip_cache_from_disk():
                     continue
                 if 'timestamp' in entry:
                     age = current_time - entry['timestamp']
-                    if age < GEOIP_CACHE_TTL:
+                    if age < _geoip_cache_ttl(entry):
                         valid_cache[key] = entry
                     else:
                         expired_count += 1
@@ -1371,7 +1378,8 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
     Args:
         ip: IP address to lookup
         timeout: Request timeout in seconds
-        api_id: Specific API to use (optional, uses preferred_api from config if not specified)
+        api_id: Preferred API to use first (optional, uses preferred_api from config if not specified).
+            Other enabled providers are tried automatically when the preferred provider fails.
 
     Returns: {"iso_code": "KR", "country_name": "韩国", "city": "首尔", "flag": "🇰🇷"} or None
     """
@@ -1390,7 +1398,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
                 return False, None
 
             ts = entry.get('timestamp')
-            if ts and (time.time() - ts) < GEOIP_CACHE_TTL:
+            if ts and (time.time() - ts) < _geoip_cache_ttl(entry):
                 if entry.get('_negative'):
                     return True, None
                 normalized_entry = _normalize_cached_geo_entry(entry)
@@ -1436,15 +1444,24 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
                     return await _lookup_custom_api(ip, custom_api, timeout)
                 return None
 
-            candidate_ids = [target_api]
-            if not api_id:
-                candidate_ids.extend(
-                    candidate_id
-                    for candidate_id in [*builtin_api_map, *custom_apis]
-                    if candidate_id != target_api
-                )
+            # A selected provider is a preference, not a single point of
+            # failure. VPS networks commonly cannot reach ip-api.com while a
+            # different enabled provider remains reachable.
+            candidate_ids = []
+            for candidate_id in [target_api, *builtin_api_map, *custom_apis]:
+                if candidate_id and candidate_id not in candidate_ids:
+                    candidate_ids.append(candidate_id)
             for candidate_id in candidate_ids:
-                raw_data = await query_api(candidate_id)
+                try:
+                    raw_data = await query_api(candidate_id)
+                except Exception as exc:
+                    logger.warning(
+                        "GeoIP provider %s failed for %s: %s",
+                        candidate_id,
+                        ip,
+                        type(exc).__name__,
+                    )
+                    raw_data = None
                 if raw_data:
                     selected_api_id = candidate_id
                     break
