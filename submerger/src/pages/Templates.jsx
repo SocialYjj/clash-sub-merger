@@ -95,38 +95,7 @@ export default function Templates({ showToast }) {
       const templateData = res.data.template || res.data;
       setSelectedTemplate(templateData);
       
-      // Build content from header, proxy_groups, and suffix
-      let content = '';
-      if (templateData.header) {
-        content += templateData.header + '\n\n';
-      }
-      
-      if (templateData.proxy_groups && templateData.proxy_groups.length > 0) {
-        content += 'proxy-groups:\n';
-        templateData.proxy_groups.forEach(group => {
-          content += `  - name: ${group.name}\n`;
-          content += `    type: ${group.type}\n`;
-          if (group.proxies) {
-            content += `    proxies:\n`;
-            group.proxies.forEach(proxy => {
-              content += `      - ${proxy}\n`;
-            });
-          }
-          if (group.url) {
-            content += `    url: ${group.url}\n`;
-          }
-          if (group.interval) {
-            content += `    interval: ${group.interval}\n`;
-          }
-          content += '\n';
-        });
-      }
-      
-      if (templateData.suffix) {
-        content += '\n' + templateData.suffix;
-      }
-      
-      setTemplateContent(content);
+      setTemplateContent(templateData.content || `${templateData.header || ''}\n${templateData.suffix || ''}`.trim());
       setTemplateName(templateData.name || '');
       setShowEditModal(true);
     } catch (err) {
@@ -231,7 +200,7 @@ export default function Templates({ showToast }) {
     if (!content.trim()) {
       try {
         const res = await request.get(`${API_BASE}/templates/builtin`);
-        content = res.data.content || '';
+        content = res.data.content || res.data.template?.content || '';
       } catch (e) {
         content = 'port: 7890\nallow-lan: false\nmode: rule\n\nproxies: []\n\nproxy-groups: []\n\nrules:\n  - MATCH,DIRECT';
       }

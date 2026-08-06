@@ -1,6 +1,7 @@
 """Helpers for subscription token creation and uniqueness checks."""
 
 import hmac
+import re
 from typing import Optional
 
 from fastapi import HTTPException
@@ -9,6 +10,8 @@ from .security import generate_token
 
 
 MIN_CUSTOM_TOKEN_LENGTH = 8
+MAX_CUSTOM_TOKEN_LENGTH = 200
+CUSTOM_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 
 def constant_time_equal(left: Optional[str], right: Optional[str]) -> bool:
@@ -32,6 +35,16 @@ def normalize_custom_subscription_token(token: Optional[str]) -> Optional[str]:
         raise HTTPException(
             status_code=400,
             detail=f"Custom token must be at least {MIN_CUSTOM_TOKEN_LENGTH} characters",
+        )
+    if len(normalized) > MAX_CUSTOM_TOKEN_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Custom token must be at most {MAX_CUSTOM_TOKEN_LENGTH} characters",
+        )
+    if not CUSTOM_TOKEN_PATTERN.fullmatch(normalized):
+        raise HTTPException(
+            status_code=400,
+            detail="Custom token may contain only letters, numbers, '.', '_', '-', or '~'",
         )
     return normalized
 

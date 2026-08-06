@@ -11,7 +11,7 @@ from helpers import load_subscription_yaml
 from logger_config import get_logger
 from services.group_config_builder import build_group_config_view
 from services.name_transformer import NameTransformer
-from services.node_identity import custom_node_id, subscription_node_id
+from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 
@@ -63,10 +63,12 @@ def _allocation_aliases(config: dict) -> tuple[set[str], dict[str, dict[str, set
                 type(exc).__name__,
             )
             continue
-        for node in subscription_yaml.get("proxies", []) if isinstance(subscription_yaml, dict) else []:
+        subscription_nodes = subscription_yaml.get("proxies", []) if isinstance(subscription_yaml, dict) else []
+        subscription_ids = subscription_node_ids(subscription_id, subscription_nodes)
+        for node_index, node in enumerate(subscription_nodes):
             if not isinstance(node, dict):
                 continue
-            stable_id = subscription_node_id(subscription_id, node)
+            stable_id = subscription_ids[node_index]
             final_name = NameTransformer.transform_name(
                 node,
                 subscription.get("name", subscription_id),

@@ -70,6 +70,7 @@ export default function NodeMap() {
   const [selectedCountry, setSelectedCountry] = useState(null);
   const [countryNodes, setCountryNodes] = useState([]);
   const [loadingNodes, setLoadingNodes] = useState(false);
+  const [countryNodesError, setCountryNodesError] = useState('');
 
   useEffect(() => {
     mountedRef.current = true;
@@ -136,23 +137,28 @@ export default function NodeMap() {
     const controller = new AbortController();
     countryNodesAbortRef.current = controller;
     const { signal } = controller;
+    const countryObj = countryData.find(c => c.code === countryCode) || {
+      code: countryCode,
+      name: countryCode,
+      flag: getFlagEmoji(countryCode),
+      count: 0,
+    };
+    setSelectedCountry(countryObj);
+    setCountryNodes([]);
+    setCountryNodesError('');
+    setShowNodeList(true);
     setLoadingNodes(true);
     try {
       const res = await request.get(`${API_BASE}/stats/nodes-by-country/${countryCode}`, { signal });
       if (!mountedRef.current || signal.aborted) return;
       setCountryNodes(res.data.nodes || []);
-      // Find full country object for display
-      const countryObj = countryData.find(c => c.code === countryCode) || {
-        code: countryCode,
-        name: countryCode,
-        flag: getFlagEmoji(countryCode),
-        count: res.data.nodes?.length || 0
-      };
-      setSelectedCountry(countryObj);
-      setShowNodeList(true);
+      // Use the latest count returned by the detail endpoint.
+      const resolvedCountry = { ...countryObj, count: res.data.nodes?.length || countryObj.count };
+      setSelectedCountry(resolvedCountry);
     } catch (err) {
       if (signal.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch country nodes', err);
+      setCountryNodesError('节点列表加载失败，请稍后重试');
     } finally {
       if (mountedRef.current && !signal.aborted) {
         setLoadingNodes(false);
@@ -455,9 +461,14 @@ export default function NodeMap() {
       chartInstance.current?.resize();
     };
     window.addEventListener('resize', handleResize);
+    const resizeObserver = typeof ResizeObserver !== 'undefined' && chartRef.current
+      ? new ResizeObserver(handleResize)
+      : null;
+    resizeObserver?.observe(chartRef.current);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      resizeObserver?.disconnect();
       // Don't dispose immediately if re-rendering, but if strict mode...
       // better to handle dispose in cleanup of useEffect
       // chartInstance.current?.dispose(); 
@@ -571,6 +582,8 @@ export default function NodeMap() {
                   <RefreshCw className="animate-spin mb-2" />
                   加载数据中...
                 </div>
+              ) : countryNodesError ? (
+                <div className="px-4 py-12 text-center text-red-400">{countryNodesError}</div>
               ) : countryNodes.length > 0 ? (
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-slate-900/50 sticky top-0 z-10 backdrop-blur">

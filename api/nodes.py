@@ -2,9 +2,9 @@
 Nodes API
 Custom nodes and subscription nodes management
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.config import AppConfig
 from core.dependencies import verify_session
@@ -185,12 +185,12 @@ class ReorderNodes(BaseModel):
 
 
 class BatchCustomNodes(BaseModel):
-    links: List[str] = Field(min_items=1)
+    links: List[str] = Field(min_length=1)
     names: Optional[List[str]] = None
 
 
 class BatchDeleteNodes(BaseModel):
-    ids: List[str] = Field(min_items=1)
+    ids: List[str] = Field(min_length=1)
 
 
 def _display_enabled(node: dict) -> bool:
@@ -414,7 +414,21 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
             if 'link' in node:
                 parsed = parse_node_link(node['link'])
                 if parsed:
+                    preserved = {
+                        key: value
+                        for key, value in node.items()
+                        if key in {'id', 'link', 'enabled', 'region', 'city', 'geoip'}
+                    }
+                    # A manually renamed node must keep its display name; all
+                    # protocol fields come from the link and stale fields are
+                    # intentionally discarded.
+                    if node.get('name') and parsed.get('name') != node.get('name'):
+                        preserved['name'] = node['name']
+                    node.clear()
+                    node.update(preserved)
                     node.update(parsed)
+                    if 'name' in preserved:
+                        node['name'] = preserved['name']
                     updated_count += 1
 
         remember_nodes_region(existing_nodes, source='custom:reparse-existing')
@@ -438,8 +452,20 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
                 parsed = parse_node_link(node['link'])
                 if parsed:
                     previous_enabled = node.get('enabled')
+                    previous_name = node.get('name')
                     remember_nodes_region([previous], source='custom:reparse-one-existing')
+                    preserved = {
+                        key: value
+                        for key, value in node.items()
+                        if key in {'id', 'link', 'enabled', 'region', 'city', 'geoip'}
+                    }
+                    if previous_name and parsed.get('name') != previous_name:
+                        preserved['name'] = previous_name
+                    node.clear()
+                    node.update(preserved)
                     node.update(parsed)
+                    if 'name' in preserved:
+                        node['name'] = preserved['name']
                     if previous_enabled is not None:
                         node['enabled'] = previous_enabled
                     inherit_regions_for_nodes([node], source='custom:reparse-one')
@@ -626,8 +652,21 @@ class NodeTestRequest(BaseModel):
     )
 
 
+class NodeTestResultPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    latency: Optional[float] = Field(None, ge=-1)
+    speed: Optional[float] = Field(None, ge=0)
+    exit_ip: Optional[str] = Field(None, max_length=128)
+    city: Optional[str] = Field(None, max_length=200)
+    region: Optional[Dict[str, Any]] = None
+    latency_status: Optional[str] = Field(None, max_length=32)
+    speed_status: Optional[str] = Field(None, max_length=32)
+    error: Optional[str] = Field(None, max_length=500)
+
+
 class BatchSaveRequest(BaseModel):
-    results: dict  # {source_id: {stable_node_id: {latency, speed, region, etc}}}
+    model_config = ConfigDict(extra='forbid')
+    results: Dict[str, Dict[str, NodeTestResultPayload]]
 
 
 @router.post("/nodes/batch-save")
@@ -647,6 +686,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                 saved = 0
                 custom_nodes = config.get('custom_nodes', [])
                 for node_id, result in nodes_data.items():
+                    result = result.model_dump(exclude_none=True)
                     node_index = next(
                         (
                             index
@@ -690,6 +730,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                 if not sub_data:
                     return saved, updated_region_nodes
                 for node_id, result in nodes_data.items():
+                    result = result.model_dump(exclude_none=True)
                     nodes = sub_data.get('proxies', [])
                     try:
                         node_index = find_subscription_node_index(nodes, source_id, node_id)
@@ -763,6 +804,15 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         is_custom = True
     else:
         # Test subscription node
+        config = load_config()
+        subscription = next(
+            (candidate for candidate in config.get('subscriptions', []) if candidate.get('id') == source_id),
+            None,
+        )
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if not subscription.get('enabled', True):
+            raise HTTPException(status_code=409, detail="Subscription is disabled")
         sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=True)
         nodes = sub_data.get('proxies', []) if sub_data else []
         node_index = _subscription_node_index(nodes, source_id, node_id)

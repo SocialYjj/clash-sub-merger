@@ -3,7 +3,7 @@ services:
     image: ghcr.io/socialyjj/clash-sub-merger:latest
     restart: unless-stopped
     ports:
-      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8666}:8666"
     volumes:
       - ./data:/app/data
     env_file:

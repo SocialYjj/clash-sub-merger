@@ -4,6 +4,7 @@ Speed test endpoints
 """
 import os
 import secrets
+import ipaddress
 import httpx
 from datetime import datetime
 from typing import Optional, List
@@ -76,8 +77,13 @@ def _is_ipv6_address(server: str) -> bool:
     """Check if server address is IPv6."""
     if not server:
         return False
-    # IPv6 addresses contain colons
-    return ':' in server and not server.startswith('[')
+    candidate = str(server).strip()
+    if candidate.startswith('[') and candidate.endswith(']'):
+        candidate = candidate[1:-1]
+    try:
+        return ipaddress.ip_address(candidate).version == 6
+    except ValueError:
+        return False
 
 
 def _get_ipv6_proxy() -> tuple:
@@ -138,11 +144,10 @@ async def _get_speedtest_client() -> httpx.AsyncClient:
 
 async def _go_speedtest_request(endpoint: str, payload: dict, timeout: int) -> dict:
     """Call the bundled Go speedtest service."""
-    go_port = os.environ.get('GO_SPEEDTEST_PORT', str(AppConfig.GO_SPEEDTEST_PORT))
     client = await _get_speedtest_client()
     try:
         response = await client.post(
-            f"http://127.0.0.1:{go_port}{endpoint}",
+            f"{AppConfig.GO_SPEEDTEST_URL.rstrip('/')}{endpoint}",
             json=payload,
             timeout=timeout,
         )
@@ -292,12 +297,38 @@ async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depend
     sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
+    if not sub.get('enabled', True):
+        raise HTTPException(status_code=409, detail="Subscription is disabled")
     
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
     nodes = sub_data.get('proxies', []) if sub_data else []
     
     node_ids = subscription_node_ids(sub_id, nodes)
-    return await _speedtest_batch(node_ids, test_speed=False, timeout=10, concurrency=10)
+    all_results = []
+    requested_node_ids = []
+    for offset in range(0, len(node_ids), MAX_SPEEDTEST_NODES):
+        batch = node_ids[offset:offset + MAX_SPEEDTEST_NODES]
+        requested_node_ids.extend(batch)
+        batch_result = await _speedtest_batch(batch, test_speed=False, timeout=10, concurrency=10)
+        all_results.extend(batch_result.get('results', []))
+        # Keep compatibility with internal callers/tests that return the
+        # requested IDs without materialized results.
+        if not batch_result.get('results') and batch_result.get('node_ids'):
+            requested_node_ids = list(batch_result['node_ids'])
+
+    def persist_results(config: dict):
+        stored = config.setdefault('speedtest_results', {}).setdefault(sub_id, {})
+        for item in all_results:
+            node_id = item.get('node_id')
+            if node_id:
+                stored[node_id] = item.get('result') or {'error': item.get('error')}
+
+    update_config(persist_results)
+    return {
+        "results": all_results,
+        "count": len(all_results),
+        "node_ids": requested_node_ids or node_ids,
+    }
 
 
 @router.get("/results/{sub_id}")
@@ -402,6 +433,8 @@ def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session))
     """Delete a speed test profile"""
     def remove_speedtest_profile(config: dict):
         profiles = config.get('speedtest_profiles', [])
+        if not any(p.get('id') == profile_id for p in profiles):
+            raise HTTPException(status_code=404, detail="Profile not found")
         config['speedtest_profiles'] = [p for p in profiles if p['id'] != profile_id]
 
     update_config(remove_speedtest_profile)
@@ -412,7 +445,7 @@ def delete_speedtest_profile(profile_id: str, _: bool = Depends(verify_session))
 @limiter.limit(AppConfig.RATE_LIMIT_SPEEDTEST)
 @handle_api_errors
 async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Depends(verify_session)):
-    """Run a speed test profile"""
+    """Run a speed test profile against its selected subscriptions."""
     def mark_profile_run(config: dict) -> dict:
         profiles = config.get('speedtest_profiles', [])
         profile = next((p for p in profiles if p['id'] == profile_id), None)
@@ -424,9 +457,37 @@ async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Dep
         return dict(profile)
 
     profile = update_config(mark_profile_run)
-    
-    return {
-        "status": "info",
-        "message": "Speed test execution requires proxy integration.",
-        "profile": profile
-    }
+    subscription_ids = profile.get('subscription_ids')
+    if not subscription_ids:
+        subscription_ids = [
+            sub.get('id') for sub in load_config().get('subscriptions', [])
+            if sub.get('enabled', True)
+        ]
+    results = []
+    for sub_id in subscription_ids:
+        sub = next((item for item in load_config().get('subscriptions', []) if item.get('id') == sub_id), None)
+        if not sub or not sub.get('enabled', True):
+            continue
+        source = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
+        node_ids = subscription_node_ids(sub_id, source.get('proxies', []) if isinstance(source, dict) else [])
+        for offset in range(0, len(node_ids), MAX_SPEEDTEST_NODES):
+            batch_result = await _speedtest_batch(
+                node_ids[offset:offset + MAX_SPEEDTEST_NODES],
+                test_speed=bool(profile.get('test_speed')),
+                timeout=profile.get('timeout', 10),
+                concurrency=profile.get('concurrency', 10),
+            )
+            results.extend(batch_result.get('results', []))
+    def persist_profile_results(config: dict):
+        stored_results = config.setdefault('speedtest_results', {})
+        for item in results:
+            node_id = item.get('node_id')
+            if node_id:
+                source_id = next((sid for sid in subscription_ids if node_id in subscription_node_ids(
+                    sid,
+                    (load_subscription_yaml(sid, YAML_SOURCE_DIR, use_cache=True) or {}).get('proxies', []),
+                )), None)
+                if source_id:
+                    stored_results.setdefault(source_id, {})[node_id] = item.get('result') or {'error': item.get('error')}
+    update_config(persist_profile_results)
+    return {"status": "success", "profile": profile, "results": results, "count": len(results)}

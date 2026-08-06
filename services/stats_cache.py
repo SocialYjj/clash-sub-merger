@@ -3,6 +3,8 @@ Stats Cache Service
 Caches statistics data for dashboard performance
 """
 import time
+import threading
+from copy import deepcopy
 from typing import Optional, Dict, Any
 
 from logger_config import get_logger
@@ -21,9 +23,10 @@ class StatsCache:
         Args:
             duration: Cache TTL in seconds
         """
-        self._duration = duration or AppConfig.STATS_CACHE_DURATION
+        self._duration = AppConfig.STATS_CACHE_DURATION if duration is None else max(0, duration)
         self._data: Dict[str, Any] = {}
         self._timestamps: Dict[str, float] = {}
+        self._lock = threading.RLock()
     
     def get(self, key: str) -> Optional[Any]:
         """
@@ -35,15 +38,14 @@ class StatsCache:
         Returns:
             Cached value or None if expired/missing
         """
-        if key not in self._data:
-            return None
-        
-        # Check TTL
-        if time.time() - self._timestamps.get(key, 0) > self._duration:
-            self.invalidate(key)
-            return None
-        
-        return self._data[key]
+        with self._lock:
+            if self._duration <= 0 or key not in self._data:
+                return None
+            if time.time() - self._timestamps.get(key, 0) > self._duration:
+                self._data.pop(key, None)
+                self._timestamps.pop(key, None)
+                return None
+            return deepcopy(self._data[key])
     
     def set(self, key: str, value: Any) -> None:
         """
@@ -53,8 +55,11 @@ class StatsCache:
             key: Cache key
             value: Value to cache
         """
-        self._data[key] = value
-        self._timestamps[key] = time.time()
+        with self._lock:
+            if self._duration <= 0:
+                return
+            self._data[key] = deepcopy(value)
+            self._timestamps[key] = time.time()
     
     def invalidate(self, key: str = None) -> None:
         """
@@ -63,18 +68,20 @@ class StatsCache:
         Args:
             key: Specific key to invalidate, or None to clear all
         """
-        if key:
-            self._data.pop(key, None)
-            self._timestamps.pop(key, None)
-        else:
-            self._data.clear()
-            self._timestamps.clear()
+        with self._lock:
+            if key:
+                self._data.pop(key, None)
+                self._timestamps.pop(key, None)
+            else:
+                self._data.clear()
+                self._timestamps.clear()
     
     def is_valid(self, key: str) -> bool:
         """Check if cache key is valid (exists and not expired)"""
-        if key not in self._data:
-            return False
-        return time.time() - self._timestamps.get(key, 0) <= self._duration
+        with self._lock:
+            if self._duration <= 0 or key not in self._data:
+                return False
+            return time.time() - self._timestamps.get(key, 0) <= self._duration
 
 
 # Global cache instance

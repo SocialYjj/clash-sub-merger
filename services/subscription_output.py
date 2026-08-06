@@ -14,6 +14,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from collections import OrderedDict
 from typing import AsyncContextManager, Awaitable, Callable, Optional
+from urllib.parse import quote
 
 import yaml
 from fastapi import APIRouter, Header, HTTPException
@@ -24,7 +25,11 @@ from helpers import load_subscription_yaml
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.link_exporter import proxy_to_link
 from services.name_transformer import NameTransformer
-from services.node_visibility import apply_node_visibility_to_yaml_content, is_node_enabled
+from services.node_visibility import (
+    YAMLDumper,
+    apply_node_visibility_to_yaml_content,
+    is_node_enabled,
+)
 from services.proxy_chain_utils import coerce_group_strategy, unique_group_name, unique_name
 from services.proxy_chain_references import (
     CHAIN_NODE_SOURCE,
@@ -36,6 +41,7 @@ from services.node_identity import (
     proxy_chain_virtual_node_id,
     virtual_node_id,
 )
+from services.node_manager import normalize_alloc_name
 from services.subscription_state import (
     describe_refresh_error,
     refresh_attempt_fields,
@@ -48,6 +54,17 @@ try:
     from yaml import CSafeLoader as YAMLLoader
 except ImportError:  # pragma: no cover - depends on optional PyYAML C extension
     from yaml import SafeLoader as YAMLLoader
+
+
+def _safe_download_filename(value: object, fallback: str, extension: str) -> str:
+    """Return a path-safe attachment filename while preserving custom names."""
+    raw = str(value or '').strip()
+    raw = os.path.basename(raw.replace('\\', '/'))
+    if raw.lower().endswith(('.yaml', '.yml', '.txt')):
+        raw = raw.rsplit('.', 1)[0]
+    safe = ''.join(char for char in raw if char.isalnum() or char in ' _-' or '\u4e00' <= char <= '\u9fff')
+    safe = safe.strip(' .') or fallback
+    return f"{safe}.{extension.lstrip('.')}"
 
 
 def create_subscription_output_router(
@@ -175,6 +192,7 @@ def create_subscription_output_router(
         # If there are missing subscription files, fetch them now
         if missing_subs:
             logger.info(f"Auto-refreshing {len(missing_subs)} missing subscription(s)...")
+            missing_refresh_failures = []
             for sub in missing_subs:
                 attempted_at = int(time.time())
                 try:
@@ -256,9 +274,18 @@ def create_subscription_output_router(
                 except Exception as e:
                     error_message = describe_refresh_error(e)
                     logger.error("Missing subscription refresh failed for %s: %s", sub['id'], error_message)
+                    missing_refresh_failures.append(sub['id'])
                     failure_state = refresh_failure_fields(sub, e, attempted_at)
                     sub.update(failure_state)
                     update_subscription_record(sub['id'], failure_state)
+            if missing_refresh_failures:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "message": "One or more subscription files could not be refreshed",
+                        "subscription_ids": missing_refresh_failures,
+                    },
+                )
 
         # Smart format detection: auto-select based on User-Agent
         # Clash clients → YAML, others → Base64
@@ -372,7 +399,10 @@ def create_subscription_output_router(
         )
 
         try:
-            cfg = merger.merge_and_generate()
+            # YAML parsing and node transformation are CPU/IO-heavy synchronous
+            # operations. Keep them off the event loop so health checks and other
+            # requests remain responsive while a large subscription is rendered.
+            cfg = await asyncio.to_thread(merger.merge_and_generate)
             proxies = cfg.get('proxies', [])
             proxy_groups = cfg.get('proxy-groups', [])
 
@@ -522,6 +552,7 @@ def create_subscription_output_router(
             # Process proxy chains - add chain proxies with dialer-proxy
             proxy_chains = config.get('proxy_chains', [])
             chain_proxies = []
+            chain_dependency_proxies = []
             chain_proxy_names = []
             emitted_chain_reference_names = {}
 
@@ -646,6 +677,18 @@ def create_subscription_output_router(
                 if add_to_manual:
                     chain_proxy_names.append(chain_proxy['name'])
                 return chain_proxy['name']
+
+            def include_chain_dependency(node_proxy: dict | None) -> None:
+                """Include referenced first hops when the user only owns a chain."""
+                if not isinstance(node_proxy, dict):
+                    return
+                node_name = str(node_proxy.get('name') or '').strip()
+                if not node_name or node_name in existing_names:
+                    return
+                dependency = filter_underscore_fields(dict(node_proxy))
+                if dependency.get('name') and not dependency['name'].startswith('📊'):
+                    chain_dependency_proxies.append(dependency)
+                    existing_names.add(node_name)
 
             def is_allocated_ref(node_ref: dict, node_proxy: dict | None) -> bool:
                 if user_allocations is None:
@@ -782,6 +825,7 @@ def create_subscription_output_router(
                                 node_id=member_ref.get('node_id'),
                             )
                             if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
+                                include_chain_dependency(node_proxy)
                                 member_proxies.append(dict(node_proxy))
                         if not member_proxies:
                             return None
@@ -814,6 +858,7 @@ def create_subscription_output_router(
                             if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
                                 base_allowed = False
                                 break
+                            include_chain_dependency(node_proxy)
                             chain_nodes.append(dict(node_proxy))
                         else:
                             transit_idx += 1
@@ -865,6 +910,7 @@ def create_subscription_output_router(
                                 node_id=member_ref.get('node_id'),
                             )
                             if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
+                                include_chain_dependency(node_proxy)
                                 member_proxies.append(dict(node_proxy))
 
                         if not member_proxies:
@@ -999,6 +1045,9 @@ def create_subscription_output_router(
             # Add chain proxies to the proxies list
             # Position: after custom nodes, before subscription nodes
             # Order: traffic_info -> custom_nodes -> chain_proxies -> subscription_nodes
+            if chain_dependency_proxies:
+                proxies = proxies + chain_dependency_proxies
+
             if chain_proxies:
                 # Find the position after custom nodes
                 # Custom nodes have "Custom" in their name (from file_aliases)
@@ -1073,21 +1122,48 @@ def create_subscription_output_router(
             # Base64 format output
             if format == 'base64':
                 links = []
+                unsupported = []
                 for proxy in proxies:
+                    if proxy.get('name', '').startswith('📊'):
+                        continue
+                    if proxy.get('dialer-proxy') or proxy.get('type') == 'group':
+                        unsupported.append(proxy.get('name', 'unnamed'))
+                        continue
                     link = proxy_to_link(proxy)
                     if link:
                         links.append(link)
+                    else:
+                        unsupported.append(proxy.get('name', 'unnamed'))
+                if unsupported:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            'message': 'Base64 format cannot represent one or more nodes without losing configuration',
+                            'nodes': unsupported[:50],
+                            'count': len(unsupported),
+                        },
+                    )
+                if not links:
+                    raise HTTPException(status_code=422, detail='No exportable proxy nodes')
                 content = base64.b64encode('\n'.join(links).encode()).decode()
 
                 # Get custom config name
-                from urllib.parse import quote
                 encoded_name = quote(sub_name)
+                subject = user_info or admin_token_info or {}
+                filename = _safe_download_filename(
+                    subject.get('sub_filename') or auth.get('sub_filename'),
+                    sub_name or 'subscription',
+                    'txt',
+                )
 
                 return PlainTextResponse(
                     content,
                     media_type='text/plain; charset=utf-8',
                     headers={
-                        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+                        "Cache-Control": "private, no-store, max-age=0",
+                        "Pragma": "no-cache",
+                        "Vary": "User-Agent",
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
                         "profile-title": encoded_name,
                         "profile-update-interval": "24",
                         "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
@@ -1097,11 +1173,12 @@ def create_subscription_output_router(
             # SOCKS format output - minimal config with listeners
             if format == 'socks' or format == 'socks-manual':
                 # Get custom config name
-                from urllib.parse import quote
                 encoded_name = quote(sub_name)
-                safe_name = ''.join(c for c in sub_name if c.isalnum() or c in ' _-' or '\u4e00' <= c <= '\u9fff')
-                if not safe_name:
-                    safe_name = 'socks-config'
+                subject_filename = (
+                    (user_info or admin_token_info or {}).get('sub_filename')
+                    or auth.get('sub_filename')
+                )
+                safe_filename = _safe_download_filename(subject_filename, sub_name or 'socks-config', 'yaml')
 
                 # Filter out traffic info nodes (those starting with 📊)
                 socks_proxies = [p for p in proxies if not p.get('name', '').startswith('📊')]
@@ -1127,16 +1204,24 @@ def create_subscription_output_router(
                     output_parts.append(yaml.dump({'dns': dns_config}, allow_unicode=True, default_flow_style=False).replace('dns:\n', '').rstrip())
                 else:
                     # Fallback DNS config
-                    fallback_dns = """
-    dns:
-      enable: true
-      enhanced-mode: fake-ip
-      fake-ip-range: 198.18.0.1/16
-      default-nameserver:
-        - 114.114.114.114
-      nameserver:
-        - https://doh.pub/dns-query"""
-                    output_parts.append(fallback_dns)
+                    fallback_dns = {
+                        'dns': {
+                            'enable': True,
+                            'enhanced-mode': 'fake-ip',
+                            'fake-ip-range': '198.18.0.1/16',
+                            'default-nameserver': ['114.114.114.114'],
+                            'nameserver': ['https://doh.pub/dns-query'],
+                        }
+                    }
+                    output_parts.append(
+                        yaml.dump(
+                            fallback_dns,
+                            allow_unicode=True,
+                            sort_keys=False,
+                            default_flow_style=False,
+                            Dumper=YAMLDumper,
+                        ).rstrip()
+                    )
 
                 # 3. Listeners
                 output_parts.append('\nlisteners:')
@@ -1184,7 +1269,10 @@ def create_subscription_output_router(
 
                 yaml_content = "\n".join(output_parts)
                 response_headers = {
-                    "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}-socks.yaml",
+                    "Cache-Control": "private, no-store, max-age=0",
+                    "Pragma": "no-cache",
+                    "Vary": "User-Agent",
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_filename)}",
                     "profile-title": encoded_name,
                     "profile-update-interval": "24",
                     "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
@@ -1197,7 +1285,14 @@ def create_subscription_output_router(
                 )
 
             # Clash YAML format output (default)
-            output_parts = [f'name: {sub_name}\n' + header.rstrip()]
+            serialized_name = yaml.dump(
+                {'name': sub_name},
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+                Dumper=YAMLDumper,
+            ).rstrip()
+            output_parts = [serialized_name + '\n' + header.rstrip()]
 
             # Generate listeners based on port mappings
             port_mappings = config.get('port_mappings', {})
@@ -1246,17 +1341,15 @@ def create_subscription_output_router(
             else:
                 filename = auth.get('sub_filename', 'config.yaml')
 
-            # Use URL encoding for names
-            from urllib.parse import quote
             encoded_name = quote(sub_name)
-            # Filename also uses config name (remove unsafe chars, keep Chinese)
-            safe_name = ''.join(c for c in sub_name if c.isalnum() or c in ' _-' or '\u4e00' <= c <= '\u9fff')
-            if not safe_name:
-                safe_name = filename.replace('.yaml', '').replace('.yml', '')
+            safe_filename = _safe_download_filename(filename, sub_name or 'config', 'yaml')
 
             yaml_content = "\n".join(output_parts)
             response_headers = {
-                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}.yaml",
+                "Cache-Control": "private, no-store, max-age=0",
+                "Pragma": "no-cache",
+                "Vary": "User-Agent",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_filename)}",
                 "profile-title": encoded_name,
                 "profile-update-interval": "24",
                 "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router';
 import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
@@ -121,6 +122,7 @@ const getLatencyBadge = (latency, error) => {
 };
 
 export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes, showToast }) {
+  const location = useLocation();
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');  // 防抖后的搜索值
   // 防抖搜索
@@ -131,7 +133,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return () => clearTimeout(timer);
   }, [searchInput]);
 
+  useEffect(() => {
+    const requestedCountry = String(location.state?.filterCountry || '').trim().toUpperCase();
+    if (requestedCountry) {
+      setFilterCountry(requestedCountry);
+    }
+  }, [location.state]);
+
   const [filterSource, setFilterSource] = useState('all');
+  const [filterCountry, setFilterCountry] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterLatencyStatus, setFilterLatencyStatus] = useState('all');
   const [sortBy, setSortBy] = useState('name');
@@ -146,8 +156,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, nodeId: null });
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState({ open: false, ids: [], keys: [], count: 0 });
-  const [testingNode, setTestingNode] = useState(null);
-  const [testingType, setTestingType] = useState('latency');
+  const [testingByNode, setTestingByNode] = useState({});
   const [nodeTestResults, setNodeTestResults] = useState({});
   const [selectedNodes, setSelectedNodes] = useState(new Set());
   const [batchTesting, setBatchTesting] = useState(false);
@@ -191,6 +200,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [showAddDropdown, setShowAddDropdown] = useState(false);
   const subNodesRequestSeq = useRef(0);
   const geoipRequestSeq = useRef(0);
+  const proxyChainsRequestSeq = useRef(0);
+  const chainNodesRequestSeq = useRef(0);
 
 
   // Fetch nodes from subscription files
@@ -206,11 +217,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // Fetch proxy chains
   useEffect(() => {
     const controller = new AbortController();
+    setProxyChains([]);
+    setAvailableChainNodes([]);
     fetchProxyChains(controller.signal);
     fetchAvailableChainNodes(controller.signal);
     fetchGeoipApis(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [subscriptions, customNodes]);
 
   useEffect(() => {
     const next = {};
@@ -235,20 +248,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   const fetchProxyChains = async (signal) => {
+    const requestId = ++proxyChainsRequestSeq.current;
     try {
       const res = await request.get(`${API_BASE}/proxy-chains`, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || requestId !== proxyChainsRequestSeq.current) return;
       setProxyChains(res.data.chains || []);
+      return true;
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch proxy chains', err);
+      return false;
     }
   };
 
   const fetchAvailableChainNodes = async (signal) => {
+    const requestId = ++chainNodesRequestSeq.current;
     try {
       const res = await request.get(`${API_BASE}/proxy-chains/available-nodes`, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || requestId !== chainNodesRequestSeq.current) return;
       const nodes = (res.data.nodes || []).map(node => {
         const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
         const nodeType = node?.node_type ?? node?.type ?? '';
@@ -259,9 +276,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         };
       });
       setAvailableChainNodes(nodes);
+      return true;
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch available chain nodes', err);
+      return false;
     }
   };
 
@@ -285,6 +304,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     setLoadingNodes(true);
     const nodesMap = {};
+    let failed = false;
 
     for (const sub of subscriptionsSnapshot) {
       if (signal?.aborted || requestId !== subNodesRequestSeq.current) return;
@@ -298,6 +318,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       } catch (err) {
         if (signal?.aborted || isRequestCanceled(err) || requestId !== subNodesRequestSeq.current) return;
         console.error(`Failed to fetch nodes for ${sub.name}`, err);
+        failed = true;
         nodesMap[sub.id] = { name: sub.name, nodes: [] };
       }
     }
@@ -306,6 +327,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       setSubNodes(nodesMap);
       setLoadingNodes(false);
     }
+    return !failed;
   };
 
   // Fetch GeoIP data for nodes
@@ -340,7 +362,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
 
     const data = {};
-    const serverList = Array.from(servers).slice(0, 100);
+    const serverList = Array.from(servers);
 
     const batchSize = 100;
     for (let i = 0; i < serverList.length; i += batchSize) {
@@ -568,8 +590,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (customNodes && customNodes.length > 0) {
       options.push({ id: 'custom', name: '自建节点' });
     }
+    if (proxyChains && proxyChains.length > 0) {
+      options.push({ id: 'chain', name: '链式代理' });
+    }
     return options;
-  }, [subscriptions, customNodes]);
+  }, [subscriptions, customNodes, proxyChains]);
 
   const compareNodes = useCallback((a, b) => {
     // Custom nodes first
@@ -659,6 +684,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       result = result.filter(n => n.sourceId === filterSource);
     }
 
+    if (filterCountry) {
+      const countryName = COUNTRY_CHINESE_NAMES[filterCountry] || '';
+      result = result.filter(n => {
+        const country = String(n.country || '').toUpperCase();
+        const region = String(n.region || '');
+        const countryDisplay = String(n.country || '');
+        return country === filterCountry
+          || countryDisplay === countryName
+          || region === countryName
+          || region.toUpperCase() === filterCountry;
+      });
+    }
+
     if (filterType !== 'all') {
       result = result.filter(n => n.type === filterType);
     }
@@ -679,7 +717,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     result.sort(compareNodes);
 
     return result;
-  }, [allNodes, search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
+  }, [allNodes, search, filterSource, filterCountry, filterType, filterLatencyStatus, sortBy, sortOrder]);
 
   // 分页节点
   const paginatedNodes = useMemo(() => {
@@ -700,7 +738,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   useEffect(() => {
     setCurrentPage(1);
     setSelectedNodes(new Set());
-  }, [search, filterSource, filterType, filterLatencyStatus, sortBy, sortOrder]);
+  }, [search, filterSource, filterCountry, filterType, filterLatencyStatus, sortBy, sortOrder]);
+
+  useEffect(() => {
+    const lastPage = Math.max(1, totalPages);
+    setCurrentPage(page => Math.min(Math.max(1, page), lastPage));
+  }, [totalPages]);
 
   useEffect(() => {
     if (!sourceOptions.some(option => option.id === filterSource)) {
@@ -734,9 +777,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     });
   };
 
+  const setNodeTesting = (nodeKey, type) => {
+    setTestingByNode(prev => ({ ...prev, [nodeKey]: type }));
+  };
+
+  const clearNodeTesting = (nodeKey) => {
+    setTestingByNode(prev => {
+      const next = { ...prev };
+      delete next[nodeKey];
+      return next;
+    });
+  };
+
   const testNode = async (node, isRegionTest = false) => {
-    setTestingNode(node.nodeKey);
-    setTestingType(isRegionTest ? 'region' : 'latency');
+    if (node.sourceType === 'chain') {
+      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
+      return;
+    }
+    setNodeTesting(node.nodeKey, isRegionTest ? 'region' : 'latency');
     try {
       const payload = {
         test_latency: !isRegionTest,
@@ -778,14 +836,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
       showToast?.(`节点测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
     } finally {
-      setTestingNode(null);
+      clearNodeTesting(node.nodeKey);
     }
   };
 
   // Test single node speed
   const testNodeSpeed = async (node) => {
-    setTestingNode(node.nodeKey);
-    setTestingType('speed');
+    if (node.sourceType === 'chain') {
+      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
+      return;
+    }
+    setNodeTesting(node.nodeKey, 'speed');
     try {
       const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
         test_latency: false,
@@ -817,7 +878,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       }));
       showToast?.(`速度测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
     } finally {
-      setTestingNode(null);
+      clearNodeTesting(node.nodeKey);
     }
   };
 
@@ -829,7 +890,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return;
     }
 
-    const nodesToTest = filteredNodes.filter(n => selectedNodes.has(n.nodeKey));
+    const selectedNodesToTest = filteredNodes.filter(n => selectedNodes.has(n.nodeKey));
+    const nodesToTest = selectedNodesToTest.filter(n => n.sourceType !== 'chain');
+
+    if (selectedNodesToTest.length !== nodesToTest.length) {
+      showToast?.('链式代理不支持单节点批量测速，已跳过所选链节点', 'info');
+    }
 
     if (nodesToTest.length === 0) {
       showToast?.('没有可测试的节点', 'error');
@@ -852,6 +918,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     // Batch update results to reduce re-renders
     const batchResults = {};
     const saveData = {};  // 用于批量保存的数据结构
+    let failedCount = 0;
 
     // Phase 1: Test latency with concurrency
     if (testLatency) {
@@ -874,8 +941,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             saveData[node.sourceId][node.id].latency = testPayload.latency;
             
             return { nodeKey: node.nodeKey, data: { latency: testPayload.latency, error: false } };
-          } catch {
-            return { nodeKey: node.nodeKey, data: { latency: null, error: true } };
+          } catch (err) {
+            failedCount += 1;
+            const message = err.response?.data?.detail || err.message || '未知错误';
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            saveData[node.sourceId][node.id] = { latency: null, error: message };
+            return { nodeKey: node.nodeKey, data: { latency: null, error: true, errorMessage: message } };
           }
         }));
         
@@ -920,8 +991,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             saveData[node.sourceId][node.id].city = testPayload.city;
             
             return { nodeKey: node.nodeKey, data: { region: testPayload.region, city: testPayload.city, exit_ip: testPayload.exit_ip, regionError: false } };
-          } catch {
-            return null;
+          } catch (err) {
+            failedCount += 1;
+            const message = err.response?.data?.detail || err.message || '未知错误';
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            saveData[node.sourceId][node.id] = { exit_ip: null, region: null, city: null, error: message };
+            return { nodeKey: node.nodeKey, data: { regionError: true, regionErrorMessage: message } };
           }
         }));
         
@@ -965,8 +1040,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             saveData[node.sourceId][node.id].speed = testPayload.speed;
             
             return { nodeKey: node.nodeKey, data: { speed: testPayload.speed, peak_speed: testPayload.peak_speed, speed_error: false } };
-          } catch {
-            return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true } };
+          } catch (err) {
+            failedCount += 1;
+            const message = err.response?.data?.detail || err.message || '未知错误';
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            saveData[node.sourceId][node.id] = { speed: null, error: message };
+            return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true, speedErrorMessage: message } };
           }
         }));
         
@@ -988,7 +1067,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     // 批量保存所有测试结果
     try {
       await request.post(`${API_BASE}/nodes/batch-save`, { results: saveData });
-      showToast?.(`测试完成，共测试 ${nodesToTest.length} 个节点，结果已保存`);
+      if (failedCount > 0) {
+        showToast?.(`测试完成，${failedCount} 个节点失败，其余结果已保存`, 'warning');
+      } else {
+        showToast?.(`测试完成，共测试 ${nodesToTest.length} 个节点，结果已保存`);
+      }
     } catch (error) {
       showToast?.(`测试完成，但保存失败: ${error.message}`, 'error');
     }
@@ -999,11 +1082,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Selection handlers
   const toggleSelectAll = () => {
-    if (selectedNodes.size === filteredNodes.length) {
-      setSelectedNodes(new Set());
-    } else {
-      setSelectedNodes(new Set(filteredNodes.map(n => n.nodeKey)));
-    }
+    const visibleKeys = new Set(filteredNodes.map(n => n.nodeKey));
+    const allVisibleSelected = filteredNodes.length > 0 && filteredNodes.every(n => selectedNodes.has(n.nodeKey));
+    setSelectedNodes(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleKeys.forEach(key => next.delete(key));
+      } else {
+        visibleKeys.forEach(key => next.add(key));
+      }
+      return next;
+    });
   };
 
   const toggleSelectNode = (nodeKey) => {
@@ -1158,17 +1247,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setLoadingNodes(true);
     setNodeTestResults({});
     setSelectedNodes(new Set());
-    await fetchAllSubNodes();
-    await fetchProxyChains();
-    await fetchAvailableChainNodes();
-    onRefreshCustomNodes?.();
-    showToast?.('节点列表已刷新');
+    try {
+      const subRefreshOk = await fetchAllSubNodes();
+      const chainsRefreshOk = await fetchProxyChains();
+      const chainNodesRefreshOk = await fetchAvailableChainNodes();
+      const customRefreshOk = await onRefreshCustomNodes?.();
+      if (!subRefreshOk || chainsRefreshOk === false || chainNodesRefreshOk === false || customRefreshOk === false) {
+        throw new Error('部分节点来源刷新失败');
+      }
+      showToast?.('节点列表已刷新');
+    } catch (err) {
+      showToast?.(err.message || '节点刷新失败', 'error');
+    } finally {
+      setLoadingNodes(false);
+    }
   };
 
   // Clear filters
   const clearFilters = () => {
+    setSearchInput('');
     setSearch('');
     setFilterSource('all');
+    setFilterCountry('');
     setFilterType('all');
     setFilterLatencyStatus('all');
     setSortBy('name');
@@ -1676,7 +1776,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch port mappings', err);
-      setPortMappingsLoaded(true);  // Even on error, mark as loaded to prevent fallback issues
+      // Keep the last known mappings and allow a later retry to distinguish a
+      // failed load from a genuinely empty mapping set.
+      setPortMappingsLoaded(false);
     }
   };
 
@@ -2058,7 +2160,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               <tbody className="divide-y divide-gray-700">
                 {paginatedNodes.length > 0 ? (
                   paginatedNodes.map((node, idx) => {
-                    const isTesting = testingNode === node.nodeKey;
+                    const activeTestType = testingByNode[node.nodeKey];
+                    const isTesting = Boolean(activeTestType);
                     const isSelected = selectedNodes.has(node.nodeKey);
 	                    const testResult = nodeTestResults[node.nodeKey];
 	                    const displayedLatency = testResult?.latency !== undefined ? testResult.latency : node.latency;
@@ -2223,11 +2326,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Region test button */}
                             <button
                               onClick={() => testNode(node, true)}
-                              disabled={isTesting || batchTesting}
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
                               className="p-1.5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
                               title="检测地区"
                             >
-                              {isTesting && testingType === 'region' ? (
+                              {activeTestType === 'region' ? (
                                 <RefreshCw size={16} className="animate-spin" />
                               ) : (
                                 <Globe size={16} />
@@ -2236,11 +2339,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Latency test button */}
                             <button
                               onClick={() => testNode(node)}
-                              disabled={isTesting || batchTesting}
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
                               className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
                               title="测试延迟"
                             >
-                              {isTesting && testingType === 'latency' && node.nodeKey === testingNode ? (
+                              {activeTestType === 'latency' ? (
                                 <RefreshCw size={16} className="animate-spin" />
                               ) : (
                                 <Clock size={16} />
@@ -2249,11 +2352,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Speed test button */}
                             <button
                               onClick={() => testNodeSpeed(node)}
-                              disabled={isTesting || batchTesting}
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
                               className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
                               title="测试速度"
                             >
-                              {isTesting && testingType === 'speed' ? (
+                              {activeTestType === 'speed' ? (
                                 <RefreshCw size={16} className="animate-spin" />
                               ) : (
                                 <Play size={16} />

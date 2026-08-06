@@ -148,12 +148,9 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
   const [saving, setSaving] = useState(false);
 
   const generateRandomToken = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let token = '';
-    for (let i = 0; i < 32; i++) {
-      token += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setCustomToken(token);
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    setCustomToken(Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''));
   };
 
   const handleSave = async () => {

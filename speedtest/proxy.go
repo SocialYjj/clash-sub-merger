@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/netip"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,20 +22,34 @@ import (
 
 var parseProxyAdapter = adapter.ParseProxy
 
-// initDNS initializes mihomo's DNS resolver with IPv6 support.
-// Without this, IPv6 proxy server addresses cause "dns resolve failed: ip version error".
+// initDNS initializes mihomo's DNS resolver with IPv6 support. By default it
+// follows the container/host resolver configuration; operators may provide a
+// comma-separated GO_SPEEDTEST_DNS list when an explicit resolver is required.
 func initDNS() {
 	resolver.DisableIPv6 = false
 
-	rs := dns.NewResolver(dns.Config{
-		IPv6: true,
-		Main: []dns.NameServer{
-			{Addr: "114.114.114.114:53"},
-			{Addr: "8.8.8.8:53"},
-			{Addr: "[2001:4860:4860::8888]:53"},
-			{Addr: "[2606:4700:4700::1111]:53"},
-		},
-	})
+	nameservers := []dns.NameServer{{Net: "system"}}
+	if configured := strings.TrimSpace(os.Getenv("GO_SPEEDTEST_DNS")); configured != "" {
+		nameservers = nil
+		for _, address := range strings.Split(configured, ",") {
+			address = strings.TrimSpace(address)
+			if address == "" {
+				continue
+			}
+			if host, port, err := net.SplitHostPort(address); err == nil && host != "" && port != "" {
+				// Already a host:port value.
+			} else {
+				address = strings.Trim(address, "[]")
+				address = net.JoinHostPort(address, "53")
+			}
+			nameservers = append(nameservers, dns.NameServer{Addr: address, Net: "udp"})
+		}
+		if len(nameservers) == 0 {
+			nameservers = []dns.NameServer{{Net: "system"}}
+		}
+	}
+
+	rs := dns.NewResolver(dns.Config{IPv6: true, Main: nameservers})
 
 	resolver.DefaultResolver = rs.Resolver
 	if rs.ProxyResolver.Invalid() {
@@ -361,14 +376,18 @@ func getExitIPWithAdapter(proxyAdapter constant.Proxy, timeout time.Duration) (s
 		if err != nil {
 			continue
 		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			resp.Body.Close()
+			continue
+		}
 
 		body := make([]byte, 64)
 		n, _ := resp.Body.Read(body)
 		resp.Body.Close()
 
 		ip := strings.TrimSpace(string(body[:n]))
-		if ip != "" && strings.Contains(ip, ".") {
-			return ip, nil
+		if parsed, parseErr := netip.ParseAddr(ip); parseErr == nil {
+			return parsed.String(), nil
 		}
 	}
 
@@ -417,6 +436,9 @@ func testSpeedWithAdapter(proxyAdapter constant.Proxy, testURL string, timeout t
 		return 0, 0, 0, 0, fmt.Errorf("request error: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return 0, 0, 0, 0, fmt.Errorf("download endpoint returned HTTP %d", resp.StatusCode)
+	}
 
 	latency := int(time.Since(start).Milliseconds())
 
@@ -458,9 +480,9 @@ func testSpeedWithAdapter(proxyAdapter constant.Proxy, testURL string, timeout t
 				break
 			}
 			if ctx.Err() != nil {
-				break
+				return 0, 0, latency, totalRead, ctx.Err()
 			}
-			break
+			return 0, 0, latency, totalRead, fmt.Errorf("download read error: %w", err)
 		}
 		select {
 		case <-ctx.Done():

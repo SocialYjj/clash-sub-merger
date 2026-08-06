@@ -498,6 +498,20 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
 
         update_fields.assert_called_once_with("sub_1", {"next_update": None})
 
+    def test_scheduled_lock_conflict_does_not_persist_refresh_failure(self):
+        lock_conflict = server.SubscriptionRefreshInProgress(
+            "Subscription sub_1 is already being updated"
+        )
+        record_failure = Mock()
+
+        with (
+            patch.object(server, "wait_for_scheduled_refresh_slot", side_effect=lock_conflict),
+            patch.object(server, "record_refresh_failure", record_failure),
+        ):
+            server.refresh_subscription_job("sub_1")
+
+        record_failure.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

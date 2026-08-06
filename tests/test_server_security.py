@@ -97,7 +97,8 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertIn("chown -R appuser:appuser /app", dockerfile)
         self.assertIn("gosu", dockerfile)
         self.assertIn('ENTRYPOINT ["docker-entrypoint.sh"]', dockerfile)
-        self.assertIn('chown -R appuser:appuser "$data_dir"', entrypoint)
+        self.assertIn('chown appuser:appuser "$data_dir"', entrypoint)
+        self.assertIn('find "$data_dir" -maxdepth 1 -type f -exec chown appuser:appuser {} +', entrypoint)
         self.assertIn('gosu appuser touch "$write_probe"', entrypoint)
         self.assertIn('exec gosu appuser "$@"', entrypoint)
 

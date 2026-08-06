@@ -89,12 +89,20 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
     };
 
     const buildNodeObject = () => {
-        const nodeObj = {
+        const metadataFields = new Set([
+            'id', 'link', 'enabled', 'display_name', 'index', 'last_latency',
+            'last_latency_time', 'last_speed', 'last_peak_speed', 'last_speed_time',
+            'exit_ip', 'geoip', 'region', 'city',
+        ]);
+        const nodeObj = Object.fromEntries(
+            Object.entries(node || {}).filter(([key]) => !metadataFields.has(key) && !key.startsWith('_'))
+        );
+        Object.assign(nodeObj, {
             name: formData.name,
             type: formData.type,
             server: formData.server,
             port: parseInt(formData.port) || 443,
-        };
+        });
 
         // Auth
         if (['vless', 'vmess', 'tuic'].includes(formData.type)) {

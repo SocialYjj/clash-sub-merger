@@ -133,7 +133,7 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
        image: ghcr.io/socialyjj/clash-sub-merger:latest
        restart: unless-stopped
        ports:
-         - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
+         - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8666}:8666"
        volumes:
          - ./data:/app/data
        env_file:
@@ -154,11 +154,12 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
 3. **启动服务**：
 
    ```bash
+   docker compose pull
    docker compose up -d
    ```
 
 4. **访问面板**：
-   打开浏览器访问 `http://你的IP:8666`，使用 `.env` 中的初始管理员密码登录。首次启动会自动创建 `data/`、`uploads/`、`logs/`、`backups/` 和 `refresh_locks/`；绑定目录会在容器降权前修正为应用用户可写。
+   默认通过反向代理访问面板，Compose 端口只绑定 `127.0.0.1`。只有在已配置防火墙和 TLS 时才覆盖 `BIND_ADDRESS`。使用 `.env` 中的初始管理员密码登录。首次启动会自动创建 `data/`、`uploads/`、`logs/`、`backups/` 和 `refresh_locks/`；绑定目录会在容器降权前修正为应用用户可写。
 
 ### 方式二：手动构建运行
 
@@ -169,10 +170,11 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
 git clone https://github.com/SocialYjj/clash-sub-merger.git
 cd clash-sub-merger
 
-# 2. 启动（会自动构建镜像）
+# 2. 本地构建并启动（当前 Compose 文件默认拉取已发布镜像，源码构建请显式执行 docker build）
 cp .env.example .env
 # 编辑 .env，至少填写 INITIAL_ADMIN_PASSWORD
-docker compose up -d --build
+docker build -t ghcr.io/socialyjj/clash-sub-merger:latest .
+docker compose up -d
 ```
 
 ## 📖 使用指南
@@ -199,7 +201,7 @@ docker compose up -d --build
 | :--- | :--- | :--- |
 | `TZ` | `UTC` (建议 Asia/Shanghai) | 容器时区设置 |
 | `DATA_DIR` | `/app/data` | 数据存储路径 |
-| `BIND_ADDRESS` | `0.0.0.0` | Docker Compose 监听地址；反向代理场景建议设为 `127.0.0.1` |
+| `BIND_ADDRESS` | `127.0.0.1` | Docker Compose 监听地址；反向代理场景保持回环地址 |
 | `HOST_PORT` | `8666` | Docker Compose 对外端口 |
 | `MEMORY_LIMIT` | `512m` | Docker Compose 内存上限 |
 | `PIDS_LIMIT` | `256` | Docker Compose 进程数上限 |

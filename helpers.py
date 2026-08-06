@@ -7,6 +7,7 @@ import time
 import tempfile
 import threading
 import secrets
+from copy import deepcopy
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Optional
@@ -85,41 +86,74 @@ class YAMLCache:
     """YAML file cache manager"""
     
     def __init__(self):
-        self._cache: Dict[str, dict] = {}
-        self._cache_time: Dict[str, float] = {}
-    
-    def get(self, key: str, max_age: int = 60) -> Optional[dict]:
+        self._cache: Dict[str, tuple[dict, float, tuple[int, int] | None, str | None]] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _key(key: str, source_path: str | os.PathLike | None = None) -> str:
+        if source_path is None:
+            return str(key)
+        return f"{Path(source_path).resolve()}\0{key}"
+
+    @staticmethod
+    def _signature(source_path: str | os.PathLike | None) -> tuple[int, int] | None:
+        if source_path is None:
+            return None
+        try:
+            stat = os.stat(source_path)
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    def get(
+        self,
+        key: str,
+        max_age: int = 60,
+        *,
+        source_path: str | os.PathLike | None = None,
+    ) -> Optional[dict]:
         """Get cached YAML data"""
-        if key not in self._cache:
-            return None
-        
-        # Check if cache is still valid
-        if time.time() - self._cache_time.get(key, 0) > max_age:
-            self.invalidate(key)
-            return None
-        
-        return self._cache[key]
-    
-    def set(self, key: str, data: dict):
+        cache_key = self._key(key, source_path)
+        signature = self._signature(source_path)
+        with self._lock:
+            entry = self._cache.get(cache_key)
+            if entry is None:
+                return None
+            data, cached_at, cached_signature, _ = entry
+            if (
+                time.time() - cached_at > max_age
+                or (source_path is not None and signature != cached_signature)
+            ):
+                self._cache.pop(cache_key, None)
+                return None
+            return deepcopy(data)
+
+    def set(self, key: str, data: dict, *, source_path: str | os.PathLike | None = None):
         """Set cached YAML data"""
-        self._cache[key] = data
-        self._cache_time[key] = time.time()
-    
+        cache_key = self._key(key, source_path)
+        with self._lock:
+            self._cache[cache_key] = (
+                deepcopy(data),
+                time.time(),
+                self._signature(source_path),
+                str(source_path) if source_path is not None else None,
+            )
+
     def invalidate(self, key: Optional[str] = None):
         """Invalidate cache"""
-        if key:
-            self._cache.pop(key, None)
-            self._cache_time.pop(key, None)
-        else:
-            self._cache.clear()
-            self._cache_time.clear()
-    
+        with self._lock:
+            if key:
+                suffix = f"\0{key}"
+                for cache_key in list(self._cache):
+                    if cache_key == key or cache_key.endswith(suffix):
+                        self._cache.pop(cache_key, None)
+            else:
+                self._cache.clear()
+
     def get_stats(self) -> dict:
         """Get cache statistics"""
-        return {
-            "size": len(self._cache),
-            "keys": list(self._cache.keys())
-        }
+        with self._lock:
+            return {"size": len(self._cache), "keys": list(self._cache.keys())}
 
 
 # Global YAML cache instance
@@ -232,16 +266,22 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
     """
     start_time = time.time()
     
-    # Check cache first
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
+
+    # Check cache first. The absolute source path and mtime are part of the
+    # cache identity so test directories and externally replaced files cannot
+    # reuse a stale object from another data directory.
     if use_cache:
-        cached = yaml_cache.get(sub_id, max_age=Constants.DEFAULT_CACHE_DURATION)
+        cached = yaml_cache.get(
+            sub_id,
+            max_age=Constants.DEFAULT_CACHE_DURATION,
+            source_path=filepath,
+        )
         if cached is not None:
             logger.debug(f"YAML cache hit for {sub_id}")
             cache_hits_total.labels(cache_type='yaml').inc()
             return cached
         cache_misses_total.labels(cache_type='yaml').inc()
-    
-    filepath = _subscription_filepath(sub_id, yaml_source_dir)
     
     if not os.path.exists(filepath):
         file_operations_total.labels(operation='read', status='failed').inc()
@@ -284,7 +324,7 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
         
         # Update cache
         if use_cache:
-            yaml_cache.set(sub_id, result)
+            yaml_cache.set(sub_id, result, source_path=filepath)
             logger.debug(f"YAML cached for {sub_id}")
         
         # Record metrics

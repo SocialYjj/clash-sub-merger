@@ -257,10 +257,6 @@ def create_template_router(
             # Split into header and suffix
             header, suffix = split_template(content)
 
-            # Update ConfigMerger templates
-            ConfigMerger.DEFAULT_HEADER = header
-            ConfigMerger.DEFAULT_SUFFIX = suffix
-
             # Save to config.json without overwriting concurrent config changes
             def set_template(latest_config: dict):
                 latest_config['template'] = {

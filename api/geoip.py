@@ -4,6 +4,8 @@ GeoIP lookup endpoints
 """
 import secrets
 import ipaddress
+import csv
+import io
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -177,10 +179,13 @@ def _build_geoip_entries():
     for key, entry in get_online_geoip_cache_snapshot().items():
         if not isinstance(entry, dict):
             continue
-        if ':' in key:
+        if '|' in key:
+            ip, api_id = key.rsplit('|', 1)
+        elif ':' in key:
             ip, api_id = key.rsplit(':', 1)
         else:
             ip, api_id = key, 'default'
+        api_id = entry.get('api_id') or api_id
         ts = entry.get('timestamp') or 0
         entries.append({
             "ip": ip,
@@ -217,8 +222,9 @@ def get_geoip_cache_entries(
         entries.sort(key=lambda x: x.get('age') or 0, reverse=True)
     else:
         entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+    total = len(entries)
     entries = entries[:limit]
-    return {"entries": entries, "count": len(entries), "total": len(entries)}
+    return {"entries": entries, "count": len(entries), "total": total}
 
 
 @router.get("/cache/export")
@@ -244,22 +250,31 @@ def export_geoip_cache_entries(
     if format == 'json':
         return JSONResponse(content={"entries": entries, "count": len(entries)})
 
-    # CSV
-    lines = ["ip,api_id,country,city,iso_code,flag,age,negative,timestamp"]
+    # Use the standard CSV writer so commas, quotes, newlines and spreadsheet
+    # formula prefixes cannot corrupt or execute when the export is opened.
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["ip", "api_id", "country", "city", "iso_code", "flag", "age", "negative", "timestamp"])
+
+    def safe_cell(value):
+        text = "" if value is None else str(value)
+        if text.startswith(("=", "+", "-", "@")):
+            return "'" + text
+        return text
+
     for e in entries:
-        line = ",".join([
-            e.get('ip', ''),
-            e.get('api_id', ''),
-            (e.get('country') or '').replace(',', ' '),
-            (e.get('city') or '').replace(',', ' '),
-            e.get('iso_code') or '',
-            e.get('flag') or '',
-            str(e.get('age') or ''),
+        writer.writerow([
+            safe_cell(e.get('ip', '')),
+            safe_cell(e.get('api_id', '')),
+            safe_cell(e.get('country')),
+            safe_cell(e.get('city')),
+            safe_cell(e.get('iso_code')),
+            safe_cell(e.get('flag')),
+            safe_cell(e.get('age') or ''),
             '1' if e.get('negative') else '0',
-            str(e.get('timestamp') or '')
+            safe_cell(e.get('timestamp') or ''),
         ])
-        lines.append(line)
-    csv_data = "\n".join(lines)
+    csv_data = output.getvalue()
     headers = {
         "Content-Disposition": "attachment; filename=geoip-cache.csv"
     }

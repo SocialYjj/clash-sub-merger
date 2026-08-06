@@ -11,7 +11,7 @@ from logger_config import get_logger
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
-from services.node_identity import custom_node_id, is_node_allocated, subscription_node_id
+from services.node_identity import custom_node_id, is_node_allocated, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 
@@ -71,7 +71,9 @@ def _collect_available_nodes(
             logger.warning("Failed to load subscription %s for group editor: %s", subscription_id, exc)
             continue
 
-        for proxy in subscription_yaml.get("proxies", []):
+        subscription_nodes = subscription_yaml.get("proxies", [])
+        subscription_ids = subscription_node_ids(subscription_id, subscription_nodes)
+        for node_index, proxy in enumerate(subscription_nodes):
             if not isinstance(proxy, dict) or not is_node_enabled(proxy):
                 continue
             if not ProxyFilter.is_valid_proxy(proxy):
@@ -85,7 +87,7 @@ def _collect_available_nodes(
             if is_node_allocated(
                 final_name,
                 allocation,
-                subscription_node_id(subscription_id, proxy),
+                subscription_ids[node_index],
             ) or is_node_allocated(original_name, allocation):
                 _append_unique(node_names, seen_names, final_name)
 

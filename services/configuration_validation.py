@@ -21,6 +21,7 @@ _COLLECTIONS = (
     "proxy_chains",
     "source_order",
 )
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{8,200}$")
 
 
 def _require_list(config: dict, key: str) -> list:
@@ -68,6 +69,10 @@ def _validate_subscription_records(subscriptions: list) -> set[str]:
         subscription["name"] = name
 
         subscription_type = subscription.get("type", "remote")
+        if subscription_type not in {"remote", "url", "local"}:
+            raise ValueError("Imported subscription type is invalid")
+        if "enabled" in subscription and not isinstance(subscription.get("enabled"), bool):
+            raise ValueError("Imported subscription enabled flag is invalid")
         if subscription_type == "local":
             continue
         url = str(subscription.get("url") or "").strip()
@@ -113,12 +118,96 @@ def _validate_tokens(config: dict, users: list, admin_tokens: list) -> None:
     for collection_name, items in (("users", users), ("admin tokens", admin_tokens)):
         for item in items:
             token = str(item.get("token") or "").strip()
-            if not 8 <= len(token) <= 4096:
+            if not _TOKEN_RE.fullmatch(token):
                 raise ValueError(f"Imported {collection_name} contains an invalid token")
             if token in tokens:
                 raise ValueError("Imported configuration contains duplicate subscription tokens")
             tokens.add(token)
             item["token"] = token
+
+
+def _validate_subject_templates(config: dict, users: list, admin_tokens: list) -> None:
+    template_ids = {"builtin"}
+    template_ids.update(
+        str(template.get("id"))
+        for template in config.get("templates", [])
+        if isinstance(template, dict) and template.get("id")
+    )
+    for collection_name, subjects in (("users", users), ("admin tokens", admin_tokens)):
+        for subject in subjects:
+            template_id = str(subject.get("template_id") or "builtin")
+            if template_id not in template_ids:
+                raise ValueError(f"Imported {collection_name} references an unknown template")
+            subject["template_id"] = template_id
+
+
+def _validate_port_mappings(config: dict) -> None:
+    mappings = config.get("port_mappings", {})
+    if mappings is None:
+        config["port_mappings"] = {}
+        return
+    if not isinstance(mappings, dict) or len(mappings) > 5000:
+        raise ValueError("Imported port mappings are invalid")
+    ports: set[int] = set()
+    for reference, port in mappings.items():
+        if not isinstance(reference, str) or not reference or len(reference) > 500:
+            raise ValueError("Imported port mapping reference is invalid")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+            raise ValueError("Imported port mapping port is invalid")
+        if port in ports:
+            raise ValueError("Imported port mappings contain duplicate ports")
+        ports.add(port)
+
+
+def _validate_settings(config: dict) -> None:
+    settings = config.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("Imported settings configuration is invalid")
+    proxy_node_id = settings.get("proxy_node_id")
+    if proxy_node_id is not None and (not isinstance(proxy_node_id, str) or len(proxy_node_id) > 500):
+        raise ValueError("Imported default proxy reference is invalid")
+    proxy_url = settings.get("subscription_proxy_url")
+    if proxy_url:
+        parsed = urlsplit(str(proxy_url))
+        if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+            raise ValueError("Imported subscription proxy URL is invalid")
+    ipv6_proxy = settings.get("ipv6_proxy")
+    if ipv6_proxy is not None:
+        if not isinstance(ipv6_proxy, dict):
+            raise ValueError("Imported IPv6 proxy configuration is invalid")
+        if ipv6_proxy.get("proxy_url"):
+            parsed = urlsplit(str(ipv6_proxy["proxy_url"]))
+            if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+                raise ValueError("Imported IPv6 proxy URL is invalid")
+
+
+def _validate_speedtest_profiles(config: dict) -> None:
+    profiles = config.get("speedtest_profiles", [])
+    if not isinstance(profiles, list):
+        raise ValueError("Imported speedtest profiles are invalid")
+    _validate_unique_ids(profiles, "speedtest profiles")
+    for profile in profiles:
+        name = str(profile.get("name") or "").strip()
+        if not name or len(name) > 100:
+            raise ValueError("Imported speedtest profile name is invalid")
+        for key in ("subscription_ids",):
+            values = profile.get(key)
+            if values is not None and (
+                not isinstance(values, list)
+                or any(not isinstance(value, str) or len(value) > 200 for value in values)
+            ):
+                raise ValueError("Imported speedtest profile subscriptions are invalid")
+            if values is not None:
+                unknown_ids = {
+                    value for value in values
+                    if value not in {
+                        str(subscription.get("id"))
+                        for subscription in config.get("subscriptions", [])
+                        if isinstance(subscription, dict) and subscription.get("id")
+                    }
+                }
+                if unknown_ids:
+                    raise ValueError("Imported speedtest profile references an unknown subscription")
 
 
 def _validate_proxy_chain_reference(
@@ -228,6 +317,7 @@ def _validate_allocations(users: list, known_sources: set[str]) -> None:
 
 
 def _validate_source_order(config: dict, subscription_ids: set[str]) -> None:
+    source_order_present = "source_order" in config
     source_order = config.get("source_order", [])
     if len(source_order) > 500 or any(not isinstance(source_id, str) for source_id in source_order):
         raise ValueError("Imported source order is invalid")
@@ -238,6 +328,15 @@ def _validate_source_order(config: dict, subscription_ids: set[str]) -> None:
         known_sources.add("custom_nodes")
     if any(source_id not in known_sources for source_id in source_order):
         raise ValueError("Imported source order references an unknown source")
+    if not source_order_present and not known_sources:
+        return
+    # A partial order silently drops sources in older merger implementations.
+    # Preserve the requested order while appending every real source exactly
+    # once, so imported configurations cannot lose nodes by omission.
+    for source_id in sorted(known_sources):
+        if source_id not in source_order:
+            source_order.append(source_id)
+    config["source_order"] = source_order
 
 
 def remove_legacy_stale_references(config: dict) -> int:
@@ -336,7 +435,142 @@ def validate_and_normalize_configuration(config: dict) -> dict:
         custom_node_ids=custom_node_ids,
     )
     _validate_tokens(normalized, users, admin_tokens)
+    _validate_subject_templates(normalized, users, admin_tokens)
     _validate_allocations(users, subscription_ids)
     _validate_source_order(normalized, subscription_ids)
     _validate_group_config([*users, *admin_tokens])
+    _validate_port_mappings(normalized)
+    _validate_settings(normalized)
+    _validate_speedtest_profiles(normalized)
     return normalized
+
+
+def validate_configuration_node_references(config: dict, yaml_source_dir: str) -> None:
+    """Validate references against the actual subscription YAML files.
+
+    Structural import validation can prove that an ID has the right shape,
+    but only the restored YAML can prove that a node ID or legacy name exists.
+    This second boundary check prevents migrations from succeeding with a
+    valid-looking config that later emits empty groups or drops allocations.
+    """
+    from helpers import load_subscription_yaml
+    from services.name_transformer import NameTransformer
+    from services.node_identity import custom_node_id, subscription_node_ids
+    from services.proxy_chain_references import list_proxy_chain_virtual_references
+
+    source_aliases: dict[str, set[str]] = {}
+    all_aliases: set[str] = set()
+
+    for subscription in config.get("subscriptions", []):
+        subscription_id = str(subscription.get("id") or "")
+        if not subscription.get("enabled", True):
+            # Disabled sources are intentionally allowed to exist without a
+            # restored YAML file; they cannot contribute nodes or references
+            # until explicitly enabled and refreshed.
+            source_aliases[subscription_id] = set()
+            continue
+        try:
+            subscription_yaml = load_subscription_yaml(subscription_id, yaml_source_dir, use_cache=False)
+        except Exception as exc:
+            raise ValueError(
+                f"Imported subscription {subscription_id} is missing or has invalid YAML"
+            ) from exc
+        nodes = subscription_yaml.get("proxies") if isinstance(subscription_yaml, dict) else None
+        if not isinstance(nodes, list):
+            raise ValueError(f"Imported subscription {subscription_id} has no proxy list")
+        identities = subscription_node_ids(subscription_id, nodes)
+        aliases: set[str] = set(identities)
+        for index, node in enumerate(nodes):
+            if not isinstance(node, dict):
+                raise ValueError(f"Imported subscription {subscription_id} contains an invalid node")
+            aliases.add(str(node.get("name") or "").strip())
+            transformed_name = NameTransformer.transform_name(
+                node,
+                subscription.get("name", subscription_id),
+            ).get("name")
+            if transformed_name:
+                aliases.add(str(transformed_name).strip())
+            aliases.add(identities[index])
+        aliases.discard("")
+        source_aliases[subscription_id] = aliases
+        all_aliases.update(aliases)
+
+    custom_aliases: set[str] = set()
+    for node in config.get("custom_nodes", []):
+        if not isinstance(node, dict):
+            continue
+        custom_aliases.update(
+            value for value in (
+                custom_node_id(node),
+                str(node.get("name") or "").strip(),
+                str(NameTransformer.transform_name(node, "Custom").get("name") or "").strip(),
+            ) if value
+        )
+    source_aliases["custom_nodes"] = custom_aliases
+    all_aliases.update(custom_aliases)
+
+    for virtual_reference in list_proxy_chain_virtual_references(config):
+        source_aliases.setdefault(virtual_reference.source_id, set()).update(
+            {virtual_reference.stable_id, virtual_reference.legacy_id, virtual_reference.name}
+        )
+        all_aliases.update({virtual_reference.stable_id, virtual_reference.legacy_id, virtual_reference.name})
+
+    def validate_node_reference(reference: object) -> None:
+        if not isinstance(reference, dict):
+            raise ValueError("Imported node reference is invalid")
+        source_id = str(reference.get("sub_id") or "")
+        if source_id in {"custom", "custom_nodes"}:
+            source_id = "custom_nodes"
+        aliases = source_aliases.get(source_id)
+        if aliases is None:
+            raise ValueError("Imported node reference points to an unknown source")
+        node_id = str(reference.get("node_id") or "").strip()
+        node_name = str(reference.get("node_name") or "").strip()
+        node_index = reference.get("node_index")
+        if node_id and node_id not in aliases:
+            raise ValueError("Imported node reference points to a missing node")
+        if node_name and node_name not in aliases and not isinstance(node_index, int):
+            raise ValueError("Imported node reference points to a missing node name")
+        if not node_id and not node_name and not isinstance(node_index, int):
+            raise ValueError("Imported node reference is incomplete")
+
+    for chain in config.get("proxy_chains", []):
+        for row in chain.get("rows", []) if isinstance(chain, dict) else []:
+            for reference in row.get("nodes", []) if isinstance(row, dict) else []:
+                if not isinstance(reference, dict):
+                    raise ValueError("Imported proxy chain contains an invalid reference")
+                if reference.get("type") == "group":
+                    for member in reference.get("group_nodes", []) or []:
+                        validate_node_reference(member)
+                else:
+                    validate_node_reference(reference)
+
+    for user in [*config.get("users", []), *config.get("admin_tokens", [])]:
+        allocations = user.get("allocations", {}) if isinstance(user, dict) else {}
+        if isinstance(allocations, dict):
+            for source_id, values in allocations.items():
+                if values == ["*"] or source_id in {"chain_nodes", "chain_pools"}:
+                    continue
+                aliases = source_aliases.get("custom_nodes" if source_id == "custom" else source_id, set())
+                if aliases and any(value not in aliases for value in values):
+                    raise ValueError("Imported allocation references a missing node")
+
+        group_config = user.get("group_config", {}) if isinstance(user, dict) else {}
+        if isinstance(group_config, dict):
+            for values in group_config.values():
+                if isinstance(values, list) and any(
+                    value not in all_aliases and value not in {"DIRECT", "REJECT"}
+                    for value in values
+                ):
+                    raise ValueError("Imported proxy-group configuration references a missing node")
+
+    settings = config.get("settings", {})
+    default_proxy_id = settings.get("proxy_node_id") if isinstance(settings, dict) else None
+    if default_proxy_id and default_proxy_id not in all_aliases:
+        raise ValueError("Imported default proxy references a missing node")
+
+    port_mappings = config.get("port_mappings", {})
+    if isinstance(port_mappings, dict):
+        for reference in port_mappings:
+            if reference not in all_aliases:
+                raise ValueError("Imported port mapping references a missing node")

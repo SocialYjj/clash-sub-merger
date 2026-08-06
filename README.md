@@ -130,7 +130,7 @@ services:
     image: ghcr.io/socialyjj/clash-sub-merger:latest
     restart: unless-stopped
     ports:
-      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-8666}:8666"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8666}:8666"
     volumes:
       - ./data:/app/data
     env_file:
@@ -151,10 +151,11 @@ services:
 3. Start:
 
 ```bash
+docker compose pull
 docker compose up -d
 ```
 
-4. Visit `http://your-ip:8666` and log in with the initial administrator password. The entrypoint creates and validates `data/uploads`, `data/logs`, `data/backups`, and `data/refresh_locks` before dropping privileges.
+4. Behind a reverse proxy, visit the proxy URL and log in with the initial administrator password. The default Compose binding is `127.0.0.1`; only override `BIND_ADDRESS` when you have an explicit firewall/TLS policy. The entrypoint creates and validates `data/uploads`, `data/logs`, `data/backups`, and `data/refresh_locks` before dropping privileges.
 
 ### Build Manually
 
@@ -163,7 +164,8 @@ git clone https://github.com/SocialYjj/clash-sub-merger.git
 cd clash-sub-merger
 cp .env.example .env
 # Set INITIAL_ADMIN_PASSWORD in .env first.
-docker compose up -d --build
+docker build -t ghcr.io/socialyjj/clash-sub-merger:latest .
+docker compose up -d
 ```
 
 ## 📖 Usage
@@ -195,7 +197,8 @@ docker compose up -d --build
 - WireGuard
 - AnyTLS
 - SOCKS5 / HTTP
-- Snell
+- Snell is supported in YAML output; Base64 export returns an explicit error because
+  there is no interoperable Snell share-link format.
 
 ## 🔧 Configuration
 
@@ -205,7 +208,7 @@ docker compose up -d --build
 | --- | --- | --- |
 | `TZ` | `UTC` | Timezone |
 | `DATA_DIR` | `/app/data` | Data directory |
-| `BIND_ADDRESS` | `0.0.0.0` | Docker Compose listen address; use `127.0.0.1` behind a reverse proxy |
+| `BIND_ADDRESS` | `127.0.0.1` | Docker Compose listen address; keep loopback behind a reverse proxy |
 | `HOST_PORT` | `8666` | Docker Compose host port |
 | `MEMORY_LIMIT` | `512m` | Docker Compose memory limit |
 | `PIDS_LIMIT` | `256` | Docker Compose process limit |

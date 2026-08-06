@@ -201,8 +201,41 @@ class ProxyFilter:
 
         proxy_type = str(proxy.get('type', '') or '').strip().lower()
 
+        if not proxy_type:
+            return 'missing-type'
+        allowed_types = {
+            'http', 'https', 'socks5', 'socks5h', 'ss', 'ssr', 'vmess',
+            'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'wireguard',
+            'snell', 'anytls', 'ssh', 'direct', 'reject',
+        }
+        if proxy_type not in allowed_types:
+            return 'unsupported-type'
+
         if proxy_type and not ProxyFilter._is_valid_server(proxy.get('server')):
             return 'invalid-server'
+
+        port = proxy.get('port')
+        if port is None or isinstance(port, bool):
+            return 'missing-port'
+        try:
+            port_number = int(port)
+        except (TypeError, ValueError):
+            return 'invalid-port'
+        if not 1 <= port_number <= 65535:
+            return 'invalid-port'
+
+        required_fields = {
+            'vless': ('uuid',),
+            'vmess': ('uuid',),
+            'trojan': ('password',),
+            'hysteria2': ('password',),
+            'anytls': ('password',),
+            'ss': ('cipher', 'password'),
+            'wireguard': ('private-key',),
+        }
+        for field in required_fields.get(proxy_type, ()):
+            if not str(proxy.get(field) or '').strip():
+                return f'missing-{field}'
 
         # Hysteria v1 requires explicit upload/download rates.
         # Hysteria2 does not require these fields, so do not enforce them there.

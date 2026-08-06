@@ -5,8 +5,10 @@ umask 077
 data_dir="${DATA_DIR:-/app/data}"
 
 case "$data_dir" in
-    ""|"/")
-        echo "DATA_DIR must point to a dedicated application directory" >&2
+    /app/data|/app/data/*)
+        ;;
+    *)
+        echo "DATA_DIR must remain under /app/data" >&2
         exit 1
         ;;
 esac
@@ -19,17 +21,29 @@ mkdir -p \
 
 if [ "$(id -u)" = "0" ]; then
     # A fresh bind mount is commonly created as root and hides the ownership
-    # prepared in the image. Repair the mounted tree before dropping privileges.
-    if ! chown -R appuser:appuser "$data_dir"; then
+    # prepared in the image. Repair only application-owned paths; never walk an
+    # arbitrary operator-provided tree or a system directory.
+    if ! chown appuser:appuser "$data_dir"; then
         echo "Could not change DATA_DIR ownership; checking effective appuser access" >&2
     fi
+    if ! chown appuser:appuser "$data_dir/uploads" "$data_dir/logs" "$data_dir/backups" "$data_dir/refresh_locks"; then
+        echo "Could not change DATA_DIR ownership; checking effective appuser access" >&2
+    fi
+    find "$data_dir" -maxdepth 1 -type f -exec chown appuser:appuser {} + || true
+    for owned_dir in uploads logs backups refresh_locks; do
+        find "$data_dir/$owned_dir" -xdev -exec chown appuser:appuser {} + || true
+    done
 
     # Configuration, subscriptions, and backups contain credentials. Tighten
     # existing migrated files as well as files created under the umask above.
-    if ! find "$data_dir" -type d -exec chmod 700 {} + \
-        || ! find "$data_dir" -type f -exec chmod 600 {} +; then
+    if ! find "$data_dir" -maxdepth 1 -type d -exec chmod 700 {} + \
+        || ! find "$data_dir" -maxdepth 1 -type f -exec chmod 600 {} +; then
         echo "Could not tighten all DATA_DIR permissions on this filesystem" >&2
     fi
+    for secured_dir in uploads logs backups refresh_locks; do
+        find "$data_dir/$secured_dir" -xdev -type d -exec chmod 700 {} + || true
+        find "$data_dir/$secured_dir" -xdev -type f -exec chmod 600 {} + || true
+    done
 
     for writable_dir in \
         "$data_dir" \

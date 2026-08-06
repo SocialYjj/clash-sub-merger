@@ -5,7 +5,7 @@ from typing import Optional
 from core.config import AppConfig
 from helpers import generate_timestamp_id, load_subscription_yaml
 from services.name_transformer import NameTransformer
-from services.node_identity import custom_node_id, subscription_node_id
+from services.node_identity import custom_node_id, subscription_node_ids
 
 
 def ensure_custom_node_ids(config: dict) -> int:
@@ -67,15 +67,16 @@ def _resolve_reference_id(config: dict, reference: dict) -> Optional[str]:
     except Exception:
         return None
     nodes = subscription_data.get("proxies", []) if isinstance(subscription_data, dict) else []
+    node_ids = subscription_node_ids(source_id, nodes)
     if isinstance(node_index, int) and 0 <= node_index < len(nodes):
-        return subscription_node_id(source_id, nodes[node_index])
-    for node in nodes:
+        return node_ids[node_index]
+    for index, node in enumerate(nodes):
         transformed_name = NameTransformer.transform_name(
             node,
             subscription.get("name", source_id),
         ).get("name")
         if node_name and transformed_name == node_name:
-            return subscription_node_id(source_id, node)
+            return node_ids[index]
     return None
 
 

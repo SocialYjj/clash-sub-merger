@@ -11,7 +11,8 @@ import {
   Menu,
   X,
   Globe,
-  FileCode
+  FileCode,
+  LogOut
 } from 'lucide-react';
 
 const menuItems = [
@@ -39,7 +40,7 @@ const menuItems = [
   }
 ];
 
-export default function Sidebar({ collapsed, setCollapsed }) {
+export default function Sidebar({ collapsed, setCollapsed, onLogout }) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [version, setVersion] = useState('...');
@@ -57,7 +58,7 @@ export default function Sidebar({ collapsed, setCollapsed }) {
       })
       .catch((err) => {
         if (controller.signal.aborted || err.name === 'AbortError') return;
-        setVersion('3.2.0');
+        setVersion('unknown');
       });
     return () => controller.abort();
   }, []);
@@ -125,6 +126,15 @@ export default function Sidebar({ collapsed, setCollapsed }) {
 
       {/* Footer */}
       <div className="p-4 border-t border-gray-800">
+        <button
+          type="button"
+          onClick={onLogout}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 mb-3 rounded-lg text-sm text-gray-400 hover:bg-red-500/10 hover:text-red-400 transition-colors ${collapsed ? 'px-2' : ''}`}
+          title="退出登录"
+        >
+          <LogOut size={17} />
+          {!collapsed && <span>退出登录</span>}
+        </button>
         {!collapsed ? (
           <div className="text-xs text-gray-500 text-center">
             Clash Sub Merger v{version}

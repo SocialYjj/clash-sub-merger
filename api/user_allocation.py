@@ -8,7 +8,7 @@ from core.dependencies import verify_session
 from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
-from services.node_identity import custom_node_id, subscription_node_id
+from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 
@@ -73,7 +73,8 @@ def create_user_allocation_router(
                 proxies = cfg.get('proxies', []) if cfg else []
 
                 available_nodes = []
-                for proxy in proxies:
+                unique_ids = subscription_node_ids(sub['id'], proxies)
+                for proxy_index, proxy in enumerate(proxies):
                     if not is_node_enabled(proxy):
                         continue
                     original_name = proxy.get('name', '')
@@ -81,7 +82,7 @@ def create_user_allocation_router(
                         continue
                     transformed = NameTransformer.transform_name(proxy, sub['name'])
                     available_nodes.append({
-                        'id': subscription_node_id(sub['id'], proxy),
+                        'id': unique_ids[proxy_index],
                         'name': transformed.get('name', original_name),
                     })
 

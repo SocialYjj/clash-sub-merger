@@ -74,6 +74,10 @@ async def health_check():
     return JSONResponse(
         status_code=200 if is_healthy else 503,
         content=payload,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -87,4 +91,12 @@ def metrics(authorization: str | None = Header(None)):
     scheme, _, supplied_token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not constant_time_equal(supplied_token, AppConfig.METRICS_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid metrics token")
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Vary": "Authorization",
+        },
+    )

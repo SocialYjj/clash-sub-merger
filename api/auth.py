@@ -41,7 +41,7 @@ class ChangePassword(BaseModel):
 
 
 class Login(BaseModel):
-    password: str = Field(max_length=100)
+    password: str = Field(max_length=PASSWORD_MAX_LENGTH)
 
 
 # ==================== API Endpoints ====================

@@ -11,8 +11,8 @@ from helpers import atomic_write_text
 from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
-from services.node_visibility import filter_enabled_nodes
-from services.node_identity import custom_node_id, subscription_node_id
+from services.node_visibility import filter_enabled_nodes, strip_visibility_fields
+from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_utils import unique_name
 
 logger = get_logger(__name__)
@@ -316,9 +316,12 @@ rule-providers:
             if not proxies:
                 logger.info(f"{file_name} has no proxy nodes")
                 continue
+
+            source_id = self._source_id_from_filename(file_name)
             
             # Filter invalid nodes and admin-disabled nodes. Disabled nodes stay
             # manageable in the admin UI, but must never enter generated output.
+            unique_ids = subscription_node_ids(source_id, proxies)
             valid_proxies = ProxyFilter.filter_proxies(proxies)
             enabled_proxies = filter_enabled_nodes(valid_proxies, strip=True)
             
@@ -331,14 +334,15 @@ rule-providers:
                 disabled_count,
             )
             
-            source_id = self._source_id_from_filename(file_name)
             identified_proxies = []
-            for proxy in enabled_proxies:
-                identified_proxy = dict(proxy)
+            for proxy_index, proxy in enumerate(proxies):
+                if not ProxyFilter.is_valid_proxy(proxy) or not filter_enabled_nodes([proxy], strip=True):
+                    continue
+                identified_proxy = strip_visibility_fields(dict(proxy))
                 identified_proxy['_allocation_id'] = (
                     custom_node_id(proxy)
                     if source_id == 'custom_nodes'
-                    else subscription_node_id(source_id, proxy)
+                    else unique_ids[proxy_index]
                 )
                 identified_proxies.append(identified_proxy)
 

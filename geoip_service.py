@@ -11,6 +11,7 @@ import ipaddress
 import socket
 import unicodedata
 import httpx
+import httpcore
 import asyncio
 import threading
 from copy import deepcopy
@@ -892,20 +893,21 @@ CUSTOM_GEOIP_MAX_RESPONSE_BYTES = env_int(
     minimum=1024,
     maximum=10 * 1024 * 1024,
 )
+_PUBLIC_CUSTOM_URL_RESOLUTIONS: dict[str, tuple[str, list[str]]] = {}
 
 
-async def _is_public_custom_api_url(url: str) -> bool:
-    """Resolve the destination immediately before use and reject local networks."""
+async def _resolve_public_custom_api_url(url: str) -> tuple[str, list[str]] | None:
+    """Resolve and pin a custom API hostname, rejecting local networks."""
     try:
         parsed = urlsplit(url)
         if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
-            return False
+            return None
         if parsed.username is not None or parsed.password is not None:
-            return False
+            return None
         port = parsed.port or (443 if parsed.scheme.lower() == 'https' else 80)
         host = parsed.hostname
         if host.lower() == 'localhost':
-            return False
+            return None
         try:
             addresses = {ipaddress.ip_address(host)}
         except ValueError:
@@ -919,9 +921,52 @@ async def _is_public_custom_api_url(url: str) -> bool:
                 ipaddress.ip_address(item[4][0].split('%', 1)[0])
                 for item in address_info
             }
-        return bool(addresses) and all(address.is_global for address in addresses)
+        if not addresses or not all(address.is_global for address in addresses):
+            return None
+        return host.lower(), sorted(str(address) for address in addresses)
     except (OSError, ValueError, TypeError):
+        return None
+
+
+async def _is_public_custom_api_url(url: str) -> bool:
+    """Compatibility wrapper that also retains the validated resolution."""
+    resolved = await _resolve_public_custom_api_url(url)
+    if resolved is None:
         return False
+    _PUBLIC_CUSTOM_URL_RESOLUTIONS[url] = resolved
+    return True
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Connect to the address validated before the HTTP request.
+
+    The original hostname is still passed to httpcore for HTTP Host and TLS
+    SNI, while the TCP dial uses the already-validated public address. This
+    closes the DNS-rebinding gap between validation and connection.
+    """
+
+    def __init__(self, pinned_addresses: dict[str, str]):
+        self._pinned_addresses = pinned_addresses
+        self._delegate = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        target = self._pinned_addresses.get(str(host).lower(), host)
+        return await self._delegate.connect_tcp(target, port, timeout, local_address, socket_options)
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return await self._delegate.connect_unix_socket(path, timeout, socket_options)
+
+    async def sleep(self, seconds=0):
+        return await self._delegate.sleep(seconds)
+
+
+class _PinnedHTTPTransport(httpx.AsyncHTTPTransport):
+    def __init__(self, pinned_addresses: dict[str, str], timeout: int):
+        super().__init__(trust_env=False, retries=0)
+        # httpx does not expose a public resolver hook. Replacing the network
+        # backend keeps the supported HTTPX transport and TLS verification while
+        # avoiding a second DNS lookup during connect.
+        self._pool._network_backend = _PinnedNetworkBackend(pinned_addresses)
 
 
 async def _read_limited_json_response(response: httpx.Response) -> dict | None:
@@ -958,13 +1003,25 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
         if not await _is_public_custom_api_url(url):
             logger.warning("Rejected custom GeoIP request to a non-public destination")
             return None
+        resolved = _PUBLIC_CUSTOM_URL_RESOLUTIONS.pop(url, None)
+        if resolved is None:
+            # A caller may provide a trusted resolver wrapper. In normal
+            # operation _is_public_custom_api_url always populates the cache;
+            # retain the hostname only for that explicit integration path.
+            parsed_url = urlsplit(url)
+            if not parsed_url.hostname:
+                return None
+            resolved = (parsed_url.hostname.lower(), [parsed_url.hostname])
+        hostname, addresses = resolved
         
         method = api_config.get("method", "GET").upper()
         headers = api_config.get("headers", {})
         
         if method not in {'GET', 'POST'}:
             return None
+        transport = _PinnedHTTPTransport({hostname: addresses[0]}, timeout)
         async with httpx.AsyncClient(
+            transport=transport,
             follow_redirects=False,
             timeout=httpx.Timeout(timeout),
             trust_env=False,
@@ -1320,7 +1377,11 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
     """
     global _online_geoip_cache, _online_geoip_inflight
 
-    cache_key = f"{ip}:{api_id or 'default'}"
+    requested_api_id = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
+    # The effective requested API is part of the key. A generic ``default``
+    # key would keep returning results from the previous preferred provider
+    # after an operator changes the setting.
+    cache_key = f"{ip}|{requested_api_id}"
 
     def _get_valid_cache_entry():
         with _online_geoip_cache_lock:
@@ -1346,7 +1407,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         return cached_result
 
     async def _do_lookup():
-        target_api = api_id or _online_geoip_config.get("preferred_api", "ip-api.com")
+        target_api = requested_api_id
 
         builtin_api_map = {
             "ip-api.com": _lookup_ip_api_com,
@@ -1355,6 +1416,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         }
 
         raw_data = None
+        selected_api_id = None
 
         async with _online_geoip_semaphore:
             api_settings = _online_geoip_config.get("api_settings", {})
@@ -1384,6 +1446,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
             for candidate_id in candidate_ids:
                 raw_data = await query_api(candidate_id)
                 if raw_data:
+                    selected_api_id = candidate_id
                     break
 
         if not raw_data:
@@ -1398,6 +1461,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
         return {
             **normalized,
             "source": "online",
+            "api_id": selected_api_id or target_api,
             "timestamp": time.time()
         }
 
@@ -1428,14 +1492,15 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
                     _online_geoip_inflight.pop(cache_key, None)
 
     with _online_geoip_cache_lock:
-        if not result:
-            _online_geoip_cache[cache_key] = {"timestamp": time.time(), "_negative": True}
-            return None
+        new_entry = result or {"timestamp": time.time(), "_negative": True}
+        previous_entry = _online_geoip_cache.get(cache_key)
+        cache_changed = previous_entry != new_entry
+        _online_geoip_cache[cache_key] = new_entry
 
-        _online_geoip_cache[cache_key] = result
-        cache_size = len(_online_geoip_cache)
-
-    if cache_size % 10 == 0:
+    # Persist every changed entry, including negative results and updates to an
+    # existing key. A modulo-based trigger loses the final 1-9 writes on
+    # shutdown and made the disk cache diverge from memory.
+    if cache_changed:
         await save_geoip_cache_to_disk()
 
     return result

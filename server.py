@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from filelock import FileLock, Timeout as FileLockTimeout
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -79,7 +80,10 @@ from services.subscription_state import (
     record_refresh_failure,
     refresh_success_fields,
 )
-from services.subscription_storage import persist_subscription_content_and_record
+from services.subscription_storage import (
+    persist_subscription_content_and_record,
+    recover_pending_subscription_transactions,
+)
 
 # Import API routers
 from api import api_router
@@ -313,11 +317,13 @@ def _schedule_automatic_backup() -> None:
 
 async def startup_event() -> None:
     """Initialize services on startup"""
-    global http_client
+    global http_client, GO_SPEEDTEST_MONITOR_TASK, SERVER_SHUTTING_DOWN
+    SERVER_SHUTTING_DOWN = False
     logger.info("Starting up application...")
 
     # Migrations and first-start initialization run inside lifespan rather than
     # at module import, so an invalid configuration prevents readiness cleanly.
+    recover_pending_subscription_transactions(AppConfig.YAML_SOURCE_DIR)
     migrate_old_config()
     migrate_legacy_sub_token()
     migrate_subscription_fields()
@@ -349,29 +355,35 @@ async def startup_event() -> None:
     if AppConfig.GO_SPEEDTEST_ENABLED:
         if await asyncio.to_thread(start_go_speedtest_service):
             logger.info("Go speedtest service started successfully")
+            GO_SPEEDTEST_MONITOR_TASK = asyncio.create_task(_monitor_go_speedtest_service())
         else:
             logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
     else:
         logger.info("Go speedtest service disabled")
     
-    # Initialize scheduler
-    init_scheduler()
-    logger.info("Scheduler initialized")
-    
-    # Restore scheduled jobs
-    _restore_scheduled_jobs()
-    
-    # Schedule FlClash version check
-    _schedule_flclash_version_check()
-
-    _schedule_automatic_backup()
+    # APScheduler is process-local. A shared leader lock prevents multiple
+    # replicas from registering refresh, version-check and backup jobs.
+    if _acquire_scheduler_leader():
+        init_scheduler()
+        logger.info("Scheduler initialized")
+        _restore_scheduled_jobs()
+        _schedule_flclash_version_check()
+        _schedule_automatic_backup()
 
 
 async def shutdown_event() -> None:
     """Cleanup on shutdown"""
     logger.info("Shutting down application...")
-    get_scheduler().stop()
+    global GO_SPEEDTEST_MONITOR_TASK, SERVER_SHUTTING_DOWN
+    SERVER_SHUTTING_DOWN = True
+    if GO_SPEEDTEST_MONITOR_TASK is not None:
+        GO_SPEEDTEST_MONITOR_TASK.cancel()
+        await asyncio.gather(GO_SPEEDTEST_MONITOR_TASK, return_exceptions=True)
+        GO_SPEEDTEST_MONITOR_TASK = None
+    if SCHEDULER_IS_LEADER:
+        get_scheduler().stop()
     stop_go_speedtest_service()
+    _release_scheduler_leader()
     if http_client:
         await http_client.aclose()
     # Close the subscription fetcher's dedicated HTTP client
@@ -479,10 +491,45 @@ from services.stats_cache import invalidate as invalidate_stats_cache
 # ==================== Go Speedtest Service Management ====================
 
 GO_SPEEDTEST_PROCESS = None
+GO_SPEEDTEST_MONITOR_TASK = None
+SCHEDULER_LEADER_LOCK = None
+SCHEDULER_IS_LEADER = False
+SERVER_SHUTTING_DOWN = False
+
+
+def _acquire_scheduler_leader() -> bool:
+    """Allow only one process/container to own APScheduler jobs."""
+    global SCHEDULER_LEADER_LOCK, SCHEDULER_IS_LEADER
+    if SCHEDULER_IS_LEADER:
+        return True
+    lock_path = os.path.join(AppConfig.DATA_DIR, "scheduler.leader.lock")
+    SCHEDULER_LEADER_LOCK = FileLock(lock_path, timeout=0)
+    try:
+        SCHEDULER_LEADER_LOCK.acquire(timeout=0)
+    except FileLockTimeout:
+        SCHEDULER_IS_LEADER = False
+        logger.warning("Another process owns the scheduler leader lock; scheduled jobs are disabled here")
+        return False
+    SCHEDULER_IS_LEADER = True
+    return True
+
+
+def _release_scheduler_leader() -> None:
+    global SCHEDULER_IS_LEADER, SCHEDULER_LEADER_LOCK
+    if SCHEDULER_LEADER_LOCK is not None and SCHEDULER_IS_LEADER:
+        try:
+            SCHEDULER_LEADER_LOCK.release()
+        except Exception:
+            logger.debug("Failed to release scheduler leader lock", exc_info=True)
+    SCHEDULER_IS_LEADER = False
+    SCHEDULER_LEADER_LOCK = None
 
 def start_go_speedtest_service():
     """Start the Go speedtest service as a subprocess"""
     global GO_SPEEDTEST_PROCESS
+
+    if SERVER_SHUTTING_DOWN:
+        return False
 
     # Check if already running
     if GO_SPEEDTEST_PROCESS is not None and GO_SPEEDTEST_PROCESS.poll() is None:
@@ -504,6 +551,19 @@ def start_go_speedtest_service():
         logger.error("Go speedtest executable not found at %s", speedtest_exe)
         return False
 
+    raw_startup_grace = os.environ.get('GO_SPEEDTEST_STARTUP_GRACE', '0.5')
+    try:
+        startup_grace = float(raw_startup_grace)
+        if not (0 <= startup_grace <= 30):
+            raise ValueError
+    except (TypeError, ValueError):
+        startup_grace = 0.5
+        logger.warning(
+            "Invalid GO_SPEEDTEST_STARTUP_GRACE=%r; using %.1fs",
+            raw_startup_grace,
+            startup_grace,
+        )
+
     try:
         # Start the Go service
         GO_SPEEDTEST_PROCESS = subprocess.Popen(
@@ -513,7 +573,6 @@ def start_go_speedtest_service():
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
-        startup_grace = float(os.environ.get('GO_SPEEDTEST_STARTUP_GRACE', '0.5'))
         if startup_grace > 0:
             time.sleep(startup_grace)
         exit_code = GO_SPEEDTEST_PROCESS.poll()
@@ -534,6 +593,28 @@ def start_go_speedtest_service():
     except Exception as e:
         logger.error("Failed to start Go speedtest service: %s", e, exc_info=True)
         return False
+
+
+async def _monitor_go_speedtest_service() -> None:
+    """Restart the bundled tester if it exits after successful startup."""
+    global GO_SPEEDTEST_PROCESS
+    while True:
+        await asyncio.sleep(5)
+        if SERVER_SHUTTING_DOWN:
+            return
+        if not AppConfig.GO_SPEEDTEST_ENABLED:
+            continue
+        process = GO_SPEEDTEST_PROCESS
+        if process is None or process.poll() is None:
+            continue
+        exit_code = process.poll()
+        GO_SPEEDTEST_PROCESS = None
+        logger.error("Go speedtest service exited at runtime (code=%s); restarting", exit_code)
+        if SERVER_SHUTTING_DOWN:
+            return
+        if not await asyncio.to_thread(start_go_speedtest_service):
+            logger.error("Go speedtest service restart failed; will retry")
+
 
 def stop_go_speedtest_service():
     """Stop the Go speedtest service"""
@@ -610,6 +691,7 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
                     max_connections=AppConfig.HTTP_MAX_CONNECTIONS
                 ),
                 verify=AppConfig.HTTP_VERIFY_SSL,
+                trust_env=False,
             )
             try:
                 fetcher = SubscriptionFetcher(client, proxy_url=proxy_url)
@@ -754,10 +836,9 @@ def refresh_subscription_job(sub_id: str):
                 record_refresh_failure(sub, exc, attempted_at)
     except SubscriptionRefreshInProgress as exc:
         logger.warning("Scheduled refresh skipped because subscription %s is already refreshing", sub_id)
-        if current_subscription is None:
-            current_subscription = find_subscription_by_id(load_config(), sub_id)
-        if current_subscription:
-            record_refresh_failure(current_subscription, exc, attempted_at)
+        # A concurrent refresh is not a refresh failure.  Do not overwrite the
+        # in-flight job's attempt/success/failure state with a lock-conflict
+        # error; the active job owns the authoritative outcome.
     except Exception as exc:
         logger.error(
             "Fatal error in scheduled refresh job for %s: %s",
@@ -911,7 +992,6 @@ def migrate_subscription_fields():
 def migrate_stable_node_references():
     """Assign missing custom-node IDs and migrate proxy chains off array indexes."""
     from services.node_reference_migration import ensure_custom_node_ids, migrate_proxy_chain_node_ids
-    from services.configuration_validation import remove_legacy_stale_references
     from services.proxy_chain_references import (
         ensure_proxy_chain_component_ids,
         reconcile_proxy_chain_references,
@@ -920,7 +1000,6 @@ def migrate_stable_node_references():
 
     config = load_config()
     original_config = deepcopy(config)
-    removed_stale_references = remove_legacy_stale_references(config)
     added_node_ids = ensure_custom_node_ids(config)
     added_chain_component_ids = ensure_proxy_chain_component_ids(config)
     migrated_references = migrate_proxy_chain_node_ids(config)
@@ -930,15 +1009,13 @@ def migrate_stable_node_references():
         return
     save_config(config)
     logger.info(
-        "Stable node reference migration completed: stale_references=%s custom_ids=%s chain_components=%s chain_references=%s",
-        removed_stale_references,
+        "Stable node reference migration completed: custom_ids=%s chain_components=%s chain_references=%s",
         added_node_ids,
         added_chain_component_ids,
         migrated_references,
     )
     log_migration(
-        f"migrate_stable_node_references: stale_references={removed_stale_references} "
-        f"custom_ids={added_node_ids} "
+        f"migrate_stable_node_references: custom_ids={added_node_ids} "
         f"chain_components={added_chain_component_ids} "
         f"chain_references={migrated_references}"
     )

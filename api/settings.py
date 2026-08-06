@@ -14,6 +14,7 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from core.rate_limit import limiter
 from helpers import handle_api_errors
+from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_chain_references import list_proxy_chain_virtual_references
@@ -342,7 +343,12 @@ async def test_ipv6_connectivity(request: Request, _: bool = Depends(verify_sess
     import asyncio
     
     async def check_ipv6():
+        # Bind the transport to an IPv6 wildcard address. Without this
+        # constraint a dual-stack resolver may choose IPv4 and report a false
+        # positive on hosts that have no usable IPv6 route.
+        transport = httpx.AsyncHTTPTransport(local_address="::", retries=0)
         async with httpx.AsyncClient(
+            transport=transport,
             timeout=httpx.Timeout(5),
             follow_redirects=True,
             trust_env=False,

@@ -112,6 +112,14 @@ def subscription_node_ids(subscription_id: str, nodes: Sequence[dict]) -> list[s
     return identities
 
 
+def subscription_node_id_for_index(subscription_id: str, nodes: Sequence[dict], index: int) -> str:
+    """Return the same stable UI identity used by allocation and chain APIs."""
+    identities = subscription_node_ids(subscription_id, nodes)
+    if index < 0 or index >= len(identities):
+        raise IndexError("Subscription node index is out of range")
+    return identities[index]
+
+
 def custom_node_id(node: dict) -> str:
     """Return the persisted custom-node ID, with a deterministic fallback."""
     persisted_id = str((node or {}).get("id") or "").strip()

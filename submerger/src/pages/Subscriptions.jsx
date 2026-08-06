@@ -24,7 +24,7 @@ export default function Subscriptions({
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [selectedSub, setSelectedSub] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [refreshingId, setRefreshingId] = useState(null);
+  const [refreshingIds, setRefreshingIds] = useState(() => new Set());
 
   // Drag and drop state
   const [draggedItem, setDraggedItem] = useState(null);
@@ -42,11 +42,19 @@ export default function Subscriptions({
 
   // Single subscription refresh
   const handleRefreshSingle = async (subId) => {
-    setRefreshingId(subId);
+    setRefreshingIds((current) => {
+      const next = new Set(current);
+      next.add(subId);
+      return next;
+    });
     try {
       await onRefresh(subId);
     } finally {
-      setRefreshingId(null);
+      setRefreshingIds((current) => {
+        const next = new Set(current);
+        next.delete(subId);
+        return next;
+      });
     }
   };
 
@@ -62,24 +70,34 @@ export default function Subscriptions({
     setDragOverItem(index);
   };
 
-  const handleDragEnd = async () => {
-    if (draggedItem !== null && dragOverItem !== null && draggedItem !== dragOverItem) {
-      const newOrder = [...subscriptions];
-      const [removed] = newOrder.splice(draggedItem, 1);
-      newOrder.splice(dragOverItem, 0, removed);
-
-      // Call reorder API
-      try {
-        await request.put(`${API_BASE}/subscriptions/reorder`, {
-          order: newOrder.map(s => s.id)
-        });
-        showToast?.('排序已保存');
-        // Only refresh the list, don't re-fetch subscription content
-        onRefreshList?.();
-      } catch (err) {
-        showToast?.('排序失败', 'error');
-      }
+  const handleDrop = async (e, dropIndex) => {
+    e.preventDefault();
+    if (draggedItem === null || dropIndex === null || draggedItem === dropIndex) {
+      setDraggedItem(null);
+      setDragOverItem(null);
+      return;
     }
+
+    const newOrder = [...subscriptions];
+    const [removed] = newOrder.splice(draggedItem, 1);
+    newOrder.splice(dropIndex, 0, removed);
+    setDraggedItem(null);
+    setDragOverItem(null);
+
+    // Persist only a valid drop. Cancelling a drag or leaving the list must
+    // never submit the current order accidentally.
+    try {
+      await request.put(`${API_BASE}/subscriptions/reorder`, {
+        order: newOrder.map(s => s.id)
+      });
+      showToast?.('排序已保存');
+      onRefreshList?.();
+    } catch (err) {
+      showToast?.('排序失败', 'error');
+    }
+  };
+
+  const handleDragEnd = () => {
     setDraggedItem(null);
     setDragOverItem(null);
   };
@@ -124,7 +142,7 @@ export default function Subscriptions({
               key={sub.id}
               sub={sub}
               index={index}
-              refreshingId={refreshingId}
+              refreshingIds={refreshingIds}
               draggedItem={draggedItem}
               dragOverItem={dragOverItem}
               onToggle={onToggle}
@@ -134,6 +152,7 @@ export default function Subscriptions({
               onSchedule={openScheduleModal}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
+              onDrop={handleDrop}
               onDragEnd={handleDragEnd}
               copyUrl={copyUrl}
             />

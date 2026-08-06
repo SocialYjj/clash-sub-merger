@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -167,6 +168,9 @@ class SensitiveFormatter(logging.Formatter):
 
 # Store all loggers for dynamic level adjustment
 _all_loggers = {}
+_handlers_lock = threading.Lock()
+_shared_console_handler: logging.Handler | None = None
+_shared_file_handler: logging.Handler | None = None
 
 
 def _get_formatter() -> logging.Formatter:
@@ -206,32 +210,37 @@ def setup_logger(name: str = None) -> logging.Logger:
     
     logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
     
-    # Add sensitive data filter
+    # Add sensitive data filter and share handlers across all module loggers.
+    # Independent RotatingFileHandler instances can rotate the same file at
+    # the same time, dropping or duplicating records under concurrent load.
     logger.addFilter(SensitiveDataFilter())
-    
-    # Get formatter based on configuration
-    formatter = _get_formatter()
-    
-    # Console handler (stdout)
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    
-    # File handler (rotating) - only add if we have write permission
-    try:
-        file_handler = RotatingFileHandler(
-            LOG_FILE,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except (PermissionError, OSError) as e:
-        # Log to console only if file logging fails
-        logger.warning(f"Could not create file handler: {e}. Logging to console only.")
+    logger.propagate = False
+    global _shared_console_handler, _shared_file_handler
+    with _handlers_lock:
+        formatter = _get_formatter()
+        if _shared_console_handler is None:
+            _shared_console_handler = logging.StreamHandler(sys.stdout)
+            _shared_console_handler.setLevel(logging.INFO)
+            _shared_console_handler.setFormatter(formatter)
+        logger.addHandler(_shared_console_handler)
+
+        if _shared_file_handler is None:
+            try:
+                _shared_file_handler = RotatingFileHandler(
+                    LOG_FILE,
+                    maxBytes=10 * 1024 * 1024,
+                    backupCount=5,
+                    encoding='utf-8',
+                )
+                _shared_file_handler.setLevel(logging.DEBUG)
+                _shared_file_handler.setFormatter(formatter)
+            except (PermissionError, OSError) as e:
+                _shared_file_handler = False
+                # Console logging remains available when the data volume is
+                # read-only. Do not retry a failing handler for every module.
+                logger.warning("Could not create file handler: %s. Logging to console only.", e)
+        if _shared_file_handler:
+            logger.addHandler(_shared_file_handler)
     
     return logger
 

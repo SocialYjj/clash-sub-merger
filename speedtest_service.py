@@ -84,8 +84,11 @@ class SpeedTestService:
             or self._client.is_closed
             or self._client_loop is not loop
         ):
-            if self._client is not None and not self._client.is_closed and self._client_loop is loop:
-                await self._client.aclose()
+            if self._client is not None and not self._client.is_closed:
+                try:
+                    await self._client.aclose()
+                except Exception:
+                    pass
             self._client = httpx.AsyncClient(follow_redirects=True)
             self._client_loop = loop
         return self._client
@@ -95,7 +98,7 @@ class SpeedTestService:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
         self._client = None
-        self._session_loop = None
+        self._client_loop = None
 
     @staticmethod
     def _running_test_key(node: Dict, proxy_url: str) -> str:
@@ -135,12 +138,13 @@ class SpeedTestService:
         
         start = time.time()
         try:
-            client = await self._get_client()
-            resp = await client.get(
-                test_url,
+            async with httpx.AsyncClient(
                 proxy=proxy_url,
+                follow_redirects=True,
                 timeout=timeout,
-            )
+                trust_env=False,
+            ) as client:
+                resp = await client.get(test_url)
             latency = int((time.time() - start) * 1000)
             return {
                 "status": "success",
@@ -180,28 +184,25 @@ class SpeedTestService:
         total_bytes = 0
         
         try:
-            client = await self._get_client()
-            async with client.stream(
-                "GET",
-                test_url,
+            async with httpx.AsyncClient(
                 proxy=proxy_url,
+                follow_redirects=True,
                 timeout=timeout,
-            ) as resp:
-                async for chunk in resp.aiter_bytes(8192):
-                    total_bytes += len(chunk)
-                
-                elapsed = time.time() - start
-                if elapsed > 0:
-                    speed = total_bytes / elapsed / 1024 / 1024  # MB/s
-                else:
-                    speed = 0
-                
-                return {
-                    "status": "success",
-                    "speed": round(speed, 2),
-                    "bytes": total_bytes,
-                    "elapsed": round(elapsed, 2)
-                }
+                trust_env=False,
+            ) as client:
+                async with client.stream("GET", test_url) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.aiter_bytes(8192):
+                        total_bytes += len(chunk)
+
+            elapsed = time.time() - start
+            speed = total_bytes / elapsed / 1024 / 1024 if elapsed > 0 else 0
+            return {
+                "status": "success",
+                "speed": round(speed, 2),
+                "bytes": total_bytes,
+                "elapsed": round(elapsed, 2)
+            }
         except httpx.TimeoutException:
             elapsed = time.time() - start
             if total_bytes > 0 and elapsed > 0:
@@ -232,13 +233,15 @@ class SpeedTestService:
             IP address string or None
         """
         try:
-            client = await self._get_client()
-            resp = await client.get(
-                self.config.landing_ip_url,
+            async with httpx.AsyncClient(
                 proxy=proxy_url,
-                timeout=timeout
-            )
-            return resp.text.strip()
+                follow_redirects=True,
+                timeout=timeout,
+                trust_env=False,
+            ) as client:
+                resp = await client.get(self.config.landing_ip_url)
+                resp.raise_for_status()
+                return resp.text.strip()
         except Exception:
             return None
 

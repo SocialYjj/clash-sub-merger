@@ -103,7 +103,7 @@ export default function Dashboard({ showToast }) {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1">仪表盘</h1>
-          <p className="text-gray-400 text-sm">欢迎回来，系统运行正常</p>
+          <p className="text-gray-400 text-sm">{loadError ? '部分数据加载失败' : '欢迎回来，系统运行正常'}</p>
         </div>
         <div className="text-right hidden sm:block">
           <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">

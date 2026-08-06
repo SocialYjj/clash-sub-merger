@@ -23,6 +23,42 @@ YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 OUTPUT_FILE = os.path.join(AppConfig.DATA_DIR, 'myconfig.yaml')
 
 
+def _split_template_content(content: str) -> tuple[str, str]:
+    """Split a full YAML template while keeping rules and trailing sections intact."""
+    lines = content.strip().splitlines()
+    proxy_groups_index = next(
+        (index for index, line in enumerate(lines) if line.strip().startswith('proxy-groups:')),
+        None,
+    )
+    rules_index = next(
+        (index for index, line in enumerate(lines) if line.strip().startswith('rules:')),
+        None,
+    )
+    split_index = rules_index if rules_index is not None else proxy_groups_index
+    if split_index is None:
+        return content.strip(), ''
+    return '\n'.join(lines[:split_index]).strip(), '\n'.join(lines[split_index:]).strip()
+
+
+def _template_content(template: dict) -> str:
+    """Render a template record without hand-built YAML indentation."""
+    import yaml
+
+    parts = []
+    if template.get('header'):
+        parts.append(str(template['header']).rstrip())
+    groups = template.get('proxy_groups')
+    if isinstance(groups, list) and groups:
+        parts.append(yaml.safe_dump(
+            {'proxy-groups': groups},
+            allow_unicode=True,
+            sort_keys=False,
+        ).rstrip())
+    if template.get('suffix'):
+        parts.append(str(template['suffix']).strip())
+    return '\n\n'.join(part for part in parts if part)
+
+
 # ==================== Built-in Template ====================
 
 def get_builtin_template():
@@ -53,6 +89,7 @@ class CreateTemplate(BaseModel):
     header: str = ""
     suffix: str = ""
     proxy_groups: Optional[List[dict]] = None
+    content: Optional[str] = None
 
     @field_validator('name')
     @classmethod
@@ -106,6 +143,9 @@ def list_templates(_: bool = Depends(verify_session)):
     builtin = get_builtin_template()
     builtin['is_builtin'] = True
     builtin['is_modified'] = 'builtin_template_override' in config
+    builtin['content'] = _template_content(builtin)
+    for template in templates:
+        template['content'] = _template_content(template)
     
     return {"templates": [builtin] + templates}
 
@@ -127,6 +167,7 @@ def get_builtin_template_endpoint(_: bool = Depends(verify_session)):
         if 'proxy_groups' in override:
             template['proxy_groups'] = override['proxy_groups']
     
+    template['content'] = _template_content(template)
     return {"template": template}
 
 
@@ -147,11 +188,14 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
                 template['suffix'] = override['suffix']
             if 'proxy_groups' in override:
                 template['proxy_groups'] = override['proxy_groups']
+        template['content'] = _template_content(template)
         return {"template": template}
     
     for template in config.get('templates', []):
         if template['id'] == template_id:
-            return {"template": template}
+            result = dict(template)
+            result['content'] = _template_content(result)
+            return {"template": result}
     
     raise HTTPException(status_code=404, detail="Template not found")
 
@@ -160,14 +204,28 @@ def get_template(template_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def create_template(data: CreateTemplate, _: bool = Depends(verify_session)):
     """Create a new template"""
+    header = data.header
+    suffix = data.suffix
+    proxy_groups = data.proxy_groups
+    if data.content is not None:
+        import yaml
+        try:
+            parsed = yaml.safe_load(data.content)
+        except yaml.YAMLError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from None
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="Template content must be a YAML object")
+        proxy_groups = parsed.get('proxy-groups', proxy_groups or [])
+        header, suffix = _split_template_content(data.content)
+
     def add_template(config: dict) -> dict:
         template_id = generate_timestamp_id('tpl_')
         template = {
             'id': template_id,
             'name': data.name,
-            'header': data.header,
-            'suffix': data.suffix,
-            'proxy_groups': data.proxy_groups or [],
+            'header': header,
+            'suffix': suffix,
+            'proxy_groups': proxy_groups or [],
             'created_at': int(time.time())
         }
         config.setdefault('templates', []).append(template)
@@ -275,10 +333,15 @@ def delete_template(template_id: str, _: bool = Depends(verify_session)):
 
     def remove_template(config: dict):
         templates = config.get('templates', [])
+        if not any(t.get('id') == template_id for t in templates):
+            raise HTTPException(status_code=404, detail="Template not found")
         config['templates'] = [t for t in templates if t['id'] != template_id]
+        for subject in [*config.get('users', []), *config.get('admin_tokens', [])]:
+            if isinstance(subject, dict) and subject.get('template_id') == template_id:
+                subject['template_id'] = 'builtin'
 
     update_config(remove_template)
-    
+
     return {"status": "success"}
 
 
@@ -317,9 +380,12 @@ def duplicate_template(template_id: str, _: bool = Depends(verify_session)):
                 raise HTTPException(status_code=404, detail="Template not found")
 
         new_id = generate_timestamp_id('tpl_')
+        base_name = str(source.get('name', 'Template')).strip() or 'Template'
+        copy_suffix = ' (Copy)'
+        new_template_name = f"{base_name[:100 - len(copy_suffix)]}{copy_suffix}"
         new_template = {
             'id': new_id,
-            'name': f"{source.get('name', 'Template')} (Copy)",
+            'name': new_template_name,
             'header': source.get('header', ''),
             'suffix': source.get('suffix', ''),
             'proxy_groups': source.get('proxy_groups', []),
@@ -361,6 +427,6 @@ def preview_template(data: TemplateContent, _: bool = Depends(verify_session)):
                 preview_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')
 
         result = "\n".join(preview_parts)
-        return {"status": "success", "preview": result[:10000]}
+        return {"status": "success", "preview": result}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=422, detail=f"Template preview failed: {e}") from None

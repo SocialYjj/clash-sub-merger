@@ -1,7 +1,7 @@
 fastapi==0.135.1
 uvicorn==0.41.0
 pyyaml==6.0.3
-python-multipart==0.0.30
+python-multipart==0.0.31
 apscheduler==3.11.2
 httpx[socks]==0.28.1
 opencc-python-reimplemented==0.1.7

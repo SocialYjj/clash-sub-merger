@@ -13,6 +13,23 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
     const [loading, setLoading] = useState(false);
     const [parseResult, setParseResult] = useState(null);
     const previewRequestSeq = useRef(0);
+    const dialogRef = useRef(null);
+
+    useEffect(() => {
+        const previous = document.activeElement;
+        dialogRef.current?.focus();
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                onClose();
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            if (previous && typeof previous.focus === 'function') previous.focus();
+        };
+    }, []);
 
     // Preview parsing when content changes (debounced)
     useEffect(() => {
@@ -79,10 +96,10 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
     );
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="bg-gray-800 rounded-xl p-6 w-full max-w-lg mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-subscription-title" tabIndex={-1} className="bg-gray-800 rounded-xl p-6 w-full max-w-lg mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold text-white">添加订阅</h2>
+                    <h2 id="add-subscription-title" className="text-xl font-bold text-white">添加订阅</h2>
                     <button onClick={onClose} className="text-gray-400 hover:text-white">
                         <X size={20} />
                     </button>

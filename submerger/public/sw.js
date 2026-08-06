@@ -1,10 +1,13 @@
-// Service Worker for offline support
-const CACHE_NAME = 'submerger-v1';
+// Service Worker for static asset caching only.
+// Dynamic and authenticated responses must always bypass the Cache API.
+const CACHE_NAME = 'submerger-static-v4-6-0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
 ];
+
+const STATIC_PATH_PATTERN = /^(?:\/assets\/|\/favicon\.ico$|\/manifest\.json$|\/index\.html$)/;
 
 // Install event - cache static assets
 self.addEventListener('install', event => {
@@ -35,8 +38,12 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip API requests - always go to network
-  if (url.pathname.startsWith('/api')) {
+  // Only cache same-origin static assets. In particular, never cache
+  // subscriptions, health/metrics responses, or any authenticated endpoint.
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api')) {
+    return;
+  }
+  if (!STATIC_PATH_PATTERN.test(url.pathname) && url.pathname !== '/') {
     return;
   }
 
@@ -48,9 +55,9 @@ self.addEventListener('fetch', event => {
           // Update cache with new response
           if (networkResponse.ok) {
             const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then(cache => {
-              cache.put(request, responseClone);
-            });
+            event.waitUntil(
+              caches.open(CACHE_NAME).then(cache => cache.put(request, responseClone))
+            );
           }
           return networkResponse;
         }).catch(async () => {

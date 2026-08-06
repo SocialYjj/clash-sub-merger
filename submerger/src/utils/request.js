@@ -34,7 +34,12 @@ request.interceptors.request.use(config => {
 
 // Response interceptor with retry logic
 request.interceptors.response.use(
-  response => response,
+  response => {
+    if (String(response.config?.url || '').includes('/auth/login')) {
+      authRedirecting = false;
+    }
+    return response;
+  },
   async error => {
     const config = error.config;
 
@@ -42,16 +47,18 @@ request.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Handle 401 unauthorized
+    // Handle an expired session, but never swallow login failures or turn
+    // transport/5xx failures into a logout.
     if (error.response?.status === 401) {
-      if (!authRedirecting) {
+      const url = String(config?.url || '');
+      const isLoginRequest = url.includes('/auth/login');
+      const hasSession = Boolean(localStorage.getItem('session'));
+      if (!isLoginRequest && hasSession && !authRedirecting) {
         authRedirecting = true;
         localStorage.removeItem('session');
-        window.location.reload();
+        window.dispatchEvent(new CustomEvent('session-expired'));
       }
-      // The page is unloading. Keep this request pending so callers do not
-      // emit noisy "Uncaught (in promise)" warnings during reload.
-      return new Promise(() => {});
+      return Promise.reject(error);
     }
 
     // Check if we should retry

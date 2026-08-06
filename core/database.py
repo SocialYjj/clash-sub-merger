@@ -106,6 +106,11 @@ def _write_config_locked(config: dict):
         _config_cache = None
         _config_mtime = None
         _config_cached_at = None
+    try:
+        from services.stats_cache import invalidate as invalidate_stats_cache
+        invalidate_stats_cache()
+    except Exception:
+        logger.debug("Failed to invalidate statistics cache after config write", exc_info=True)
 
 
 def load_config() -> dict:

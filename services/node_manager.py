@@ -14,6 +14,7 @@ from services.node_identity import (
     custom_node_id,
     find_subscription_node_index,
     is_node_allocated,
+    subscription_node_id_for_index,
     subscription_node_id,
 )
 
@@ -119,6 +120,8 @@ def find_subscription_node(
     config = load_config()
     sub = find_subscription_by_id(config, sub_id)
     source_name = sub['name'] if sub else sub_id
+    if sub is None or not sub.get('enabled', True):
+        return None
     
     try:
         cfg = load_subscription_yaml(sub_id, yaml_source_dir, use_cache=True)
@@ -140,12 +143,15 @@ def find_subscription_node(
             transformed = strip_metadata(NameTransformer.transform_name(proxy, source_name))
             # Keep durable allocation references on the technical identity;
             # duplicate technical endpoints use a UI-only disambiguator.
+            # Keep the historical technical allocation ID on resolved nodes.
+            # The public ``id`` exposed by the nodes API remains the unique UI
+            # identity returned by ``subscription_node_ids``.
             transformed['_allocation_id'] = subscription_node_id(sub_id, raw_proxy)
             return transformed
 
         # Search by name
         if node_name:
-            for proxy in proxies:
+            for proxy_index, proxy in enumerate(proxies):
                 raw_proxy = proxy
                 if not is_node_enabled(proxy):
                     continue
@@ -306,7 +312,7 @@ def get_proxy_node_by_id(node_id: str, yaml_source_dir: str = None) -> Optional[
 
     for subscription in config.get('subscriptions', []):
         subscription_id = subscription.get('id')
-        if not subscription_id:
+        if not subscription_id or not subscription.get('enabled', True):
             continue
         try:
             subscription_data = load_subscription_yaml(subscription_id, yaml_source_dir, use_cache=True)

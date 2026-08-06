@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
 import request, { isRequestCanceled } from './utils/request';
@@ -22,11 +22,13 @@ const Templates = lazy(() => import('./pages/Templates'));
 const API_BASE = '/api';
 
 // Login Page Component
-function LoginPage({ hasPassword, onLogin }) {
+function LoginPage({ hasPassword, onLogin, statusError = false }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const dataRequestVersions = useRef({ subscriptions: 0, customNodes: 0, users: 0 });
+  const mountedRef = useRef(true);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -53,14 +55,16 @@ function LoginPage({ hasPassword, onLogin }) {
               <Lock size={32} className="text-blue-500" />
             </div>
             <h1 className="text-2xl font-bold text-white">
-              {hasPassword ? '登录' : '管理员未初始化'}
+              {statusError ? '无法连接服务器' : (hasPassword ? '登录' : '管理员未初始化')}
             </h1>
             <p className="text-gray-400 mt-2">
-              {hasPassword ? '请输入密码以继续' : '请在 .env 中配置 INITIAL_ADMIN_PASSWORD，然后重启服务'}
+              {statusError
+                ? '认证状态检查失败，请确认服务正在运行后刷新页面'
+                : (hasPassword ? '请输入密码以继续' : '请在 .env 中配置 INITIAL_ADMIN_PASSWORD，然后重启服务')}
             </p>
           </div>
 
-          {hasPassword && <form onSubmit={handleSubmit} className="space-y-4">
+          {hasPassword && !statusError && <form onSubmit={handleSubmit} className="space-y-4">
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
@@ -101,6 +105,7 @@ export default function App() {
   // Auth state
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [hasPassword, setHasPassword] = useState(false);
+  const [authStatusError, setAuthStatusError] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   // Data state
   const [subscriptions, setSubscriptions] = useState([]);
@@ -110,6 +115,7 @@ export default function App() {
 
   // Toast state
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+  const toastTimerRef = useRef(null);
 
   // Confirm modal state
   const [confirmModal, setConfirmModal] = useState({
@@ -124,9 +130,31 @@ export default function App() {
   const [formatSelectorUser, setFormatSelectorUser] = useState(null);
 
   const showToast = (message, type = 'success') => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToast({ show: true, message, type });
-    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+    toastTimerRef.current = setTimeout(() => {
+      setToast({ show: false, message: '', type: 'success' });
+      toastTimerRef.current = null;
+    }, 3000);
   };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setIsLoggedIn(false);
+      showToast('登录状态已失效，请重新登录', 'error');
+    };
+    window.addEventListener('session-expired', onSessionExpired);
+    return () => window.removeEventListener('session-expired', onSessionExpired);
+  }, []);
 
   const showConfirm = (title, message, onConfirm, type = 'warning') => {
     setConfirmModal({ open: true, title, message, type, onConfirm });
@@ -160,6 +188,7 @@ export default function App() {
       const res = await request.get(`${API_BASE}/auth/status`, { signal });
       if (signal?.aborted) return;
       setHasPassword(res.data.has_password);
+      setAuthStatusError(false);
 
       const session = localStorage.getItem('session');
       if (session && res.data.has_password) {
@@ -169,12 +198,17 @@ export default function App() {
           setIsLoggedIn(true);
         } catch (err) {
           if (signal?.aborted || isRequestCanceled(err)) return;
-          localStorage.removeItem('session');
+          if (err.response?.status === 401) {
+            localStorage.removeItem('session');
+          } else {
+            setIsLoggedIn(true);
+          }
         }
       }
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Auth check failed', err);
+      setAuthStatusError(true);
     } finally {
       if (!signal?.aborted) {
         setAuthLoading(false);
@@ -205,9 +239,10 @@ export default function App() {
   };
 
   const fetchSubscriptions = async (signal) => {
+    const requestVersion = ++dataRequestVersions.current.subscriptions;
     try {
       const res = await request.get(`${API_BASE}/subscriptions`, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || !mountedRef.current || requestVersion !== dataRequestVersions.current.subscriptions) return;
       setSubscriptions(res.data.subscriptions || []);
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
@@ -217,21 +252,25 @@ export default function App() {
   };
 
   const fetchCustomNodes = async (signal) => {
+    const requestVersion = ++dataRequestVersions.current.customNodes;
     try {
       const res = await request.get(`${API_BASE}/custom-nodes`, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || !mountedRef.current || requestVersion !== dataRequestVersions.current.customNodes) return;
       setCustomNodes(res.data.nodes || []);
+      return true;
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch custom nodes', err);
       showToast(`自建节点加载失败: ${getErrorMessage(err, '未知错误')}`, 'error');
+      return false;
     }
   };
 
   const fetchUsers = async (signal) => {
+    const requestVersion = ++dataRequestVersions.current.users;
     try {
       const res = await request.get(`${API_BASE}/users`, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || !mountedRef.current || requestVersion !== dataRequestVersions.current.users) return;
       setUsers(res.data.users || []);
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
@@ -338,6 +377,7 @@ export default function App() {
       showToast('用户创建成功');
     } catch (err) {
       showToast('创建失败: ' + (err.response?.data?.detail || err.message), 'error');
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -372,7 +412,7 @@ export default function App() {
   const copyUserSubUrlWithFormat = async (user, format) => {
     try {
       const res = await request.get(`${API_BASE}/users/${user.id}`);
-      let url = `${window.location.origin}/sub?token=${res.data.user.token}`;
+      let url = `${window.location.origin}/sub?token=${encodeURIComponent(res.data.user.token)}`;
       url += `&format=${format}`;
       const copied = await copyToClipboard(url);
       if (!copied) {
@@ -399,18 +439,15 @@ export default function App() {
 
   const changePassword = async (currentPassword, newPassword) => {
     try {
-      await request.post(`${API_BASE}/auth/change-password`, {
+      const res = await request.post(`${API_BASE}/auth/change-password`, {
         current_password: currentPassword,
         new_password: newPassword
       });
-      showToast('密码修改成功，即将跳转到登录页');
-      // Wait 1 second before logging out to let user see the success message
-      setTimeout(() => {
-        localStorage.removeItem('session');
-        setIsLoggedIn(false);
-        // Force page reload to ensure clean state
-        window.location.reload();
-      }, 1000);
+      if (res.data?.session) {
+        localStorage.setItem('session', res.data.session);
+      }
+      showToast('密码修改成功');
+      return true;
     } catch (err) {
       showToast('修改失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
@@ -427,14 +464,14 @@ export default function App() {
 
   // Not logged in
   if (!isLoggedIn) {
-    return <LoginPage hasPassword={hasPassword} onLogin={handleLogin} />;
+    return <LoginPage hasPassword={hasPassword} onLogin={handleLogin} statusError={authStatusError} />;
   }
 
   // Main app
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <Layout>
+        <Layout onLogout={handleLogout}>
           <Suspense fallback={
             <div className="flex items-center justify-center h-screen">
               <div className="text-gray-400">加载中...</div>

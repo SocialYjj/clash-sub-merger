@@ -247,6 +247,12 @@ async def _refresh_remote_subscription(
             logger.info("Successfully refreshed subscription %s, got %s nodes", subscription_id, node_count)
             return updated_subscription
     except Exception as exc:
+        # A 409 means another worker currently owns the subscription lock. It
+        # is not a failed upstream refresh and must not overwrite the active
+        # worker's success/error state or make the UI show a false failure.
+        if isinstance(exc, HTTPException) and exc.status_code == 409:
+            logger.info("Refresh skipped because subscription %s is already locked", subscription_id)
+            raise
         error_message = describe_refresh_error(exc)
         logger.error(
             "Failed to refresh subscription %s (%s): %s",

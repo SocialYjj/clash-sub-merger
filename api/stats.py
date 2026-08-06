@@ -14,6 +14,7 @@ from services.node_visibility import is_node_enabled
 from services.country_data import COUNTRY_NAMES
 from services.proxy_filter import ProxyFilter
 from geoip_service import GeoIPService
+from services.stats_cache import get_overview, set_overview, get_countries, set_countries
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -91,6 +92,9 @@ def _get_all_nodes_with_country():
 @handle_api_errors
 def get_stats_overview(_: bool = Depends(verify_session)):
     """Get dashboard overview statistics"""
+    cached = get_overview()
+    if cached is not None:
+        return cached
     config = load_config()
     
     # Count subscriptions
@@ -169,7 +173,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
     admin_tokens = config.get('admin_tokens', [])
     enabled_tokens = [t for t in admin_tokens if t.get('enabled', True)]
     
-    return {
+    overview = {
         "subscriptions": {
             "total": len(subs),
             "active": len(enabled_subs)
@@ -193,12 +197,17 @@ def get_stats_overview(_: bool = Depends(verify_session)):
         },
         "best_node": best_node
     }
+    set_overview(overview)
+    return overview
 
 
 @router.get("/countries")
 @handle_api_errors
 def get_stats_countries(_: bool = Depends(verify_session)):
     """Get node statistics by country"""
+    cached = get_countries()
+    if cached is not None:
+        return cached
     nodes = _get_all_nodes_with_country()
     
     # Group by country (exclude unknown)
@@ -224,11 +233,13 @@ def get_stats_countries(_: bool = Depends(verify_session)):
     # Sort by count descending
     sorted_countries = sorted(country_stats.values(), key=lambda x: x['count'], reverse=True)
     
-    return {
+    countries_result = {
         "countries": sorted_countries,
         "total_countries": len(sorted_countries),
         "total_nodes": len(nodes)
     }
+    set_countries(countries_result)
+    return countries_result
 
 
 @router.get("/nodes-by-country")

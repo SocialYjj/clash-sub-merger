@@ -16,7 +16,7 @@ from services.name_transformer import NameTransformer
 from services.node_identity import (
     custom_node_id,
     normalized_node_name,
-    subscription_node_id,
+    subscription_node_ids,
     virtual_node_id,
 )
 from services.node_visibility import clear_user_subscription_caches
@@ -50,7 +50,7 @@ _MISSING = object()
 def _describe_nodes(
     nodes: Iterable[dict],
     source_name: str,
-    identity_builder: Callable[[dict], str],
+    identity_builder: Callable[[dict, int], str],
 ) -> list[_NodeDescription]:
     descriptions: list[_NodeDescription] = []
     for position, node in enumerate(nodes or []):
@@ -64,7 +64,7 @@ def _describe_nodes(
         descriptions.append(
             _NodeDescription(
                 position=position,
-                node_id=identity_builder(node),
+                node_id=identity_builder(node, position),
                 original_name=original_name,
                 display_name=display_name or original_name,
                 normalized_name=normalized_node_name(original_name),
@@ -105,10 +105,16 @@ def _build_transition_plan(
     new_nodes: Iterable[dict],
     old_source_name: str,
     new_source_name: str,
-    identity_builder: Callable[[dict], str],
+    identity_builder: Callable[[dict, int], str] | None = None,
+    old_identity_builder: Callable[[dict, int], str] | None = None,
+    new_identity_builder: Callable[[dict, int], str] | None = None,
 ) -> _ReferenceTransitionPlan:
-    old_descriptions = _describe_nodes(old_nodes, old_source_name, identity_builder)
-    new_descriptions = _describe_nodes(new_nodes, new_source_name, identity_builder)
+    old_identity_builder = old_identity_builder or identity_builder
+    new_identity_builder = new_identity_builder or identity_builder
+    if old_identity_builder is None or new_identity_builder is None:
+        raise ValueError("Node identity builder is required")
+    old_descriptions = _describe_nodes(old_nodes, old_source_name, old_identity_builder)
+    new_descriptions = _describe_nodes(new_nodes, new_source_name, new_identity_builder)
 
     unique_old_ids = _unique_descriptions(old_descriptions, lambda item: item.node_id)
     unique_new_ids = _unique_descriptions(new_descriptions, lambda item: item.node_id)
@@ -494,6 +500,10 @@ def reconcile_subscription_node_references(
     new_subscription_name: str,
 ) -> None:
     """Replace or remove every persisted reference affected by subscription changes."""
+    old_nodes = list(old_nodes or [])
+    new_nodes = list(new_nodes or [])
+    old_ids = subscription_node_ids(subscription_id, old_nodes)
+    new_ids = subscription_node_ids(subscription_id, new_nodes)
     plan = _build_transition_plan(
         source_aliases={subscription_id},
         allocation_key=subscription_id,
@@ -501,7 +511,8 @@ def reconcile_subscription_node_references(
         new_nodes=new_nodes,
         old_source_name=old_subscription_name,
         new_source_name=new_subscription_name,
-        identity_builder=lambda node: subscription_node_id(subscription_id, node),
+        old_identity_builder=lambda _node, index: old_ids[index] if index < len(old_ids) else "",
+        new_identity_builder=lambda _node, index: new_ids[index] if index < len(new_ids) else "",
     )
     _apply_transition_plan(config, plan)
 
@@ -520,7 +531,7 @@ def reconcile_custom_node_references(
         new_nodes=new_nodes,
         old_source_name="Custom",
         new_source_name="Custom",
-        identity_builder=custom_node_id,
+        identity_builder=lambda node, _index: custom_node_id(node),
     )
     _apply_transition_plan(config, plan)
 

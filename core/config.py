@@ -3,6 +3,7 @@ Application configuration module
 Centralized configuration management with environment variable support
 """
 import os
+import warnings
 from dotenv import load_dotenv
 
 # Load .env file first
@@ -33,11 +34,21 @@ except OSError as exc:
 
 
 def env_bool(name: str, default: bool) -> bool:
-    """Read a boolean environment variable with safe fallback."""
+    """Read a boolean environment variable without treating typos as false."""
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+    normalized = raw.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    warnings.warn(
+        f"Invalid boolean environment variable {name}={raw!r}; using {default!r}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return default
 
 
 def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -49,6 +60,11 @@ def env_int(name: str, default: int, minimum: int | None = None, maximum: int | 
         try:
             value = int(raw)
         except (TypeError, ValueError):
+            warnings.warn(
+                f"Invalid integer environment variable {name}={raw!r}; using {default!r}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             value = default
     if minimum is not None:
         value = max(minimum, value)

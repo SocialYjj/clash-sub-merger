@@ -3,6 +3,10 @@
 from starlette.responses import JSONResponse
 
 
+class _RequestTooLarge(Exception):
+    """Internal signal raised by the streaming receive wrapper."""
+
+
 class RequestSizeLimitMiddleware:
     """Reject oversized bodies, including chunked requests without Content-Length."""
 
@@ -41,33 +45,21 @@ class RequestSizeLimitMiddleware:
             )(scope, receive, send)
             return
 
-        buffered_messages = []
         received_bytes = 0
-        while True:
+
+        async def limited_receive():
+            nonlocal received_bytes
             message = await receive()
-            buffered_messages.append(message)
-            if message.get("type") == "http.disconnect":
-                break
-            if message.get("type") != "http.request":
-                continue
-            received_bytes += len(message.get("body", b""))
-            if received_bytes > self.max_bytes:
-                await JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request body is too large"},
-                )(scope, receive, send)
-                return
-            if not message.get("more_body", False):
-                break
+            if message.get("type") == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self.max_bytes:
+                    raise _RequestTooLarge
+            return message
 
-        message_index = 0
-
-        async def replay_receive():
-            nonlocal message_index
-            if message_index < len(buffered_messages):
-                message = buffered_messages[message_index]
-                message_index += 1
-                return message
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        await self.app(scope, replay_receive, send)
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestTooLarge:
+            await JSONResponse(
+                status_code=413,
+                content={"detail": "Request body is too large"},
+            )(scope, receive, send)

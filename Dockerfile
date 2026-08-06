@@ -28,7 +28,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 LABEL org.opencontainers.image.title="Clash Sub Merger"
 LABEL org.opencontainers.image.description="Modern subscription aggregation management panel for Clash/Mihomo"
 LABEL org.opencontainers.image.source="https://github.com/SocialYjj/clash-sub-merger"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Install system dependencies (minimal)
 RUN apt-get update \

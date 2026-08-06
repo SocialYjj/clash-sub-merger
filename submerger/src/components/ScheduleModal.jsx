@@ -12,6 +12,23 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
     const [saving, setSaving] = useState(false);
     const validateCronDebounced = useRef(null);
     const cronAbortRef = useRef(null);
+    const dialogRef = useRef(null);
+
+    useEffect(() => {
+        const previous = document.activeElement;
+        dialogRef.current?.focus();
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                onClose();
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            if (previous && typeof previous.focus === 'function') previous.focus();
+        };
+    }, []);
 
     useEffect(() => {
         cronAbortRef.current?.abort();
@@ -139,10 +156,10 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4 border border-gray-700">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="schedule-modal-title" tabIndex={-1} className="bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4 border border-gray-700">
                 <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xl font-bold text-white">定时更新设置</h2>
+                    <h2 id="schedule-modal-title" className="text-xl font-bold text-white">定时更新设置</h2>
                     <button onClick={onClose} className="text-gray-400 hover:text-white">
                         <X size={20} />
                     </button>

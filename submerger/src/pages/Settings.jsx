@@ -285,7 +285,7 @@ const AdminTokenSection = ({ showToast }) => {
       // Fetch full token from API
       const res = await request.get(`${API_BASE}/admin-tokens/${tokenId}`);
       const fullToken = res.data.token.token;
-      let url = `${window.location.origin}/sub?token=${fullToken}`;
+      let url = `${window.location.origin}/sub?token=${encodeURIComponent(fullToken)}`;
       url += `&format=${format}`;
       const copied = await copyToClipboard(url);
       if (!copied) {
@@ -316,12 +316,9 @@ const AdminTokenSection = ({ showToast }) => {
   };
 
   const generateRandomToken = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let token = '';
-    for (let i = 0; i < 32; i++) {
-      token += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setNewTokenValue(token);
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    setNewTokenValue(Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''));
   };
 
   const getTemplateName = (templateId) => {
@@ -1621,10 +1618,12 @@ export default function Settings({
                 </button>
               </div>
               <button
-                onClick={() => {
-                  onChangePassword(currentPassword, newPassword);
-                  setCurrentPassword('');
-                  setNewPassword('');
+                onClick={async () => {
+                  const changed = await onChangePassword(currentPassword, newPassword);
+                  if (changed) {
+                    setCurrentPassword('');
+                    setNewPassword('');
+                  }
                 }}
                 disabled={!currentPassword.trim() || !newPassword.trim()}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"

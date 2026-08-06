@@ -3,11 +3,13 @@ Subscription Parser Service
 Unified subscription content parsing logic
 """
 import base64
+import re
 import yaml
 from typing import Tuple, List, Optional
 
 from logger_config import get_logger
 from services.node_parser import parse_node_link
+from services.proxy_filter import ProxyFilter
 
 logger = get_logger(__name__)
 
@@ -57,10 +59,13 @@ def try_decode_base64(content: str) -> Optional[str]:
         Base64DecodeError: If content is invalid Base64
     """
     try:
-        padded = pad_base64(content)
+        normalized = ''.join(str(content).split())
+        if not normalized or not re.fullmatch(r'[A-Za-z0-9+/=_-]+', normalized):
+            return None
+        padded = pad_base64(normalized)
         padded_bytes = padded.encode('ascii')
-        decoded = base64.b64decode(padded_bytes).decode('utf-8', errors='ignore').strip()
-        return decoded
+        decoded_bytes = base64.b64decode(padded_bytes, altchars=b'-_', validate=True)
+        return decoded_bytes.decode('utf-8').strip()
     except UnicodeEncodeError:
         # Content contains non-ASCII characters, not Base64
         return None
@@ -203,25 +208,38 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     if not content:
         raise InvalidContentError("Empty content")
     
-    # 1. Try Base64 decode first
-    decoded_content = content
-    decoded = try_decode_base64(content)
-    if decoded:
-        decoded_content = decoded
-        logger.debug("Successfully decoded Base64 content")
-    
-    # 2. Try parsing as YAML
-    proxies = parse_yaml_proxies(decoded_content)
+    # YAML must be attempted before Base64: ordinary YAML may consist only of
+    # characters that are also valid in a Base64 alphabet.
+    proxies = parse_yaml_proxies(content)
     if proxies is not None:
-        logger.info(f"Parsed {len(proxies)} nodes from YAML content")
-        return decoded_content, proxies, len(proxies)
-    
+        valid_count = len(ProxyFilter.filter_proxies(proxies))
+        if valid_count <= 0:
+            raise InvalidContentError("Subscription contains no valid proxy nodes")
+        logger.info("Parsed %s nodes from YAML content", valid_count)
+        return content, proxies, valid_count
+
+    # 2. Try Base64 decode, including URL-safe Base64.
+    decoded_content = try_decode_base64(content)
+    if decoded_content:
+        logger.debug("Successfully decoded Base64 content")
+        proxies = parse_yaml_proxies(decoded_content)
+        if proxies is not None:
+            valid_count = len(ProxyFilter.filter_proxies(proxies))
+            if valid_count <= 0:
+                raise InvalidContentError("Subscription contains no valid proxy nodes")
+            logger.info("Parsed %s nodes from Base64 YAML content", valid_count)
+            return decoded_content, proxies, valid_count
+
     # 3. Try parsing as URI list
-    proxies = parse_uri_list(decoded_content)
+    uri_content = decoded_content or content
+    proxies = parse_uri_list(uri_content)
     if proxies:
         yaml_content = proxies_to_yaml(proxies)
-        logger.info(f"Parsed {len(proxies)} nodes from URI list")
-        return yaml_content, proxies, len(proxies)
+        valid_count = len(ProxyFilter.filter_proxies(proxies))
+        if valid_count <= 0:
+            raise InvalidContentError("Subscription contains no valid proxy nodes")
+        logger.info("Parsed %s nodes from URI list", valid_count)
+        return yaml_content, proxies, valid_count
     
     raise InvalidContentError("Unable to parse content as YAML, Base64, or URI list")
 
@@ -268,7 +286,10 @@ def count_nodes(content: str) -> int:
     try:
         cfg = yaml.load(content, Loader=YAMLLoader)
         if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-            count = len(cfg.get('proxies', []))
+            proxies = cfg.get('proxies', [])
+            if not isinstance(proxies, list):
+                return 0
+            count = len(ProxyFilter.filter_proxies(proxies))
             logger.debug(f"Counted {count} nodes in content")
             return count
     except yaml.YAMLError as e:

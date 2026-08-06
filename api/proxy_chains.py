@@ -18,7 +18,7 @@ from helpers import handle_api_errors, generate_timestamp_id, load_subscription_
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
-from services.node_identity import custom_node_id, subscription_node_id
+from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import (
     ensure_proxy_chain_component_ids,
     reconcile_proxy_chain_references,
@@ -168,7 +168,9 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
             continue
         try:
             sub_data = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
-            for i, proxy in enumerate(sub_data.get('proxies', [])):
+            proxies = sub_data.get('proxies', [])
+            unique_ids = subscription_node_ids(sub['id'], proxies)
+            for i, proxy in enumerate(proxies):
                 if not is_node_enabled(proxy):
                     continue
                 # Skip invalid/info nodes but keep original index
@@ -178,7 +180,7 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
                 nodes.append({
                     'sub_id': sub['id'],
                     'sub_name': sub['name'],
-                    'node_id': subscription_node_id(sub['id'], proxy),
+                    'node_id': unique_ids[i],
                     'node_index': i,
                     'node_name': transformed.get('name', proxy.get('name', 'Unknown')),
                     'node_type': proxy.get('type', 'unknown'),

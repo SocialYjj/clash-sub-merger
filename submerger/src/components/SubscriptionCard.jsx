@@ -5,7 +5,7 @@ import { getTrafficInfo, getAvatarTheme, formatDate } from '../utils/format';
 
 export default function SubscriptionCard({
     sub,
-    refreshingId,
+    refreshingIds,
     draggedItem,
     dragOverItem,
     index,
@@ -16,11 +16,12 @@ export default function SubscriptionCard({
     onSchedule,
     onDragStart,
     onDragOver,
+    onDrop,
     onDragEnd,
     copyUrl
 }) {
     const traffic = getTrafficInfo(sub);
-    const isRefreshing = refreshingId === sub.id;
+    const isRefreshing = refreshingIds?.has(sub.id) ?? false;
     const isDragging = draggedItem === index;
     const isDragOver = dragOverItem === index;
     const isLocal = sub.type === 'local';
@@ -35,6 +36,7 @@ export default function SubscriptionCard({
             draggable
             onDragStart={(e) => onDragStart(e, index)}
             onDragOver={(e) => onDragOver(e, index)}
+            onDrop={(e) => onDrop(e, index)}
             onDragEnd={onDragEnd}
             className={`group relative bg-gray-800 rounded-xl transition-all duration-300 hover:shadow-xl hover:shadow-black/20 cursor-move border-t-4 ${sub.enabled !== false ? 'border-t-emerald-500' : 'border-t-gray-500'
                 } ${isDragging ? 'opacity-50 scale-95' : ''} ${isDragOver ? 'ring-2 ring-blue-500' : ''}`}

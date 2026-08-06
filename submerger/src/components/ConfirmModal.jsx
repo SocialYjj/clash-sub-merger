@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
 export default function ConfirmModal({ 
@@ -11,6 +11,27 @@ export default function ConfirmModal({
   cancelText = '取消',
   type = 'warning' // 'warning' | 'danger' | 'info'
 }) {
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const previouslyFocused = document.activeElement;
+    dialogRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+        previouslyFocused.focus();
+      }
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const typeStyles = {
@@ -31,14 +52,21 @@ export default function ConfirmModal({
   const styles = typeStyles[type] || typeStyles.warning;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm mx-4 border border-gray-700">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+        tabIndex={-1}
+        className="bg-gray-800 rounded-xl p-6 w-full max-w-sm mx-4 border border-gray-700"
+      >
         <div className="flex items-start gap-4">
           <div className={`p-2 rounded-full bg-gray-700 ${styles.icon}`}>
             <AlertTriangle size={24} />
           </div>
           <div className="flex-1">
-            <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
+            <h3 id="confirm-modal-title" className="text-lg font-semibold text-white mb-2">{title}</h3>
             <p className="text-gray-400 text-sm">{message}</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-white">

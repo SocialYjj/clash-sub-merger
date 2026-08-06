@@ -1,9 +1,26 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Search, CheckSquare, Square } from 'lucide-react';
 
 const NodeSelector = ({ groupName, availableNodes, selectedNodes, onConfirm, onCancel }) => {
   const [selected, setSelected] = useState(new Set(selectedNodes));
   const [searchTerm, setSearchTerm] = useState('');
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    const previous = document.activeElement;
+    dialogRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previous && typeof previous.focus === 'function') previous.focus();
+    };
+  }, []);
 
   // Filter nodes based on search term
   const filteredNodes = useMemo(() => {
@@ -23,11 +40,19 @@ const NodeSelector = ({ groupName, availableNodes, selectedNodes, onConfirm, onC
   };
 
   const handleSelectAll = () => {
-    setSelected(new Set(filteredNodes));
+    setSelected((current) => {
+      const next = new Set(current);
+      filteredNodes.forEach((node) => next.add(node));
+      return next;
+    });
   };
 
   const handleClearAll = () => {
-    setSelected(new Set());
+    setSelected((current) => {
+      const next = new Set(current);
+      filteredNodes.forEach((node) => next.delete(node));
+      return next;
+    });
   };
 
   const handleConfirm = () => {
@@ -35,11 +60,11 @@ const NodeSelector = ({ groupName, availableNodes, selectedNodes, onConfirm, onC
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="node-selector-title" tabIndex={-1} className="bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-xl font-semibold text-white">编辑分组: {groupName}</h2>
+          <h2 id="node-selector-title" className="text-xl font-semibold text-white">编辑分组: {groupName}</h2>
           <button
             onClick={onCancel}
             className="text-gray-400 hover:text-white transition-colors"

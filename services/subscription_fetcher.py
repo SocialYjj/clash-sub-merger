@@ -209,10 +209,10 @@ class SubscriptionFetcher:
     def _extract_content(self, payload: bytes, headers: dict) -> str:
         """Extract content from response"""
         try:
-            content = payload.decode('utf-8', errors='ignore').strip()
-        except Exception as e:
+            content = payload.decode('utf-8').strip()
+        except UnicodeDecodeError as e:
             logger.error("Failed to decode subscription response: %s", type(e).__name__)
-            content = ""
+            raise FetchError("Subscription response is not valid UTF-8; existing data was kept") from None
         
         if not content:
             raise FetchError("Subscription response is empty; existing data was kept")
