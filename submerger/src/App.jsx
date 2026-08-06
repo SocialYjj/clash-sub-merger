@@ -27,8 +27,6 @@ function LoginPage({ hasPassword, onLogin, statusError = false }) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const dataRequestVersions = useRef({ subscriptions: 0, customNodes: 0, users: 0 });
-  const mountedRef = useRef(true);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -112,6 +110,8 @@ export default function App() {
   const [customNodes, setCustomNodes] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
+  const dataRequestVersions = useRef({ subscriptions: 0, customNodes: 0, users: 0 });
+  const mountedRef = useRef(true);
 
   // Toast state
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
