@@ -26,7 +26,11 @@ from services.node_identity import (
 from services.custom_node_storage import update_custom_nodes
 from services.node_reference_updates import update_subscription_yaml_with_references
 from services.proxy_filter import ProxyFilter
-from services.region_history import inherit_regions_for_nodes, remember_nodes_region
+from services.region_history import (
+    NODE_TEST_METADATA_FIELDS,
+    inherit_regions_for_nodes,
+    remember_nodes_region,
+)
 from geoip_service import GeoIPService, normalize_country_name, translate_city_name
 from logger_config import SensitiveDataFilter, get_logger
 
@@ -86,7 +90,7 @@ def _resolve_city_name(node: dict) -> str:
 _NODE_ADMIN_FIELDS = {
     'id', 'link', 'enabled', 'display_name', 'index',
     'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip',
+    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip',
     'region', 'city',
 }
 
@@ -219,6 +223,10 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
     enhanced_nodes = []
     for node in nodes:
         enhanced = dict(node)
+        # Legacy data may predate persisted custom-node IDs.  Always expose
+        # the same deterministic fallback used by save/test endpoints so the
+        # frontend never submits an unusable ``undefined`` node ID.
+        enhanced['id'] = get_custom_node_id(node)
         transformed = NameTransformer.transform_name(node, 'Custom')
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
@@ -340,7 +348,7 @@ def toggle_custom_node(node_id: str, _: bool = Depends(verify_session)):
 
     def toggle_node(config: dict) -> bool:
         for node in config.get('custom_nodes', []):
-            if node.get('id') == node_id:
+            if get_custom_node_id(node) == node_id:
                 node['enabled'] = not is_node_enabled(node)
                 return node['enabled']
 
@@ -363,7 +371,7 @@ def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_s
 
     def remove_custom_nodes(config: dict) -> int:
         nodes = config.get('custom_nodes', [])
-        remaining = [n for n in nodes if n.get('id') not in id_set]
+        remaining = [n for n in nodes if get_custom_node_id(n) not in id_set]
         deleted_count = len(nodes) - len(remaining)
         if deleted_count:
             config['custom_nodes'] = remaining
@@ -385,7 +393,7 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
 
     def apply_custom_node_order(config: dict):
         nodes = config.get('custom_nodes', [])
-        node_map = {n['id']: n for n in nodes}
+        node_map = {get_custom_node_id(n): n for n in nodes}
 
         new_nodes = []
         for node_id in data.order:
@@ -417,7 +425,7 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
                     preserved = {
                         key: value
                         for key, value in node.items()
-                        if key in {'id', 'link', 'enabled', 'region', 'city', 'geoip'}
+                        if key in {'id', 'link', 'enabled', 'geoip'} or key in NODE_TEST_METADATA_FIELDS
                     }
                     # A manually renamed node must keep its display name; all
                     # protocol fields come from the link and stale fields are
@@ -447,7 +455,7 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
 
     def reparse_node(config: dict) -> dict:
         for node in config.get('custom_nodes', []):
-            if node['id'] == node_id and 'link' in node:
+            if get_custom_node_id(node) == node_id and 'link' in node:
                 previous = dict(node)
                 parsed = parse_node_link(node['link'])
                 if parsed:
@@ -457,7 +465,7 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
                     preserved = {
                         key: value
                         for key, value in node.items()
-                        if key in {'id', 'link', 'enabled', 'region', 'city', 'geoip'}
+                        if key in {'id', 'link', 'enabled', 'geoip'} or key in NODE_TEST_METADATA_FIELDS
                     }
                     if previous_name and parsed.get('name') != previous_name:
                         preserved['name'] = previous_name
@@ -486,7 +494,7 @@ def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(ver
 
     def rename_custom_node(config: dict) -> dict:
         for node in config.get('custom_nodes', []):
-            if node['id'] == node_id:
+            if get_custom_node_id(node) == node_id:
                 node['name'] = data.name
                 return dict(node)
 
@@ -504,7 +512,7 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
 
     def replace_custom_node(config: dict) -> dict:
         for i, node in enumerate(config.get('custom_nodes', [])):
-            if node['id'] == node_id:
+            if get_custom_node_id(node) == node_id:
                 updated = {'id': node_id, 'link': node.get('link', '')}
                 updated.update(data.node)
                 if 'enabled' not in updated and 'enabled' in node:
@@ -656,6 +664,7 @@ class NodeTestResultPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
     latency: Optional[float] = Field(None, ge=-1)
     speed: Optional[float] = Field(None, ge=0)
+    peak_speed: Optional[float] = Field(None, ge=0)
     exit_ip: Optional[str] = Field(None, max_length=128)
     city: Optional[str] = Field(None, max_length=200)
     region: Optional[Dict[str, Any]] = None
@@ -677,6 +686,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
     from datetime import datetime
     
     saved_count = 0
+    unmatched_node_ids = []
     
     for source_id, nodes_data in data.results.items():
         if source_id == "custom":
@@ -707,6 +717,9 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if 'speed' in result:
                             node['last_speed'] = result['speed']
                             node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'peak_speed' in result:
+                            node['last_peak_speed'] = result['peak_speed']
+                            node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         if 'exit_ip' in result:
                             node['exit_ip'] = result['exit_ip']
                         if 'region' in result:
@@ -716,6 +729,8 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if 'region' in result:
                             updated_region_nodes.append(dict(node))
                         saved += 1
+                    else:
+                        unmatched_node_ids.append(f"custom:{node_id}")
                 return saved, updated_region_nodes
 
             custom_saved_count, updated_region_nodes = update_custom_nodes(save_custom_results)
@@ -736,6 +751,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         node_index = find_subscription_node_index(nodes, source_id, node_id)
                     except ValueError:
                         logger.warning("Skipped ambiguous node identity while saving batch results")
+                        unmatched_node_ids.append(f"{source_id}:{node_id}")
                         continue
                     if node_index is not None:
                         node = nodes[node_index]
@@ -749,6 +765,9 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if 'speed' in result:
                             node['last_speed'] = result['speed']
                             node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if 'peak_speed' in result:
+                            node['last_peak_speed'] = result['peak_speed']
+                            node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         if 'exit_ip' in result:
                             node['exit_ip'] = result['exit_ip']
                         if 'region' in result:
@@ -758,6 +777,8 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if 'region' in result:
                             updated_region_nodes.append(node)
                         saved += 1
+                    else:
+                        unmatched_node_ids.append(f"{source_id}:{node_id}")
                 return saved, updated_region_nodes
 
             source_saved_count, updated_region_nodes = update_subscription_yaml_with_references(
@@ -768,7 +789,11 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
             if updated_region_nodes:
                 remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
     
-    return {"status": "success", "saved_count": saved_count}
+    return {
+        "status": "success",
+        "saved_count": saved_count,
+        "unmatched_node_ids": unmatched_node_ids,
+    }
 
 
 @router.post("/nodes/{source_id}/{node_id}/test")
@@ -918,9 +943,14 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 speed = speed_result.get('speed', 0)
                 result['speed'] = speed
                 result['bytes'] = speed_result.get('bytes', 0)
-                    
+
                 node['last_speed'] = speed
                 node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                peak_speed = speed_result.get('peakSpeed', speed_result.get('peak_speed'))
+                if peak_speed is not None:
+                    result['peak_speed'] = peak_speed
+                    node['last_peak_speed'] = peak_speed
+                    node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 need_save = True
             else:
                 result['success'] = False
@@ -945,8 +975,7 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
 
                             latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
                             for field in (
-                                'xhttp-opts', 'last_latency', 'last_latency_time',
-                                'last_speed', 'last_speed_time', 'exit_ip', 'region', 'city'
+                                'xhttp-opts', *NODE_TEST_METADATA_FIELDS,
                             ):
                                 if field in node:
                                     latest_node[field] = node[field]
@@ -970,8 +999,7 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
 
                             latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
                             for field in (
-                                'xhttp-opts', 'last_latency', 'last_latency_time',
-                                'last_speed', 'last_speed_time', 'exit_ip', 'region', 'city'
+                                'xhttp-opts', *NODE_TEST_METADATA_FIELDS,
                             ):
                                 if field in node:
                                     latest_node[field] = node[field]

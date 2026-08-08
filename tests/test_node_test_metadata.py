@@ -1,0 +1,130 @@
+"""Regression tests for preserving node test metadata across source refreshes."""
+
+import asyncio
+import inspect
+import unittest
+from unittest.mock import patch
+
+import yaml
+
+from services.region_history import (
+    apply_node_test_metadata_to_yaml_content,
+    inherit_node_test_metadata,
+)
+
+
+class NodeTestMetadataTests(unittest.TestCase):
+    def test_refresh_inherits_region_latency_and_speed_without_overwriting_new_values(self):
+        previous = {
+            "name": "JP 01",
+            "server": "node.example",
+            "port": 443,
+            "type": "trojan",
+            "last_latency": 120,
+            "last_latency_time": "2026-08-07 10:00:00",
+            "last_speed": 42.5,
+            "last_speed_time": "2026-08-07 10:01:00",
+            "region": {"country_code": "JP", "country": "Japan", "flag": "🇯🇵"},
+            "city": "Tokyo",
+            "exit_ip": "192.0.2.10",
+        }
+        refreshed = {
+            "name": "JP 01",
+            "server": "node.example",
+            "port": 443,
+            "type": "trojan",
+            "last_latency": 88,
+        }
+
+        inherited = inherit_node_test_metadata([refreshed], [previous])
+
+        self.assertEqual(inherited, 1)
+        self.assertEqual(refreshed["last_latency"], 88)
+        self.assertEqual(refreshed["last_speed"], 42.5)
+        self.assertEqual(refreshed["region"]["country_code"], "JP")
+        self.assertEqual(refreshed["city"], "Tokyo")
+        self.assertEqual(refreshed["exit_ip"], "192.0.2.10")
+
+    def test_ambiguous_endpoint_does_not_copy_wrong_measurement(self):
+        previous = [
+            {
+                "name": "Line A",
+                "server": "shared.example",
+                "port": 443,
+                "type": "trojan",
+                "last_latency": 100,
+            },
+            {
+                "name": "Line B",
+                "server": "shared.example",
+                "port": 443,
+                "type": "trojan",
+                "last_latency": 300,
+            },
+        ]
+        refreshed = [{
+            "name": "New label",
+            "server": "shared.example",
+            "port": 443,
+            "type": "trojan",
+        }]
+
+        self.assertEqual(inherit_node_test_metadata(refreshed, previous), 0)
+        self.assertNotIn("last_latency", refreshed[0])
+
+    def test_yaml_refresh_persists_inherited_metadata(self):
+        previous = [{
+            "name": "US 01",
+            "server": "us.example",
+            "port": 443,
+            "type": "trojan",
+            "last_latency": 75,
+            "last_speed": 18.2,
+            "region": {"country_code": "US", "country": "United States", "flag": "🇺🇸"},
+        }]
+        content = yaml.safe_dump(
+            {"proxies": [{"name": "US 01", "server": "us.example", "port": 443, "type": "trojan"}]},
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+        refreshed_content, inherited = apply_node_test_metadata_to_yaml_content(content, previous)
+        refreshed = yaml.safe_load(refreshed_content)["proxies"][0]
+
+        self.assertEqual(inherited, 1)
+        self.assertEqual(refreshed["last_latency"], 75)
+        self.assertEqual(refreshed["last_speed"], 18.2)
+        self.assertEqual(refreshed["region"]["country_code"], "US")
+
+    def test_custom_batch_speed_result_is_persisted(self):
+        import api.nodes as nodes_api
+
+        config = {
+            "custom_nodes": [{
+                "id": "node_1",
+                "name": "US 01",
+                "type": "http",
+                "server": "us.example",
+                "port": 8080,
+            }]
+        }
+
+        def fake_update_custom_nodes(mutator):
+            return mutator(config)
+
+        endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
+        request = nodes_api.BatchSaveRequest(
+            results={"custom": {"node_1": {"speed": 12.5, "peak_speed": 20.0}}}
+        )
+
+        with patch.object(nodes_api, "update_custom_nodes", side_effect=fake_update_custom_nodes):
+            response = asyncio.run(endpoint(request, request=None, _=True))
+
+        self.assertEqual(response["saved_count"], 1)
+        self.assertEqual(config["custom_nodes"][0]["last_speed"], 12.5)
+        self.assertEqual(config["custom_nodes"][0]["last_peak_speed"], 20.0)
+        self.assertTrue(config["custom_nodes"][0]["last_speed_time"])
+
+
+if __name__ == "__main__":
+    unittest.main()

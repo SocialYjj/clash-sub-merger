@@ -28,8 +28,10 @@ _CUSTOM_NODE_METADATA_FIELDS = {
     "last_speed",
     "last_peak_speed",
     "last_speed_time",
+    "last_peak_speed_time",
     "exit_ip",
     "geoip",
+    "region",
     "city",
     "enabled",
 }

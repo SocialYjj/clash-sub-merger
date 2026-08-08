@@ -35,7 +35,10 @@ from services.proxy_chain_references import (
     CHAIN_NODE_SOURCE,
     list_proxy_chain_virtual_references,
 )
-from services.region_history import apply_region_history_to_yaml_content
+from services.region_history import (
+    apply_node_test_metadata_to_yaml_content,
+    apply_region_history_to_yaml_content,
+)
 from services.node_identity import (
     custom_node_id,
     proxy_chain_virtual_node_id,
@@ -235,6 +238,11 @@ def create_subscription_output_router(
                             existing_nodes=existing_nodes,
                             source=f"sub:auto-refresh-missing:{sub['id']}",
                         )
+                        content, test_metadata_inherited = apply_node_test_metadata_to_yaml_content(
+                            content,
+                            existing_nodes=existing_nodes,
+                            source=f"sub:auto-refresh-missing:{sub['id']}",
+                        )
                         content, visibility_inherited = apply_node_visibility_to_yaml_content(
                             content,
                             existing_nodes=existing_nodes,
@@ -252,12 +260,13 @@ def create_subscription_output_router(
                             ),
                         }
                         sub.update(successful_refresh)
-                        if remembered or inherited or visibility_inherited:
+                        if remembered or inherited or test_metadata_inherited or visibility_inherited:
                             logger.info(
-                                "Missing subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
+                                "Missing subscription %s history: remembered=%s inherited_region=%s inherited_test_metadata=%s inherited_disabled=%s",
                                 sub['id'],
                                 remembered,
                                 inherited,
+                                test_metadata_inherited,
                                 visibility_inherited,
                             )
                         persist_subscription_content_and_record(

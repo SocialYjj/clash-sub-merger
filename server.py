@@ -50,7 +50,10 @@ from services.node_reference_updates import (
 )
 from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP
 from services.node_parser import parse_node_link
-from services.region_history import apply_region_history_to_yaml_content
+from services.region_history import (
+    apply_node_test_metadata_to_yaml_content,
+    apply_region_history_to_yaml_content,
+)
 from services.node_manager import find_node_by_reference, is_name_allocated
 from geoip_service import GeoIPService
 from scheduler_service import get_scheduler, init_scheduler
@@ -711,6 +714,12 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         existing_nodes=existing_nodes,
         source=f'sub:scheduled-refresh:{sub_id}',
     )
+
+    content, test_metadata_inherited = apply_node_test_metadata_to_yaml_content(
+        content,
+        existing_nodes=existing_nodes,
+        source=f'sub:scheduled-refresh:{sub_id}',
+    )
     
     # Apply node visibility
     content, visibility_inherited = apply_node_visibility_to_yaml_content(
@@ -725,6 +734,7 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         remembered,
         inherited,
         visibility_inherited,
+        test_metadata_inherited,
         existing_nodes,
     )
 
@@ -780,16 +790,16 @@ def refresh_subscription_job(sub_id: str):
 
             try:
                 record_refresh_attempt(sub, attempted_at)
-                content, sub_info, node_count, remembered, inherited, visibility_inherited, existing_nodes = \
+                content, sub_info, node_count, remembered, inherited, visibility_inherited, test_metadata_inherited, existing_nodes = \
                     _fetch_and_process_subscription(sub)
                 refreshed_nodes = subscription_nodes_from_yaml_content(content)
 
                 success_updates = _build_success_updates(sub_info, node_count, sub, attempted_at)
 
-                if remembered or inherited or visibility_inherited:
+                if remembered or inherited or test_metadata_inherited or visibility_inherited:
                     logger.info(
-                        "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
-                        sub_id, remembered, inherited, visibility_inherited,
+                        "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_test_metadata=%s inherited_disabled=%s",
+                        sub_id, remembered, inherited, test_metadata_inherited, visibility_inherited,
                     )
 
                 def commit_scheduled_refresh(latest_config: dict) -> dict:
@@ -1087,7 +1097,7 @@ def filter_underscore_fields(data: dict) -> dict:
     metadata_fields = {
         'id', 'link', 'enabled', 'display_name', 'index',
         'last_latency', 'last_latency_time', 'last_speed',
-        'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip',
+        'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip',
         'region', 'city',
     }
     return {

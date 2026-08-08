@@ -16,7 +16,10 @@ from core.config import AppConfig
 from core.rate_limit import limiter
 from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
 from services.node_visibility import apply_node_visibility_to_yaml_content
-from services.region_history import apply_region_history_to_yaml_content
+from services.region_history import (
+    apply_node_test_metadata_to_yaml_content,
+    apply_region_history_to_yaml_content,
+)
 from services.subscription_parser import parse_local_subscription, InvalidContentError
 from services.subscription_fetcher import SubscriptionFetcher, FetchError
 from services.subscription_cleanup import cleanup_deleted_subscription
@@ -176,6 +179,11 @@ async def _refresh_remote_subscription(
                 existing_nodes=existing_nodes,
                 source=f'sub:refresh:{subscription_id}',
             )
+            content, test_metadata_inherited = apply_node_test_metadata_to_yaml_content(
+                content,
+                existing_nodes=existing_nodes,
+                source=f'sub:refresh:{subscription_id}',
+            )
             content, visibility_inherited = apply_node_visibility_to_yaml_content(
                 content,
                 existing_nodes=existing_nodes,
@@ -196,12 +204,13 @@ async def _refresh_remote_subscription(
                 ),
             }
 
-            if remembered or inherited or visibility_inherited:
+            if remembered or inherited or test_metadata_inherited or visibility_inherited:
                 logger.info(
-                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_disabled=%s",
+                    "Subscription %s history after refresh: remembered=%s inherited_region=%s inherited_test_metadata=%s inherited_disabled=%s",
                     subscription_id,
                     remembered,
                     inherited,
+                    test_metadata_inherited,
                     visibility_inherited,
                 )
 
@@ -511,6 +520,11 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                 existing_nodes=existing_nodes,
                 source=f'sub:update-local:{sub_id}',
             )
+            yaml_content, test_metadata_inherited = apply_node_test_metadata_to_yaml_content(
+                yaml_content,
+                existing_nodes=existing_nodes,
+                source=f'sub:update-local:{sub_id}',
+            )
             yaml_content, visibility_inherited = apply_node_visibility_to_yaml_content(
                 yaml_content,
                 existing_nodes=existing_nodes,
@@ -524,12 +538,13 @@ def update_local_subscription(sub_id: str, data: UpdateLocalSubscription, _: boo
                 'last_error': None,
                 'update_status': 'success',
             })
-            if remembered or inherited or visibility_inherited:
+            if remembered or inherited or test_metadata_inherited or visibility_inherited:
                 logger.info(
-                    "Local subscription %s history: remembered=%s inherited_region=%s inherited_disabled=%s",
+                    "Local subscription %s history: remembered=%s inherited_region=%s inherited_test_metadata=%s inherited_disabled=%s",
                     sub_id,
                     remembered,
                     inherited,
+                    test_metadata_inherited,
                     visibility_inherited,
                 )
 

@@ -92,6 +92,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
         const metadataFields = new Set([
             'id', 'link', 'enabled', 'display_name', 'index', 'last_latency',
             'last_latency_time', 'last_speed', 'last_peak_speed', 'last_speed_time',
+            'last_peak_speed_time',
             'exit_ip', 'geoip', 'region', 'city',
         ]);
         const nodeObj = Object.fromEntries(

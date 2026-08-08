@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 # Fields to exclude from proxy config (metadata fields)
 NODE_METADATA_FIELDS = {
     'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'exit_ip', 'geoip', 'region',
+    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip', 'region',
     'city', 'display_name', 'index', 'enabled'
 }
 

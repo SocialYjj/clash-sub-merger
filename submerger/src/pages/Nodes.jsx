@@ -945,7 +945,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             failedCount += 1;
             const message = err.response?.data?.detail || err.message || '未知错误';
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            saveData[node.sourceId][node.id] = { latency: null, error: message };
+            saveData[node.sourceId][node.id] = {
+              ...(saveData[node.sourceId][node.id] || {}),
+              latency: null,
+              error: message,
+            };
             return { nodeKey: node.nodeKey, data: { latency: null, error: true, errorMessage: message } };
           }
         }));
@@ -995,7 +999,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             failedCount += 1;
             const message = err.response?.data?.detail || err.message || '未知错误';
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            saveData[node.sourceId][node.id] = { exit_ip: null, region: null, city: null, error: message };
+            saveData[node.sourceId][node.id] = {
+              ...(saveData[node.sourceId][node.id] || {}),
+              exit_ip: null,
+              region: null,
+              city: null,
+              error: message,
+            };
             return { nodeKey: node.nodeKey, data: { regionError: true, regionErrorMessage: message } };
           }
         }));
@@ -1038,13 +1048,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
             if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
             saveData[node.sourceId][node.id].speed = testPayload.speed;
+            saveData[node.sourceId][node.id].peak_speed = testPayload.peak_speed;
             
             return { nodeKey: node.nodeKey, data: { speed: testPayload.speed, peak_speed: testPayload.peak_speed, speed_error: false } };
           } catch (err) {
             failedCount += 1;
             const message = err.response?.data?.detail || err.message || '未知错误';
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
-            saveData[node.sourceId][node.id] = { speed: null, error: message };
+            saveData[node.sourceId][node.id] = {
+              ...(saveData[node.sourceId][node.id] || {}),
+              speed: null,
+              error: message,
+            };
             return { nodeKey: node.nodeKey, data: { speed: null, peak_speed: null, speed_error: true, speedErrorMessage: message } };
           }
         }));
@@ -1066,8 +1081,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     // 批量保存所有测试结果
     try {
-      await request.post(`${API_BASE}/nodes/batch-save`, { results: saveData });
-      if (failedCount > 0) {
+      const expectedSaveCount = Object.values(saveData).reduce((total, sourceNodes) => (
+        total + Object.values(sourceNodes).filter(result => (
+          Object.entries(result).some(([key, value]) => key !== 'error' && value !== null && value !== undefined)
+        )).length
+      ), 0);
+      const saveResponse = await request.post(`${API_BASE}/nodes/batch-save`, { results: saveData });
+      const savedCount = Number(saveResponse?.data?.saved_count || 0);
+      const unmatchedCount = Array.isArray(saveResponse?.data?.unmatched_node_ids)
+        ? saveResponse.data.unmatched_node_ids.length
+        : 0;
+      if (savedCount < expectedSaveCount || unmatchedCount > 0) {
+        showToast?.(`测试完成，但仅保存 ${savedCount}/${expectedSaveCount} 个结果，请刷新后重试`, 'error');
+      } else if (failedCount > 0) {
         showToast?.(`测试完成，${failedCount} 个节点失败，其余结果已保存`, 'warning');
       } else {
         showToast?.(`测试完成，共测试 ${nodesToTest.length} 个节点，结果已保存`);

@@ -9,6 +9,7 @@ import os
 import re
 import time
 import hashlib
+from copy import deepcopy
 from typing import Dict, Iterable, Optional, Tuple
 
 import yaml
@@ -31,6 +32,22 @@ REGION_HISTORY_LOCK = f"{REGION_HISTORY_FILE}.lock"
 REGION_HISTORY_VERSION = 1
 REGION_HISTORY_MAX_AGE_DAYS = env_int('NODE_REGION_HISTORY_MAX_AGE_DAYS', 180, minimum=1)
 REGION_HISTORY_MAX_ENTRIES = env_int('NODE_REGION_HISTORY_MAX_ENTRIES', 20000, minimum=1)
+
+# Test results are persisted on the source node itself.  These fields must be
+# carried to a refreshed node when the provider omits them from the new YAML.
+# Keeping the list in one module prevents refresh, reparse and save paths from
+# silently drifting apart.
+NODE_TEST_METADATA_FIELDS = (
+    'last_latency',
+    'last_latency_time',
+    'last_speed',
+    'last_speed_time',
+    'last_peak_speed',
+    'last_peak_speed_time',
+    'exit_ip',
+    'region',
+    'city',
+)
 
 _SPACE_RE = re.compile(r'\s+')
 _NON_WORD_RE = re.compile(r'[\W_]+', re.UNICODE)
@@ -149,6 +166,163 @@ def _same_region_payload(left: dict, right: dict) -> bool:
         and _normalize_text(left.get('city')) == _normalize_text(right.get('city'))
         and _normalize_text(left.get('exit_ip')) == _normalize_text(right.get('exit_ip'))
     )
+
+
+def _metadata_value_present(value: object) -> bool:
+    """Return whether a saved metadata value is meaningful enough to copy."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _test_metadata_snapshot(node: dict) -> tuple:
+    """Build a comparable snapshot used to reject ambiguous endpoint matches."""
+    if not isinstance(node, dict):
+        return ()
+    return tuple(
+        (field, json.dumps(node.get(field), ensure_ascii=False, sort_keys=True, default=str))
+        for field in NODE_TEST_METADATA_FIELDS
+        if _metadata_value_present(node.get(field))
+    )
+
+
+def _find_existing_node_for_metadata(node: dict, existing_nodes: Iterable[dict]) -> Optional[dict]:
+    """Find one unambiguous previous node for test metadata inheritance.
+
+    Exact name+endpoint identity is authoritative.  Endpoint-only matching is
+    allowed only for a single candidate, a unique compact-name match, or
+    candidates with identical saved metadata; otherwise no values are copied.
+    """
+    candidates = [candidate for candidate in (existing_nodes or []) if isinstance(candidate, dict)]
+    if not isinstance(node, dict) or not candidates:
+        return None
+
+    node_key = _node_history_key(node)
+    exact_matches = [candidate for candidate in candidates if _node_history_key(candidate) == node_key]
+    if node_key and len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(exact_matches) > 1:
+        return None
+
+    endpoint = _endpoint_identity(node)
+    if not endpoint:
+        return None
+    endpoint_matches = [
+        candidate
+        for candidate in candidates
+        if _endpoint_identity(candidate) == endpoint
+    ]
+    if len(endpoint_matches) == 1:
+        return endpoint_matches[0]
+    if not endpoint_matches:
+        return None
+
+    compact_name = _compact_name(node.get('name'))
+    if compact_name:
+        compact_matches = [
+            candidate
+            for candidate in endpoint_matches
+            if _compact_name(candidate.get('name')) == compact_name
+        ]
+        if len(compact_matches) == 1:
+            return compact_matches[0]
+        if compact_matches:
+            endpoint_matches = compact_matches
+
+    snapshots = {_test_metadata_snapshot(candidate) for candidate in endpoint_matches}
+    if len(snapshots) == 1:
+        return endpoint_matches[0]
+    return None
+
+
+def inherit_node_test_metadata(
+    nodes: Iterable[dict],
+    existing_nodes: Optional[Iterable[dict]] = None,
+    source: str = '',
+) -> int:
+    """Carry saved region and test results from matching previous nodes.
+
+    Values already present in the incoming node always win.  This keeps a
+    provider-supplied value or a newly completed test from being overwritten by
+    an older measurement.
+    """
+    incoming_nodes = list(nodes or [])
+    previous_nodes = list(existing_nodes or [])
+    if not incoming_nodes or not previous_nodes:
+        return 0
+
+    inherited = 0
+    for node in incoming_nodes:
+        if not isinstance(node, dict):
+            continue
+        previous = _find_existing_node_for_metadata(node, previous_nodes)
+        if previous is None:
+            continue
+
+        changed = False
+        for field in NODE_TEST_METADATA_FIELDS:
+            if _metadata_value_present(node.get(field)):
+                continue
+            previous_value = previous.get(field)
+            if not _metadata_value_present(previous_value):
+                continue
+            node[field] = deepcopy(previous_value)
+            changed = True
+        if changed:
+            inherited += 1
+
+    if inherited:
+        logger.info(
+            "Inherited saved node test metadata for %s node(s)%s",
+            inherited,
+            f" from {source}" if source else '',
+        )
+    return inherited
+
+
+def apply_node_test_metadata_to_yaml_content(
+    yaml_content: str,
+    existing_nodes: Optional[Iterable[dict]] = None,
+    source: str = '',
+) -> Tuple[str, int]:
+    """Apply saved node test metadata to a refreshed YAML document."""
+    try:
+        cfg = yaml.load(yaml_content, Loader=YAMLLoader)
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse YAML for node test metadata%s: %s",
+            f" ({source})" if source else '',
+            exc,
+        )
+        return yaml_content, 0
+
+    if not isinstance(cfg, dict):
+        return yaml_content, 0
+
+    proxies = cfg.get('proxies', [])
+    if not isinstance(proxies, list):
+        return yaml_content, 0
+
+    inherited = inherit_node_test_metadata(proxies, existing_nodes=existing_nodes, source=source)
+    if not inherited:
+        return yaml_content, 0
+
+    try:
+        return (
+            yaml.dump(cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper),
+            inherited,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to dump YAML after node test metadata apply%s: %s",
+            f" ({source})" if source else '',
+            exc,
+        )
+        return yaml_content, 0
 
 
 def _find_history_entry_for_node(node: dict, entries: Dict[str, dict]) -> Optional[dict]:
