@@ -47,6 +47,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                 port: node.port || 443,
                 // Auth
                 uuid: node.uuid || '',
+                username: node.username || '',
                 password: node.password || '',
                 alterId: node.alterId || 0,
                 // VLESS specific
@@ -115,6 +116,20 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
         }
         if (['trojan', 'ss', 'hysteria2', 'tuic'].includes(formData.type)) {
             nodeObj.password = formData.password;
+        }
+        if (['socks5', 'socks5h', 'http', 'https'].includes(formData.type)) {
+            const username = String(formData.username || '').trim();
+            const password = String(formData.password || '');
+            if (username) {
+                nodeObj.username = username;
+            } else {
+                delete nodeObj.username;
+            }
+            if (password) {
+                nodeObj.password = password;
+            } else {
+                delete nodeObj.password;
+            }
         }
         if (formData.type === 'ss') {
             nodeObj.cipher = formData.cipher;
@@ -263,6 +278,17 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         <Field label="用户 ID (id)">
                             <input type="text" value={formData.uuid} onChange={(e) => handleChange('uuid', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
                         </Field>
+                    )}
+
+                    {['socks5', 'socks5h', 'http', 'https'].includes(formData.type) && (
+                        <>
+                            <Field label="用户名 (username)">
+                                <input type="text" value={formData.username} onChange={(e) => handleChange('username', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
+                            </Field>
+                            <Field label="密码 (password)">
+                                <input type="text" value={formData.password} onChange={(e) => handleChange('password', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
+                            </Field>
+                        </>
                     )}
 
                     {['trojan', 'ss', 'hysteria2', 'tuic'].includes(formData.type) && (

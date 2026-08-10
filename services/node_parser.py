@@ -1079,11 +1079,16 @@ def parse_hysteria_link(link: str) -> Optional[dict]:
 
 
 def parse_socks_link(link: str) -> Optional[dict]:
-    """Parse socks5://, socks5+tls://, socks:// link to Clash format"""
+    """Parse SOCKS links, including v2rayN's Base64 user-info format."""
     link = link.strip()
 
     lower = link.lower()
-    if not (lower.startswith('socks5+tls://') or lower.startswith('socks5://') or lower.startswith('socks://')):
+    if not (
+        lower.startswith('socks5+tls://')
+        or lower.startswith('socks5h://')
+        or lower.startswith('socks5://')
+        or lower.startswith('socks://')
+    ):
         return None
 
     try:
@@ -1091,16 +1096,35 @@ def parse_socks_link(link: str) -> Optional[dict]:
         scheme = parsed.scheme.lower()
         tls = scheme == 'socks5+tls'
 
+        # Older v2rayN SOCKS links encode the complete
+        # ``username:password@server:port`` authority after ``socks://``.
+        # Decode that form before reading URL components so the server and
+        # authentication fields are not silently shifted into the wrong keys.
+        if (
+            scheme == 'socks'
+            and not parsed.username
+            and not parsed.password
+            and parsed.port is None
+            and parsed.netloc
+        ):
+            decoded_authority = decode_base64(parsed.netloc)
+            if decoded_authority and decoded_authority != parsed.netloc and '@' in decoded_authority:
+                nested_link = f"socks5://{decoded_authority}"
+                if parsed.fragment:
+                    nested_link += f"#{parsed.fragment}"
+                return parse_socks_link(nested_link)
+
         name = unquote(parsed.fragment) if parsed.fragment else 'socks5'
         server = parsed.hostname or ''
         port = parsed.port or 1080
 
-        username = None
-        password = None
+        _, get_param = _parse_query_params(parsed.query)
+        username = get_param('username', 'user')
+        password = get_param('password', 'pass', 'pwd')
         if parsed.username:
-            raw_userinfo = parsed.username
-            if parsed.password:
-                raw_userinfo = f"{parsed.username}:{parsed.password}"
+            raw_userinfo = unquote(parsed.username)
+            if parsed.password is not None:
+                raw_userinfo = f"{raw_userinfo}:{unquote(parsed.password)}"
             raw_userinfo = unquote(raw_userinfo)
             if ':' in raw_userinfo:
                 username, password = raw_userinfo.split(':', 1)
@@ -1199,6 +1223,7 @@ def parse_node_link(link: str) -> Optional[dict]:
         ('tuic://', parse_tuic_link),
         ('anytls://', parse_anytls_link),
         ('wireguard://', parse_wireguard_link),
+        ('socks5h://', parse_socks_link),
         ('socks5://', parse_socks_link),
         ('socks5+tls://', parse_socks_link),
         ('socks://', parse_socks_link),

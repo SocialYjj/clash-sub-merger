@@ -257,7 +257,13 @@ class ProxyFilter:
 
         proxy = dict(proxy)
         normalize_trojan_proxy(proxy)
-        proxy_type = proxy.get('type', '')
+        proxy_type = str(proxy.get('type', '') or '').strip().lower()
+        if proxy_type == 'socks5h':
+            # Mihomo uses the SOCKS5 adapter for both socks5 and socks5h
+            # links; keep the remote-DNS intent while emitting a supported
+            # structural type for downstream speed tests and exports.
+            proxy['type'] = 'socks5'
+            proxy_type = 'socks5'
         network = str(proxy.get('network', '') or '').strip().lower()
 
         # Mihomo expects xhttp transport settings under "xhttp-opts".

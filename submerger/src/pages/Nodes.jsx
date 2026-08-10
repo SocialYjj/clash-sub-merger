@@ -2542,7 +2542,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <textarea
                   value={newNodeLink}
                   onChange={(e) => setNewNodeLink(e.target.value)}
-                  placeholder="支持多行，一行一个链接（vless://... / vmess://... / trojan://...)"
+                  placeholder="支持多行，一行一个链接（含 socks5://用户名:密码@地址:端口）"
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 h-24 resize-none"
                 />
               </div>
@@ -2557,7 +2557,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 />
               </div>
               <p className="text-xs text-gray-500">
-                支持的协议：VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC 等
+                支持的协议：SOCKS5, VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC 等
               </p>
             </div>
             <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">
