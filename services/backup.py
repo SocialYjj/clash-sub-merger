@@ -426,6 +426,12 @@ def export_config() -> dict:
     # Login sessions are runtime credentials, not migration data. Password
     # hashes and subscription tokens remain because this is a full migration.
     config.setdefault('auth', {}).pop('sessions', None)
+    # Radar tokens are administrator API credentials. They can be supplied
+    # again through the destination instance's settings or environment and
+    # must never be included in a downloadable migration file.
+    geoip_config = config.get('geoip_config')
+    if isinstance(geoip_config, dict):
+        geoip_config.pop('cloudflare_radar_token', None)
     remove_legacy_stale_references(config)
     
     return {

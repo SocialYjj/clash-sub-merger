@@ -8,7 +8,12 @@ import re
 from urllib.parse import urlsplit
 
 from services.node_reference_migration import ensure_custom_node_ids
-from services.proxy_chain_references import ensure_proxy_chain_component_ids
+from services.proxy_chain_references import (
+    CHAIN_NODE_SOURCE,
+    CHAIN_POOL_SOURCE,
+    ensure_proxy_chain_component_ids,
+    list_proxy_chain_virtual_references,
+)
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
@@ -299,7 +304,28 @@ def _validate_proxy_chains(
                 )
 
 
-def _validate_allocations(users: list, known_sources: set[str]) -> None:
+def _chain_allocation_aliases(config: dict) -> dict[str, set[str]]:
+    """Return stable and legacy aliases for generated chain components."""
+    aliases = {
+        CHAIN_NODE_SOURCE: set(),
+        CHAIN_POOL_SOURCE: set(),
+    }
+    for reference in list_proxy_chain_virtual_references(
+        config,
+        base_node_names=set(),
+        reserved_group_names=set(),
+    ):
+        aliases.setdefault(reference.source_id, set()).update(
+            {reference.stable_id, reference.legacy_id, reference.name}
+        )
+    return aliases
+
+
+def _validate_allocations(
+    users: list,
+    known_sources: set[str],
+    chain_aliases: dict[str, set[str]],
+) -> None:
     known_sources = known_sources | {"custom_nodes", "chain_nodes", "chain_pools"}
     for user in users:
         allocations = user.get("allocations", {})
@@ -314,6 +340,16 @@ def _validate_allocations(users: list, known_sources: set[str]) -> None:
                 raise ValueError("Imported wildcard allocation cannot be mixed with node IDs")
             if any(not isinstance(reference, str) or not reference or len(reference) > 500 for reference in references):
                 raise ValueError("Imported user allocation contains an invalid node reference")
+            if source_id in chain_aliases and references != ["*"]:
+                unknown_references = [
+                    reference
+                    for reference in references
+                    if reference not in chain_aliases[source_id]
+                ]
+                if unknown_references:
+                    raise ValueError(
+                        f"Imported {source_id} allocation references an unknown chain component"
+                    )
 
 
 def _validate_source_order(config: dict, subscription_ids: set[str]) -> None:
@@ -436,7 +472,7 @@ def validate_and_normalize_configuration(config: dict) -> dict:
     )
     _validate_tokens(normalized, users, admin_tokens)
     _validate_subject_templates(normalized, users, admin_tokens)
-    _validate_allocations(users, subscription_ids)
+    _validate_allocations(users, subscription_ids, _chain_allocation_aliases(normalized))
     _validate_source_order(normalized, subscription_ids)
     _validate_group_config([*users, *admin_tokens])
     _validate_port_mappings(normalized)
@@ -549,10 +585,13 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         allocations = user.get("allocations", {}) if isinstance(user, dict) else {}
         if isinstance(allocations, dict):
             for source_id, values in allocations.items():
-                if values == ["*"] or source_id in {"chain_nodes", "chain_pools"}:
+                if values == ["*"]:
                     continue
                 aliases = source_aliases.get("custom_nodes" if source_id == "custom" else source_id, set())
-                if aliases and any(value not in aliases for value in values):
+                if source_id in {"chain_nodes", "chain_pools"}:
+                    if any(value not in aliases for value in values):
+                        raise ValueError("Imported allocation references a missing chain component")
+                elif aliases and any(value not in aliases for value in values):
                     raise ValueError("Imported allocation references a missing node")
 
         group_config = user.get("group_config", {}) if isinstance(user, dict) else {}

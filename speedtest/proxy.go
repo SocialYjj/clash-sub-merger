@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/netip"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -126,7 +126,11 @@ func dialerProxyConfig(rawProxyURL string) (map[string]interface{}, error) {
 
 func parseTargetProxy(proxyConfig map[string]interface{}, dialerProxy string) (constant.Proxy, error) {
 	if strings.TrimSpace(dialerProxy) == "" {
-		proxyAdapter, err := parseProxyAdapter(normalizeProxyConfig(proxyConfig))
+		normalized := normalizeProxyConfig(proxyConfig)
+		if err := validateMihomoCertificatePin(normalized); err != nil {
+			return nil, err
+		}
+		proxyAdapter, err := parseProxyAdapter(normalized)
 		if err != nil {
 			return nil, fmt.Errorf("parse proxy error")
 		}
@@ -147,14 +151,32 @@ func parseTargetProxy(proxyConfig map[string]interface{}, dialerProxy string) (c
 		targetConfig[key] = value
 	}
 	delete(targetConfig, "dialer-proxy")
+	normalizedTarget := normalizeProxyConfig(targetConfig)
+	if err := validateMihomoCertificatePin(normalizedTarget); err != nil {
+		return nil, err
+	}
 	targetAdapter, err := parseProxyAdapter(
-		normalizeProxyConfig(targetConfig),
+		normalizedTarget,
 		adapter.WithDialerForAPI(proxydialer.New(upstreamAdapter, true)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy error")
 	}
 	return targetAdapter, nil
+}
+
+func validateMihomoCertificatePin(node map[string]interface{}) error {
+	if node == nil {
+		return nil
+	}
+	preserved := strings.TrimSpace(configString(node["_v2rayn-certificate-pin"]))
+	if preserved == "" {
+		return nil
+	}
+	if strings.TrimSpace(configString(node["fingerprint"])) == "" {
+		return fmt.Errorf("unsupported certificate pin format: Mihomo requires a hexadecimal SHA-256 fingerprint")
+	}
+	return nil
 }
 
 func normalizeProxyConfig(node map[string]interface{}) map[string]interface{} {
@@ -669,7 +691,12 @@ func fetchURL(link string, targetURL string, timeout time.Duration) (string, map
 
 // fetchURLWithNode fetches a URL through a proxy node
 func fetchURLWithNode(node map[string]interface{}, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
-	proxyAdapter, err := getProxyAdapterFromNode(node)
+	return fetchURLWithNodeAndDialer(node, targetURL, timeout, "")
+}
+
+// fetchURLWithNodeAndDialer fetches a URL through a proxy node and optional dialer.
+func fetchURLWithNodeAndDialer(node map[string]interface{}, targetURL string, timeout time.Duration, dialerProxy string) (string, map[string]string, int, error) {
+	proxyAdapter, err := getProxyAdapterFromNodeWithDialer(node, dialerProxy)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -679,7 +706,12 @@ func fetchURLWithNode(node map[string]interface{}, targetURL string, timeout tim
 
 // fetchURLWithChain fetches a URL through a proxy chain
 func fetchURLWithChain(chain []map[string]interface{}, targetURL string, timeout time.Duration) (string, map[string]string, int, error) {
-	proxyAdapter, err := buildProxyChain(chain)
+	return fetchURLWithChainAndDialer(chain, targetURL, timeout, "")
+}
+
+// fetchURLWithChainAndDialer fetches a URL through a proxy chain and optional dialer.
+func fetchURLWithChainAndDialer(chain []map[string]interface{}, targetURL string, timeout time.Duration, dialerProxy string) (string, map[string]string, int, error) {
+	proxyAdapter, err := buildChainAdapterWithDialer(chain, dialerProxy)
 	if err != nil {
 		return "", nil, 0, err
 	}

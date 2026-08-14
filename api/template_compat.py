@@ -15,6 +15,7 @@ from core.dependencies import verify_session
 from core.models import FinalContent, TemplateContent
 from helpers import Constants, atomic_write_text
 from services.config_merger import ConfigMerger
+from services.node_metadata import strip_node_metadata
 
 try:
     from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
@@ -306,7 +307,9 @@ def create_template_router(
 
             output_parts = [header.rstrip(), '\nproxies:']
             for proxy in proxies:
-                output_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+                output_parts.append(
+                    f'  - {json.dumps(strip_node_metadata(proxy), ensure_ascii=False, separators=(",",":"))}'
+                )
             output_parts.append('\nproxy-groups:')
             for group in proxy_groups:
                 output_parts.append(f'  - {json.dumps(group, ensure_ascii=False, separators=(",",":"))}')

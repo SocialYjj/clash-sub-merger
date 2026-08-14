@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Plus, RefreshCw, Server } from 'lucide-react';
 import request from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
@@ -6,6 +6,7 @@ import SubscriptionCard from '../components/SubscriptionCard';
 import AddSubscriptionModal from '../components/AddSubscriptionModal';
 import EditSubscriptionModal from '../components/EditSubscriptionModal';
 import ScheduleModal from '../components/ScheduleModal';
+import SubscriptionNodesModal from '../components/SubscriptionNodesModal';
 
 const API_BASE = '/api';
 
@@ -25,6 +26,12 @@ export default function Subscriptions({
   const [selectedSub, setSelectedSub] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [refreshingIds, setRefreshingIds] = useState(() => new Set());
+  const [showSubscriptionNodesModal, setShowSubscriptionNodesModal] = useState(false);
+  const [subscriptionNodesModalSub, setSubscriptionNodesModalSub] = useState(null);
+  const [subscriptionNodes, setSubscriptionNodes] = useState([]);
+  const [subscriptionNodesLoading, setSubscriptionNodesLoading] = useState(false);
+  const [subscriptionNodesError, setSubscriptionNodesError] = useState('');
+  const subscriptionNodesRequestId = useRef(0);
 
   // Drag and drop state
   const [draggedItem, setDraggedItem] = useState(null);
@@ -38,6 +45,37 @@ export default function Subscriptions({
   const openEditModal = (sub) => {
     setSelectedSub(sub);
     setShowEditModal(true);
+  };
+
+  const closeSubscriptionNodesModal = () => {
+    subscriptionNodesRequestId.current += 1;
+    setShowSubscriptionNodesModal(false);
+    setSubscriptionNodesModalSub(null);
+    setSubscriptionNodes([]);
+    setSubscriptionNodesError('');
+    setSubscriptionNodesLoading(false);
+  };
+
+  const openSubscriptionNodesModal = async (sub) => {
+    const requestId = ++subscriptionNodesRequestId.current;
+    setSubscriptionNodesModalSub(sub);
+    setShowSubscriptionNodesModal(true);
+    setSubscriptionNodes([]);
+    setSubscriptionNodesError('');
+    setSubscriptionNodesLoading(true);
+
+    try {
+      const response = await request.get(`${API_BASE}/subscriptions/${encodeURIComponent(sub.id)}/nodes`);
+      if (requestId !== subscriptionNodesRequestId.current) return;
+      setSubscriptionNodes(response.data?.nodes || []);
+    } catch (err) {
+      if (requestId !== subscriptionNodesRequestId.current) return;
+      setSubscriptionNodesError(err.response?.data?.detail || err.message || '节点列表加载失败');
+    } finally {
+      if (requestId === subscriptionNodesRequestId.current) {
+        setSubscriptionNodesLoading(false);
+      }
+    }
   };
 
   // Single subscription refresh
@@ -150,6 +188,7 @@ export default function Subscriptions({
               onDelete={onDelete}
               onEdit={openEditModal}
               onSchedule={openScheduleModal}
+              onViewNodes={openSubscriptionNodesModal}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
@@ -202,6 +241,16 @@ export default function Subscriptions({
           onClose={() => setShowScheduleModal(false)}
           onRefreshList={onRefreshList}
           showToast={showToast}
+        />
+      )}
+
+      {showSubscriptionNodesModal && subscriptionNodesModalSub && (
+        <SubscriptionNodesModal
+          subscription={subscriptionNodesModalSub}
+          nodes={subscriptionNodes}
+          loading={subscriptionNodesLoading}
+          error={subscriptionNodesError}
+          onClose={closeSubscriptionNodesModal}
         />
       )}
     </div>

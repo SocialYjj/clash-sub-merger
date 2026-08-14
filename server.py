@@ -55,6 +55,9 @@ from services.region_history import (
     apply_region_history_to_yaml_content,
 )
 from services.node_manager import find_node_by_reference, is_name_allocated
+from services.proxy_filter import ProxyFilter
+from services.node_metadata import strip_node_metadata
+from services.subscription_node_count import count_effective_subscription_nodes
 from geoip_service import GeoIPService
 from scheduler_service import get_scheduler, init_scheduler
 from logger_config import get_logger
@@ -330,6 +333,7 @@ async def startup_event() -> None:
     migrate_old_config()
     migrate_legacy_sub_token()
     migrate_subscription_fields()
+    migrate_subscription_node_counts()
     migrate_proxy_chain_group_ids()
     migrate_stable_node_references()
     initialize_administrator()
@@ -702,9 +706,17 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
             finally:
                 await client.aclose()
         
-        content, sub_info, node_count = asyncio.run(
-            asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
-        )
+        async def _run_fetch_with_timeout():
+            return await asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
+
+        # Keep coroutine creation inside the event loop.  Besides making the
+        # ownership explicit, close the awaitable as a final safeguard when
+        # asyncio.run is interrupted or replaced by a test/scheduler adapter.
+        fetch_coroutine = _run_fetch_with_timeout()
+        try:
+            content, sub_info, node_count = asyncio.run(fetch_coroutine)
+        finally:
+            fetch_coroutine.close()
     except Exception as exc:
         raise FetchError(f"Failed to fetch subscription: {exc}") from None
     
@@ -726,6 +738,15 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         content,
         existing_nodes=existing_nodes,
     )
+
+    # The fetcher count reflects the upstream payload before history and
+    # visibility processing.  Recount the final YAML so scheduled refreshes
+    # persist the same effective node count used by manual refreshes and
+    # exports (advertisements, malformed nodes, and disabled nodes excluded).
+    processed_nodes = subscription_nodes_from_yaml_content(content)
+    node_count = count_effective_subscription_nodes(processed_nodes)
+    if node_count <= 0:
+        raise FetchError("Subscription contains no valid proxy nodes")
     
     return (
         content,
@@ -999,6 +1020,106 @@ def migrate_subscription_fields():
         log_migration(f"migrate_subscription_fields: updated {len(subs)} subscriptions")
 
 
+def migrate_subscription_node_counts():
+    """Reconcile persisted subscription counts with the current effective nodes.
+
+    Older configurations stored the upstream count before advertisement and
+    compatibility filtering.  The UI and exports use the effective count, so
+    keep the persisted value aligned without touching a subscription whose
+    source file cannot currently be read.
+    """
+    config = load_config()
+    migration_versions = config.get('migration_versions')
+    if not isinstance(migration_versions, dict):
+        migration_versions = {}
+    if migration_versions.get('subscription_node_counts_v1') is True:
+        return
+
+    subscriptions = config.get('subscriptions', [])
+    updated = 0
+    missing_required_source = False
+
+    for subscription in subscriptions:
+        subscription_id = subscription.get('id')
+        if not subscription_id:
+            continue
+        try:
+            source_config = load_subscription_yaml(
+                subscription_id,
+                YAML_SOURCE_DIR,
+                use_cache=False,
+            )
+            # A readable YAML file is not sufficient evidence that its stored
+            # count can be migrated.  Config-shaped YAML without a list-valued
+            # ``proxies`` field is malformed (or an interrupted/partial
+            # migration) and must retain the previous count until a refresh
+            # writes a valid subscription document.
+            source_nodes = (
+                source_config.get('proxies')
+                if isinstance(source_config, dict)
+                else None
+            )
+            if not isinstance(source_nodes, list):
+                logger.warning(
+                    "Skipping node-count migration for subscription %s: "
+                    "source has no list-valued proxies field",
+                    subscription_id,
+                )
+                if subscription.get('enabled', True):
+                    missing_required_source = True
+                continue
+
+            # An empty proxy list is not enough evidence that a previously
+            # populated subscription is really empty.  A refresh writes the
+            # source atomically, so an interrupted/manual file replacement can
+            # briefly leave ``proxies: []`` behind.  Preserve the persisted
+            # count and retry on the next startup instead of silently erasing
+            # the card's known node count.  A subscription that already had a
+            # zero count can safely be marked as reconciled.
+            if not source_nodes and int(subscription.get('node_count') or 0) > 0:
+                logger.warning(
+                    "Skipping node-count migration for subscription %s: "
+                    "empty proxy list would erase persisted count %s",
+                    subscription_id,
+                    subscription.get('node_count'),
+                )
+                if subscription.get('enabled', True):
+                    missing_required_source = True
+                continue
+            effective_count = count_effective_subscription_nodes(source_nodes)
+        except Exception as exc:
+            logger.warning(
+                "Skipping node-count migration for subscription %s: %s",
+                subscription_id,
+                type(exc).__name__,
+            )
+            if subscription.get('enabled', True):
+                missing_required_source = True
+            continue
+
+        if subscription.get('node_count') != effective_count:
+            subscription['node_count'] = effective_count
+            updated += 1
+
+    # A missing enabled source may be created by a later auto-refresh.  Leave
+    # the marker unset so that startup can reconcile it after the file exists.
+    if not missing_required_source:
+        config['migration_versions'] = migration_versions
+        migration_versions['subscription_node_counts_v1'] = True
+
+    if updated or not missing_required_source:
+        save_config(config)
+        logger.info(
+            "Subscription node-count migration updated %s subscription(s)",
+            updated,
+        )
+        log_migration(
+            "migrate_subscription_node_counts: updated "
+            f"{updated} subscriptions"
+            + (" and marked complete" if not missing_required_source else "")
+        )
+
+
 def migrate_stable_node_references():
     """Assign missing custom-node IDs and migrate proxy chains off array indexes."""
     from services.node_reference_migration import ensure_custom_node_ids, migrate_proxy_chain_node_ids
@@ -1094,17 +1215,7 @@ def filter_underscore_fields(data: dict) -> dict:
     Returns:
         New dictionary containing only client-facing fields
     """
-    metadata_fields = {
-        'id', 'link', 'enabled', 'display_name', 'index',
-        'last_latency', 'last_latency_time', 'last_speed',
-        'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip',
-        'region', 'city',
-    }
-    return {
-        key: value
-        for key, value in data.items()
-        if not key.startswith('_') and key not in metadata_fields
-    }
+    return strip_node_metadata(data)
 
 def process_template_proxy_groups(template_groups: List[dict], all_proxies: List[str],
                                    country_groups: Dict[str, List[str]],

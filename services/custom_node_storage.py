@@ -10,6 +10,7 @@ from core.database import load_config, update_config
 from helpers import save_subscription_yaml
 from services.node_reference_updates import reconcile_custom_node_references
 from services.node_visibility import clear_user_subscription_caches, is_node_enabled
+from services.node_metadata import NODE_METADATA_FIELDS
 from services.proxy_filter import ProxyFilter
 from services.subscription_refresh_lock import subscription_write_slot
 from services.subscription_storage import (
@@ -20,23 +21,6 @@ from services.subscription_storage import (
 
 T = TypeVar("T")
 
-_CUSTOM_NODE_METADATA_FIELDS = {
-    "id",
-    "link",
-    "last_latency",
-    "last_latency_time",
-    "last_speed",
-    "last_peak_speed",
-    "last_speed_time",
-    "last_peak_speed_time",
-    "exit_ip",
-    "geoip",
-    "region",
-    "city",
-    "enabled",
-}
-
-
 def write_custom_nodes_yaml(nodes: list[dict]) -> None:
     """Rebuild the generated custom-node source from persisted configuration."""
     proxies = []
@@ -46,8 +30,11 @@ def write_custom_nodes_yaml(nodes: list[dict]) -> None:
         proxy = {
             key: value
             for key, value in node.items()
-            if key not in _CUSTOM_NODE_METADATA_FIELDS
+            if key not in NODE_METADATA_FIELDS and not str(key).startswith("_")
         }
+        invalid_reason = ProxyFilter.get_structural_invalid_reason(proxy)
+        if invalid_reason:
+            continue
         sanitized_proxy = ProxyFilter.sanitize_proxy(proxy)
         if sanitized_proxy and sanitized_proxy.get("type"):
             proxies.append(sanitized_proxy)

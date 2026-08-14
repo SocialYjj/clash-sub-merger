@@ -74,6 +74,33 @@ class ConfigMergerBugfixTests(unittest.TestCase):
         self.assertEqual(annotated["_source_id"], "sub_demo")
         self.assertEqual(annotated["_source_file"], "sub_demo.yaml")
 
+    def test_save_strips_management_metadata_from_client_yaml(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "out.yaml"
+            merger = ConfigMerger(
+                yaml_dir=tempdir,
+                output_file=str(output),
+            )
+            merger.save({
+                "proxies": [{
+                    "name": "Node",
+                    "type": "http",
+                    "server": "example.com",
+                    "port": 8080,
+                    "sourceId": "sub_1",
+                    "region": "Tokyo",
+                    "_source_id": "sub_1",
+                }],
+                "proxy-groups": [],
+            })
+
+            rendered = output.read_text(encoding="utf-8")
+
+        self.assertIn('"server":"example.com"', rendered)
+        self.assertNotIn("sourceId", rendered)
+        self.assertNotIn("region", rendered)
+        self.assertNotIn("_source_id", rendered)
+
     def test_country_group_deduplicates_proxy_names(self):
         groups = CountryGrouper.group_by_country([
             {"name": "🇯🇵 Demo JP"},

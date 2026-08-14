@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { RefreshCw, Trash2, Clock, Calendar, Edit2, GripVertical, Copy, FileText, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Trash2, Clock, Calendar, Edit2, GripVertical, Copy, FileText, AlertTriangle, List } from 'lucide-react';
 import { getTrafficInfo, getAvatarTheme, formatDate } from '../utils/format';
 
 export default function SubscriptionCard({
@@ -14,6 +14,7 @@ export default function SubscriptionCard({
     onDelete,
     onEdit,
     onSchedule,
+    onViewNodes,
     onDragStart,
     onDragOver,
     onDrop,
@@ -222,6 +223,18 @@ export default function SubscriptionCard({
                             <Clock size={16} />
                         </button>
                     )}
+
+                    {/* View nodes - Available for every subscription type */}
+                    <button
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onViewNodes(sub);
+                        }}
+                        className="w-9 h-9 rounded-full flex items-center justify-center bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                        title="查看节点列表"
+                    >
+                        <List size={16} />
+                    </button>
 
                     {/* Edit */}
                     <button

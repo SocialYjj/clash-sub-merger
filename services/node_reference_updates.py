@@ -16,10 +16,13 @@ from services.name_transformer import NameTransformer
 from services.node_identity import (
     custom_node_id,
     normalized_node_name,
+    subscription_node_id,
     subscription_node_ids,
     virtual_node_id,
 )
 from services.node_visibility import clear_user_subscription_caches
+from services.proxy_filter import ProxyFilter
+from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_refresh_lock import subscription_write_slot
 from services.subscription_storage import persist_subscription_content_and_record
 
@@ -28,6 +31,7 @@ from services.subscription_storage import persist_subscription_content_and_recor
 class _NodeDescription:
     position: int
     node_id: str
+    base_id: str
     original_name: str
     display_name: str
     normalized_name: str
@@ -51,6 +55,7 @@ def _describe_nodes(
     nodes: Iterable[dict],
     source_name: str,
     identity_builder: Callable[[dict, int], str],
+    base_identity_builder: Callable[[dict, int], str] | None = None,
 ) -> list[_NodeDescription]:
     descriptions: list[_NodeDescription] = []
     for position, node in enumerate(nodes or []):
@@ -65,6 +70,7 @@ def _describe_nodes(
             _NodeDescription(
                 position=position,
                 node_id=identity_builder(node, position),
+                base_id=(base_identity_builder or identity_builder)(node, position),
                 original_name=original_name,
                 display_name=display_name or original_name,
                 normalized_name=normalized_node_name(original_name),
@@ -108,13 +114,26 @@ def _build_transition_plan(
     identity_builder: Callable[[dict, int], str] | None = None,
     old_identity_builder: Callable[[dict, int], str] | None = None,
     new_identity_builder: Callable[[dict, int], str] | None = None,
+    base_identity_builder: Callable[[dict, int], str] | None = None,
+    old_base_identity_builder: Callable[[dict, int], str] | None = None,
+    new_base_identity_builder: Callable[[dict, int], str] | None = None,
 ) -> _ReferenceTransitionPlan:
     old_identity_builder = old_identity_builder or identity_builder
     new_identity_builder = new_identity_builder or identity_builder
     if old_identity_builder is None or new_identity_builder is None:
         raise ValueError("Node identity builder is required")
-    old_descriptions = _describe_nodes(old_nodes, old_source_name, old_identity_builder)
-    new_descriptions = _describe_nodes(new_nodes, new_source_name, new_identity_builder)
+    old_descriptions = _describe_nodes(
+        old_nodes,
+        old_source_name,
+        old_identity_builder,
+        old_base_identity_builder or base_identity_builder,
+    )
+    new_descriptions = _describe_nodes(
+        new_nodes,
+        new_source_name,
+        new_identity_builder,
+        new_base_identity_builder or base_identity_builder,
+    )
 
     unique_old_ids = _unique_descriptions(old_descriptions, lambda item: item.node_id)
     unique_new_ids = _unique_descriptions(new_descriptions, lambda item: item.node_id)
@@ -125,6 +144,26 @@ def _build_transition_plan(
     # here because display fields are intentionally excluded from subscription IDs.
     for node_id, old_description in unique_old_ids.items():
         new_description = unique_new_ids.get(node_id)
+        if new_description is None:
+            continue
+        matched_nodes[old_description.position] = new_description
+        matched_new_positions.add(new_description.position)
+
+    # Duplicate technical endpoints receive a name-derived UI suffix.  A
+    # provider rename therefore changes that suffix even though the endpoint
+    # itself is unchanged.  Match unpaired single base identities before the
+    # more permissive name fallback so allocations and chain references survive
+    # such a rename without guessing between different endpoints.
+    unmatched_old = [
+        item for item in old_descriptions if item.position not in matched_nodes
+    ]
+    unmatched_new = [
+        item for item in new_descriptions if item.position not in matched_new_positions
+    ]
+    unique_old_base_ids = _unique_descriptions(unmatched_old, lambda item: item.base_id)
+    unique_new_base_ids = _unique_descriptions(unmatched_new, lambda item: item.base_id)
+    for base_id, old_description in unique_old_base_ids.items():
+        new_description = unique_new_base_ids.get(base_id)
         if new_description is None:
             continue
         matched_nodes[old_description.position] = new_description
@@ -147,6 +186,36 @@ def _build_transition_plan(
             continue
         matched_nodes[old_description.position] = new_description
         matched_new_positions.add(new_description.position)
+
+    # If every member of a duplicate technical-endpoint group remains
+    # present, pair the still-unmatched entries by source order.  This is the
+    # only deterministic fallback when all duplicate labels changed at once;
+    # the technical base identity guarantees that no different endpoint is
+    # redirected.
+    unmatched_old = [
+        item for item in old_descriptions if item.position not in matched_nodes
+    ]
+    unmatched_new = [
+        item for item in new_descriptions if item.position not in matched_new_positions
+    ]
+    old_base_groups: dict[str, list[_NodeDescription]] = {}
+    new_base_groups: dict[str, list[_NodeDescription]] = {}
+    for description in unmatched_old:
+        if description.base_id:
+            old_base_groups.setdefault(description.base_id, []).append(description)
+    for description in unmatched_new:
+        if description.base_id:
+            new_base_groups.setdefault(description.base_id, []).append(description)
+    for base_id, old_group in old_base_groups.items():
+        new_group = new_base_groups.get(base_id, [])
+        if not new_group or len(old_group) != len(new_group):
+            continue
+        for old_description, new_description in zip(
+            sorted(old_group, key=lambda item: item.position),
+            sorted(new_group, key=lambda item: item.position),
+        ):
+            matched_nodes[old_description.position] = new_description
+            matched_new_positions.add(new_description.position)
 
     id_associations: dict[str, set[Optional[str]]] = {}
     id_name_associations: dict[str, set[str]] = {}
@@ -513,6 +582,8 @@ def reconcile_subscription_node_references(
         new_source_name=new_subscription_name,
         old_identity_builder=lambda _node, index: old_ids[index] if index < len(old_ids) else "",
         new_identity_builder=lambda _node, index: new_ids[index] if index < len(new_ids) else "",
+        old_base_identity_builder=lambda node, _index: subscription_node_id(subscription_id, node),
+        new_base_identity_builder=lambda node, _index: subscription_node_id(subscription_id, node),
     )
     _apply_transition_plan(config, plan)
 
@@ -642,7 +713,7 @@ def update_subscription_yaml_with_references(
                 old_subscription_name=subscription_name,
                 new_subscription_name=subscription_name,
             )
-            subscription["node_count"] = len(new_nodes)
+            subscription["node_count"] = count_effective_subscription_nodes(new_nodes)
             clear_user_subscription_caches(config)
             return {
                 "subscription": dict(subscription),

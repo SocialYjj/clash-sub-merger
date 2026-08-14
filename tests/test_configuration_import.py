@@ -2,6 +2,7 @@
 
 import copy
 import json
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,8 +10,10 @@ import api.system as system_api
 import services.backup as backup_service
 from services.configuration_validation import (
     remove_legacy_stale_references,
+    validate_configuration_node_references,
     validate_and_normalize_configuration,
 )
+from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 
 def _valid_configuration() -> dict:
@@ -102,6 +105,63 @@ class ConfigurationValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown source"):
             validate_and_normalize_configuration(unknown_order)
 
+    def test_import_validates_chain_allocation_stable_and_legacy_references(self):
+        config = _valid_configuration()
+        config["proxy_chains"] = [{
+            "id": "chain_1",
+            "name": "Chain",
+            "rows": [{
+                "row_id": "row_1",
+                "nodes": [
+                    {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
+                    {"type": "node", "sub_id": "sub_1", "node_id": "node_b"},
+                ],
+            }],
+        }]
+        references = list_proxy_chain_virtual_references(
+            config,
+            base_node_names=set(),
+            reserved_group_names=set(),
+        )
+        chain_reference = references[0]
+
+        config["users"][0]["allocations"] = {"chain_nodes": [chain_reference.stable_id]}
+        normalized = validate_and_normalize_configuration(config)
+        self.assertEqual(
+            normalized["users"][0]["allocations"]["chain_nodes"],
+            [chain_reference.stable_id],
+        )
+
+        legacy_config = copy.deepcopy(config)
+        legacy_config["users"][0]["allocations"] = {"chain_nodes": [chain_reference.legacy_id]}
+        validate_and_normalize_configuration(legacy_config)
+
+        missing_config = copy.deepcopy(config)
+        missing_config["users"][0]["allocations"] = {"chain_nodes": ["virtual_deleted_chain"]}
+        with self.assertRaisesRegex(ValueError, "unknown chain component"):
+            validate_and_normalize_configuration(missing_config)
+
+    def test_restored_configuration_rejects_missing_chain_allocation_reference(self):
+        config = _valid_configuration()
+        config["subscriptions"] = []
+        config["source_order"] = ["custom_nodes"]
+        config["proxy_chains"] = [{
+            "id": "chain_1",
+            "name": "Chain",
+            "rows": [{
+                "row_id": "row_1",
+                "nodes": [
+                    {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
+                    {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
+                ],
+            }],
+        }]
+        config["users"][0]["allocations"] = {"chain_nodes": ["virtual_deleted_chain"]}
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with self.assertRaisesRegex(ValueError, "missing chain component"):
+                validate_configuration_node_references(config, tempdir)
+
     def test_trusted_legacy_cleanup_removes_stale_sources_before_validation(self):
         legacy_config = _valid_configuration()
         legacy_config["users"][0]["allocations"] = {
@@ -123,12 +183,14 @@ class ConfigurationExportAndRollbackTests(unittest.TestCase):
         config = _valid_configuration()
         config["users"][0]["allocations"]["deleted_sub"] = ["obsolete-node"]
         config["source_order"].insert(0, "deleted_sub")
+        config["geoip_config"] = {"cloudflare_radar_token": "radar-secret"}
 
         with patch.object(backup_service, "load_config", return_value=copy.deepcopy(config)):
             exported = backup_service.export_config()
 
         exported_config = exported["config"]
         self.assertNotIn("sessions", exported_config["auth"])
+        self.assertNotIn("cloudflare_radar_token", exported_config["geoip_config"])
         self.assertNotIn("deleted_sub", exported_config["users"][0]["allocations"])
         self.assertNotIn("deleted_sub", exported_config["source_order"])
         validate_and_normalize_configuration(exported_config)

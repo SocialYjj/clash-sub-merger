@@ -21,6 +21,7 @@ from services.region_history import (
     apply_region_history_to_yaml_content,
 )
 from services.subscription_parser import parse_local_subscription, InvalidContentError
+from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_fetcher import SubscriptionFetcher, FetchError
 from services.subscription_cleanup import cleanup_deleted_subscription
 from services.node_reference_updates import (
@@ -51,6 +52,11 @@ router = APIRouter()
 _fetcher: Optional[SubscriptionFetcher] = None
 _fetcher_proxy_url: Optional[str] = None
 _fetcher_client: Optional[httpx.AsyncClient] = None
+
+
+def _count_valid_subscription_nodes(nodes: list) -> int:
+    """Count nodes with the same filtering and structural validation rules as exports."""
+    return count_effective_subscription_nodes(nodes)
 
 
 async def close_fetcher():
@@ -189,6 +195,9 @@ async def _refresh_remote_subscription(
                 existing_nodes=existing_nodes,
             )
             refreshed_nodes = subscription_nodes_from_yaml_content(content)
+            valid_node_count = _count_valid_subscription_nodes(refreshed_nodes)
+            if valid_node_count <= 0:
+                raise FetchError("Subscription contains no valid proxy nodes")
 
             updates = {
                 **(record_overrides or {}),
@@ -196,7 +205,7 @@ async def _refresh_remote_subscription(
                 'download': subscription_usage.get('download', 0),
                 'total': subscription_usage.get('total', 0),
                 'expire': subscription_usage.get('expire', 0),
-                'node_count': node_count,
+                'node_count': valid_node_count,
                 **refresh_success_fields(
                     refreshed_subscription,
                     attempted_at=attempted_at,
@@ -374,7 +383,30 @@ class ReorderSubscriptions(BaseModel):
 def list_subscriptions(_: bool = Depends(verify_session)):
     """List all subscriptions"""
     config = load_config()
-    return {"subscriptions": config.get('subscriptions', [])}
+    subscriptions = []
+    for subscription in config.get('subscriptions', []):
+        current = dict(subscription)
+        try:
+            yaml_data = load_subscription_yaml(
+                subscription['id'], AppConfig.YAML_SOURCE_DIR, use_cache=True
+            )
+            proxies = yaml_data.get('proxies', []) if isinstance(yaml_data, dict) else []
+            current['node_count'] = _count_valid_subscription_nodes(proxies)
+            current['node_count_stale'] = False
+            current.pop('node_count_error', None)
+        except Exception as exc:
+            logger.warning(
+                "Failed to calculate current node count for subscription %s: %s",
+                subscription.get('id', '<unknown>'), type(exc).__name__,
+            )
+            # Never present the persisted count as current when the source file
+            # cannot be read.  A zero plus explicit status is safer than a
+            # silently stale number that disagrees with node management.
+            current['node_count'] = 0
+            current['node_count_stale'] = True
+            current['node_count_error'] = 'Subscription data unavailable'
+        subscriptions.append(current)
+    return {"subscriptions": subscriptions}
 
 
 @router.post("")
@@ -397,6 +429,10 @@ async def add_subscription(data: AddSubscription, _: bool = Depends(verify_sessi
             subscription_url,
             user_agent=user_agent
         )
+        parsed_nodes = subscription_nodes_from_yaml_content(content)
+        node_count = _count_valid_subscription_nodes(parsed_nodes)
+        if node_count <= 0:
+            raise FetchError("Subscription contains no valid proxy nodes")
         
         content, _, inherited = apply_region_history_to_yaml_content(
             content,

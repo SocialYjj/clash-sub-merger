@@ -19,6 +19,8 @@ from helpers import handle_api_errors, load_subscription_yaml
 from logger_config import get_logger
 from services.node_manager import get_proxy_node_by_id
 from services.node_identity import subscription_node_ids
+from services.node_visibility import is_node_enabled
+from services.proxy_filter import ProxyFilter
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -73,6 +75,21 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _speedtestable_subscription_node_ids(subscription_id: str, nodes: list) -> list[str]:
+    """Return stable IDs for enabled nodes accepted by the Mihomo speedtest path.
+
+    IDs are generated from the complete source list before filtering so a
+    skipped information/disabled node cannot renumber the remaining nodes.
+    """
+    materialized_nodes = [node if isinstance(node, dict) else {} for node in (nodes or [])]
+    node_ids = subscription_node_ids(subscription_id, materialized_nodes)
+    return [
+        node_id
+        for node_id, node in zip(node_ids, materialized_nodes)
+        if is_node_enabled(node) and ProxyFilter.is_valid_proxy(node)
+    ]
+
+
 def _is_ipv6_address(server: str) -> bool:
     """Check if server address is IPv6."""
     if not server:
@@ -105,10 +122,17 @@ def _get_ipv6_proxy() -> tuple:
 
 def build_node_speedtest_payload(node: dict) -> tuple[dict, bool]:
     """Build a Go-service payload and apply the configured IPv6 dialer policy."""
-    server = str(node.get('server') or '')
+    invalid_reason = ProxyFilter.get_target_invalid_reason(node, 'clash')
+    if invalid_reason:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid node configuration: {invalid_reason}",
+        )
+    normalized_node = ProxyFilter.sanitize_proxy(node)
+    server = str(normalized_node.get('server') or '')
     ipv6_proxy, ipv6_only = _get_ipv6_proxy()
     use_proxy = bool(ipv6_proxy and (not ipv6_only or _is_ipv6_address(server)))
-    payload = {"node": node}
+    payload = {"node": normalized_node}
     if use_proxy:
         payload["dialer_proxy"] = ipv6_proxy
     return payload, use_proxy
@@ -303,7 +327,7 @@ async def speedtest_subscription(sub_id: str, request: Request, _: bool = Depend
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
     nodes = sub_data.get('proxies', []) if sub_data else []
     
-    node_ids = subscription_node_ids(sub_id, nodes)
+    node_ids = _speedtestable_subscription_node_ids(sub_id, nodes)
     all_results = []
     requested_node_ids = []
     for offset in range(0, len(node_ids), MAX_SPEEDTEST_NODES):
@@ -464,12 +488,15 @@ async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Dep
             if sub.get('enabled', True)
         ]
     results = []
+    source_node_ids = {}
     for sub_id in subscription_ids:
         sub = next((item for item in load_config().get('subscriptions', []) if item.get('id') == sub_id), None)
         if not sub or not sub.get('enabled', True):
             continue
         source = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
-        node_ids = subscription_node_ids(sub_id, source.get('proxies', []) if isinstance(source, dict) else [])
+        source_nodes = source.get('proxies', []) if isinstance(source, dict) else []
+        node_ids = _speedtestable_subscription_node_ids(sub_id, source_nodes)
+        source_node_ids.update({node_id: sub_id for node_id in node_ids})
         for offset in range(0, len(node_ids), MAX_SPEEDTEST_NODES):
             batch_result = await _speedtest_batch(
                 node_ids[offset:offset + MAX_SPEEDTEST_NODES],
@@ -483,10 +510,7 @@ async def run_speedtest_profile(profile_id: str, request: Request, _: bool = Dep
         for item in results:
             node_id = item.get('node_id')
             if node_id:
-                source_id = next((sid for sid in subscription_ids if node_id in subscription_node_ids(
-                    sid,
-                    (load_subscription_yaml(sid, YAML_SOURCE_DIR, use_cache=True) or {}).get('proxies', []),
-                )), None)
+                source_id = source_node_ids.get(node_id)
                 if source_id:
                     stored_results.setdefault(source_id, {})[node_id] = item.get('result') or {'error': item.get('error')}
     update_config(persist_profile_results)

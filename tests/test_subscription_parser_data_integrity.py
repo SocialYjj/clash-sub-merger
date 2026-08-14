@@ -53,7 +53,9 @@ class SubscriptionParserDataIntegrityTests(unittest.TestCase):
         self.assertEqual(proxy["encryption"], "none")
         self.assertEqual(proxy["ech"], "ech-config")
         self.assertEqual(proxy["pqv"], "pqv-value")
-        self.assertEqual(proxy["cert-sha"], "certsha")
+        self.assertEqual(proxy["_v2rayn-certificate-pin"], "certsha")
+        self.assertNotIn("fingerprint", proxy)
+        self.assertNotIn("cert-sha", proxy)
 
     def test_trojan_does_not_force_skip_cert_verify(self):
         parsed = SubscriptionParser.parse_content(

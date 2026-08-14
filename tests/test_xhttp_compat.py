@@ -1,7 +1,13 @@
 import unittest
+from urllib.parse import quote
 
-from services.node_parser import parse_vless_link
+from services.node_parser import parse_node_link, parse_vless_link
 from services.proxy_filter import ProxyFilter
+from services.xhttp_compat import (
+    XHTTPCompatibilityError,
+    parse_xhttp_extra,
+    xhttp_opts_to_extra,
+)
 
 
 class XHTTPCompatibilityTests(unittest.TestCase):
@@ -59,6 +65,117 @@ class XHTTPCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(sanitized["sni"], "cdn.example.com")
         self.assertNotIn("servername", sanitized)
+
+    def test_complete_xhttp_extra_round_trip_is_lossless(self):
+        extra = {
+            "xPaddingBytes": {"from": 100, "to": 200},
+            "xPaddingPlacement": "queryInHeader",
+            "xPaddingMethod": "tokenish",
+            "uplinkHTTPMethod": "POST",
+            "sessionIDPlacement": "cookie",
+            "sessionIDKey": "session",
+            "seqPlacement": "header",
+            "seqKey": "X-Seq",
+            "noGRPCHeader": True,
+            "headers": {"User-Agent": "custom-agent"},
+            "xmux": {"maxConnections": {"from": 2, "to": 4}},
+            "downloadSettings": {
+                "address": "download.example.com",
+                "port": 8443,
+                "network": "xhttp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "download.example.com",
+                    "fingerprint": "chrome",
+                    "alpn": ["h2"],
+                    "allowInsecure": False,
+                    "pinnedPeerCertSha256": "certificate-pin",
+                },
+                "xhttpSettings": {
+                    "path": "/download",
+                    "host": "cdn.example.com",
+                    "xPaddingBytes": 64,
+                },
+            },
+        }
+
+        opts = parse_xhttp_extra(extra)
+
+        exported = xhttp_opts_to_extra(opts)
+
+        # Xray accepts integer ranges as numbers or ``from-to`` strings; the
+        # project deliberately emits the canonical string representation.
+        self.assertEqual(exported["xPaddingBytes"], "100-200")
+        self.assertEqual(exported["xmux"]["maxConnections"], "2-4")
+        self.assertEqual(parse_xhttp_extra(exported), opts)
+
+    def test_invalid_xhttp_extra_is_preserved_for_structural_rejection(self):
+        link = (
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443"
+            f"?type=xhttp&extra={quote('{bad json}')}#invalid-xhttp"
+        )
+
+        proxy = parse_node_link(link)
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy["xhttp-opts"]["extra"], "{bad json}")
+        self.assertEqual(
+            ProxyFilter.get_structural_invalid_reason(proxy),
+            "invalid-xhttp-options",
+        )
+
+    def test_xhttp_modes_and_stream_one_download_conflict_are_rejected(self):
+        cases = (
+            {"mode": "unsupported"},
+            {"mode": "stream-one", "download-settings": {"server": "example.com"}},
+        )
+        for opts in cases:
+            with self.subTest(opts=opts):
+                with self.assertRaises(XHTTPCompatibilityError):
+                    xhttp_opts_to_extra(opts)
+
+    def test_xhttp_invalid_ranges_are_rejected(self):
+        cases = ("-1", "10-2", {"from": -1, "to": 2}, {"from": 3, "to": 2})
+        for value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(XHTTPCompatibilityError):
+                    parse_xhttp_extra({"xPaddingBytes": value})
+
+    def test_xhttp_placement_and_method_values_are_validated(self):
+        cases = (
+            {"mode": "stream-up", "session-placement": "body"},
+            {"mode": "stream-up", "seq-placement": "auto"},
+            {"mode": "stream-up", "x-padding-placement": "path"},
+            {"mode": "stream-up", "x-padding-method": "random"},
+            {"mode": "stream-up", "uplink-data-placement": "header"},
+            {"mode": "stream-up", "uplink-http-method": "GET"},
+        )
+        for opts in cases:
+            with self.subTest(opts=opts):
+                with self.assertRaises(XHTTPCompatibilityError):
+                    xhttp_opts_to_extra(opts)
+
+    def test_xhttp_reuse_settings_cannot_set_both_connection_limits(self):
+        with self.assertRaises(XHTTPCompatibilityError):
+            parse_xhttp_extra({
+                "xmux": {"maxConcurrency": 2, "maxConnections": 3},
+            })
+
+    def test_hysteria2_conflicting_certificate_pins_are_structurally_invalid(self):
+        proxy = {
+            "name": "hy2",
+            "type": "hysteria2",
+            "server": "example.com",
+            "port": 443,
+            "password": "secret",
+            "fingerprint": "new-pin",
+            "ca-sha256": "old-pin",
+        }
+
+        self.assertEqual(
+            ProxyFilter.get_structural_invalid_reason(proxy),
+            "conflicting-hysteria2-certificate-pin",
+        )
 
 
 class ProxyFilterInfoNodeTests(unittest.TestCase):

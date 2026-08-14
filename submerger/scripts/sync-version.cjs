@@ -34,4 +34,21 @@ if (lock.packages && lock.packages['']) {
 fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n');
 console.log('✓ Updated package-lock.json');
 
+// Keep the service-worker cache namespace aligned with the application
+// release.  A stale namespace allows an old shell/chunk combination to
+// survive a deployment even when the backend reports the new version.
+const swPath = path.join(__dirname, '../public/sw.js');
+const sw = fs.readFileSync(swPath, 'utf-8');
+const cacheDeclaration = /const CACHE_NAME = 'submerger-static-v[^']+';/;
+if (!cacheDeclaration.test(sw)) {
+  console.error('✗ Could not find the service-worker cache declaration');
+  process.exit(1);
+}
+const syncedSw = sw.replace(
+  cacheDeclaration,
+  `const CACHE_NAME = 'submerger-static-v${version}';`,
+);
+fs.writeFileSync(swPath, syncedSw);
+console.log('✓ Updated service-worker cache namespace');
+
 console.log(`✅ Version synced to ${version}`);

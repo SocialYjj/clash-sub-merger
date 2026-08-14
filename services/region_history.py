@@ -45,6 +45,7 @@ NODE_TEST_METADATA_FIELDS = (
     'last_peak_speed',
     'last_peak_speed_time',
     'exit_ip',
+    'ip_profile',
     'region',
     'city',
 )
@@ -165,6 +166,7 @@ def _same_region_payload(left: dict, right: dict) -> bool:
         _normalize_region(left.get('region', {})) == _normalize_region(right.get('region', {}))
         and _normalize_text(left.get('city')) == _normalize_text(right.get('city'))
         and _normalize_text(left.get('exit_ip')) == _normalize_text(right.get('exit_ip'))
+        and left.get('ip_profile') == right.get('ip_profile')
     )
 
 
@@ -505,6 +507,7 @@ def remember_nodes_region(nodes: Iterable[dict], source: str = '') -> int:
                 'region': region,
                 'city': city,
                 'exit_ip': exit_ip,
+                'ip_profile': deepcopy((node or {}).get('ip_profile')),
                 'source': source or '',
                 'name': identity.get('name', ''),
                 'server': identity.get('server', ''),
@@ -558,6 +561,10 @@ def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = '') -> int:
             exit_ip = _normalize_text(entry.get('exit_ip'))
             if exit_ip and not _normalize_text(node.get('exit_ip')):
                 node['exit_ip'] = exit_ip
+
+            ip_profile = entry.get('ip_profile')
+            if isinstance(ip_profile, dict) and not isinstance(node.get('ip_profile'), dict):
+                node['ip_profile'] = deepcopy(ip_profile)
 
             applied += 1
 

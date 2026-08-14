@@ -179,6 +179,10 @@ class AppConfig:
     HTTP_MAX_KEEPALIVE = env_int('HTTP_MAX_KEEPALIVE', 20, minimum=0)
     HTTP_MAX_CONNECTIONS = env_int('HTTP_MAX_CONNECTIONS', 50, minimum=1)
     HTTP_VERIFY_SSL = env_bool('HTTP_VERIFY_SSL', True)
+
+    # Cloudflare Radar is a backend-only optional integration.  The token is
+    # intentionally never exposed through the frontend or persisted config.
+    CLOUDFLARE_RADAR_TIMEOUT = env_int('CLOUDFLARE_RADAR_TIMEOUT', 5, minimum=1, maximum=60)
     
     # Backup settings
     AUTO_BACKUP_ENABLED = env_bool('AUTO_BACKUP_ENABLED', True)

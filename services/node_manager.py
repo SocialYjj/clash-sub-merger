@@ -10,6 +10,7 @@ from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.proxy_filter import ProxyFilter
 from services.node_visibility import is_node_enabled
+from services.node_metadata import NODE_METADATA_FIELDS
 from services.node_identity import (
     custom_node_id,
     find_subscription_node_index,
@@ -21,13 +22,6 @@ from services.node_identity import (
 logger = get_logger(__name__)
 
 # Fields to exclude from proxy config (metadata fields)
-NODE_METADATA_FIELDS = {
-    'id', 'link', 'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip', 'region',
-    'city', 'display_name', 'index', 'enabled'
-}
-
-
 def strip_metadata(node: dict) -> dict:
     """
     Remove metadata fields from node dict.
@@ -38,7 +32,7 @@ def strip_metadata(node: dict) -> dict:
     Returns:
         Clean node dict
     """
-    return {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS}
+    return {k: v for k, v in node.items() if k not in NODE_METADATA_FIELDS and not str(k).startswith('_')}
 
 
 def find_custom_node(
@@ -61,7 +55,11 @@ def find_custom_node(
     # Stable ID is authoritative. Name/index remain read-only migration fallbacks.
     if node_id:
         for node in custom_nodes:
-            if custom_node_id(node) != node_id or not is_node_enabled(node):
+            if (
+                custom_node_id(node) != node_id
+                or not is_node_enabled(node)
+                or not ProxyFilter.is_valid_proxy(node)
+            ):
                 continue
             proxy = ProxyFilter.sanitize_proxy(dict(node))
             transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
@@ -72,7 +70,7 @@ def find_custom_node(
     # Search by name
     if node_name:
         for node in custom_nodes:
-            if not is_node_enabled(node):
+            if not is_node_enabled(node) or not ProxyFilter.is_valid_proxy(node):
                 continue
             proxy = ProxyFilter.sanitize_proxy(dict(node))
             transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
@@ -83,7 +81,7 @@ def find_custom_node(
     # Search by index
     if node_index is not None and 0 <= node_index < len(custom_nodes):
         node = custom_nodes[node_index]
-        if not is_node_enabled(node):
+        if not is_node_enabled(node) or not ProxyFilter.is_valid_proxy(node):
             return None
         proxy = ProxyFilter.sanitize_proxy(dict(node))
         transformed = strip_metadata(NameTransformer.transform_name(proxy, 'Custom'))
@@ -267,7 +265,7 @@ def get_all_final_node_names(yaml_source_dir: str = None) -> Set[str]:
             try:
                 cfg = load_subscription_yaml(sub['id'], yaml_source_dir, use_cache=True)
                 for proxy in cfg.get('proxies', []):
-                    if not is_node_enabled(proxy):
+                    if not is_node_enabled(proxy) or not ProxyFilter.is_valid_proxy(proxy):
                         continue
                     transformed = NameTransformer.transform_name(proxy, sub['name'])
                     names.add(transformed.get('name', ''))
@@ -276,7 +274,7 @@ def get_all_final_node_names(yaml_source_dir: str = None) -> Set[str]:
     
     # Get custom nodes
     for node in config.get('custom_nodes', []):
-        if not is_node_enabled(node):
+        if not is_node_enabled(node) or not ProxyFilter.is_valid_proxy(node):
             continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         names.add(transformed.get('name', ''))
@@ -306,7 +304,7 @@ def get_proxy_node_by_id(node_id: str, yaml_source_dir: str = None) -> Optional[
     config = load_config()
     for node in config.get('custom_nodes', []):
         if custom_node_id(node) == node_id:
-            if not is_node_enabled(node):
+            if not is_node_enabled(node) or not ProxyFilter.is_valid_proxy(node):
                 return None
             return strip_metadata(ProxyFilter.sanitize_proxy(node))
 
@@ -326,7 +324,7 @@ def get_proxy_node_by_id(node_id: str, yaml_source_dir: str = None) -> Optional[
             continue
         if node_index is not None:
             node = nodes[node_index]
-            if not is_node_enabled(node):
+            if not is_node_enabled(node) or not ProxyFilter.is_valid_proxy(node):
                 return None
             return strip_metadata(ProxyFilter.sanitize_proxy(node))
     return None

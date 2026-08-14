@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router';
-import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ChevronDown as ChevronDownIcon } from 'lucide-react';
+import { Link, useLocation } from 'react-router';
+import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
@@ -10,13 +10,17 @@ const API_BASE = '/api';
 
 const INFO_PREFIX_RE = /^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?/i;
 const INFO_DOMAIN_HINT_RE = /^\s*(?:最强备用|备用网址|备用地址|官网地址?|防丢失官网?|防失联官网?|永久官网|永久地址|最新官网|最新地址|网址发布|域名发布|防丢失|防失联)\s*[:：]?\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
+const INFO_TIMESTAMP_RE = /^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\(UTC[+-]\d{1,2}(?::?\d{2})?\)\s*$/i;
+const INFO_BALANCE_RE = /^\s*(?:balance|余额)\s*[:：]\s*\d+(?:[.,]\d+)?\s*(?:[KMGTPE]i?B|B)\s*$/i;
+const INFO_WEBSITE_RE = /^\s*(?:website|网站|网址)\s*[:：]\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
 const OFFICIAL_URL_RE = /https?:\/\//i;
 
 const HARD_INVALID_KEYWORDS = [
   '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
   '使用说明', '教程', '更新订阅', '公告', '通知', '客服',
   '续费', '购买', '工单', '咨询', '合作', '邀请', '返利',
-  '免注册', '免费节点', '变动较大'
+  '免注册', '免费节点', '变动较大', '全超时', '更换客户端',
+  '关注', '版本', '须知', '频道', '维护', '公众号'
 ];
 
 const SOFT_INVALID_KEYWORDS = [
@@ -71,6 +75,9 @@ export const isInfoNode = (node) => {
 
   if (INFO_PREFIX_RE.test(name)) return true;
   if (INFO_DOMAIN_HINT_RE.test(name)) return true;
+  if (INFO_TIMESTAMP_RE.test(name)) return true;
+  if (INFO_BALANCE_RE.test(name)) return true;
+  if (INFO_WEBSITE_RE.test(name)) return true;
 
   if (name.startsWith('官网')) {
     return !hasRegionHint(name);
@@ -98,6 +105,23 @@ const parseNodeTestResponse = (response) => {
   return testPayload;
 };
 
+const NODE_INVALID_REASON_LABELS = {
+  'unsupported-reality-option': 'Clash/Mihomo 不支持 Reality spider-x',
+  'unsupported-tls-extension': 'Clash/Mihomo 不支持该 TLS 扩展',
+  'unsupported-certificate-pin-format': 'Clash/Mihomo 不支持当前证书指纹格式',
+  'unsupported-trojan-tcp-disguise': 'Clash/Mihomo 不支持 Trojan TCP HTTP 伪装',
+  'unsupported-vless-network': 'Clash/Mihomo 不支持该 VLESS 传输方式',
+  'unsupported-vmess-network': 'Clash/Mihomo 不支持该 VMess 传输方式',
+  'unsupported-trojan-network': 'Clash/Mihomo 不支持该 Trojan 传输方式',
+  'unsupported-anytls-network': 'Clash/Mihomo 不支持该 AnyTLS 传输方式',
+  'unsupported-anytls-reality': 'Clash/Mihomo 不支持 AnyTLS Reality',
+};
+
+const getNodeInvalidReasonLabel = (reason) => {
+  if (!reason) return '节点配置不兼容';
+  return NODE_INVALID_REASON_LABELS[reason] || `节点配置不兼容（${reason}）`;
+};
+
 // Latency color helper
 const getLatencyColor = (latency) => {
   if (latency === null || latency === undefined) return 'text-gray-500';
@@ -119,6 +143,52 @@ const getLatencyBadge = (latency, error) => {
   if (latency < 500) return { text: '良好', color: 'bg-lime-500/20 text-lime-400' };
   if (latency < 1000) return { text: '一般', color: 'bg-yellow-500/20 text-yellow-400' };
   return { text: '较慢', color: 'bg-orange-500/20 text-orange-400' };
+};
+
+const getIpSourceLabel = (source) => ({
+  broadcast: '广播 IP',
+  native: '原生 IP',
+}[source] || '-');
+
+const getNetworkTypeLabel = (networkType) => ({
+  residential: '住宅 IP',
+  datacenter: '机房 IP',
+}[networkType] || '-');
+
+const formatRadarRatio = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : '-';
+};
+
+const formatIppureScore = (value) => {
+  if (value === null || value === undefined || value === '') return '-';
+  const normalized = String(value).trim();
+  return normalized.endsWith('%') ? normalized : `${normalized}%`;
+};
+
+const mergeIpProfiles = (previous, current) => {
+  if (!current || typeof current !== 'object') return previous;
+  if (!previous || typeof previous !== 'object') return current;
+  return { ...previous, ...current };
+};
+
+const getMetadataStatusLabel = (status, hasValue = false) => {
+  if (hasValue) return '';
+  if (status === 'success') return '无数据';
+  return ({
+    no_data: '无数据',
+    failed: '检测失败',
+    not_configured: '未配置',
+    dependency_failed: '依赖数据缺失',
+  }[status] || '未检测');
+};
+
+const getMetadataStatusClass = (status, hasValue = false) => {
+  if (hasValue) return '';
+  if (status === 'failed') return 'text-red-400';
+  if (status === 'not_configured') return 'text-amber-400';
+  if (status === 'no_data' || status === 'success') return 'text-gray-500';
+  return 'text-gray-500';
 };
 
 export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes, showToast }) {
@@ -165,6 +235,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [testConcurrency, setTestConcurrency] = useState(5);
   const [testLatency, setTestLatency] = useState(false);
   const [testRegion, setTestRegion] = useState(false);
+  const [testIppure, setTestIppure] = useState(false);
+  const [testRadar, setTestRadar] = useState(false);
   const [testSpeed, setTestSpeed] = useState(false);
   const [showBatchTestMenu, setShowBatchTestMenu] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
@@ -173,6 +245,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // GeoIP API selection for region detection
   const [geoipApis, setGeoipApis] = useState([]);
   const [selectedGeoipApi, setSelectedGeoipApi] = useState('ip-api.com');
+  const [radarEnabled, setRadarEnabled] = useState(false);
 
   // Port mapping state
   const [portMappingNode, setPortMappingNode] = useState(null);  // Node being configured
@@ -241,6 +314,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (signal?.aborted) return;
       setGeoipApis(res.data.apis || []);
       setSelectedGeoipApi(res.data.preferred_api || 'ip-api.com');
+      setRadarEnabled(res.data.radar_enabled === true);
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch GeoIP APIs', err);
@@ -438,6 +512,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           country: country,
           city: city,
           exit_ip: testResult?.exit_ip || node.exit_ip,
+          ip_profile: mergeIpProfiles(node.ip_profile, testResult?.ip_profile),
           latency: testResult?.latency !== undefined ? testResult.latency : node.last_latency,
           speed: testResult?.speed !== undefined ? testResult.speed : node.last_speed,
           speedError: testResult?.speed_error,
@@ -495,6 +570,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         country: country,
         city: city,
         exit_ip: testResult?.exit_ip || node.exit_ip,
+        ip_profile: mergeIpProfiles(node.ip_profile, testResult?.ip_profile),
         latency: testResult?.latency !== undefined ? testResult.latency : node.last_latency,
         speed: testResult?.speed !== undefined ? testResult.speed : node.last_speed,
         speedError: testResult?.speed_error,
@@ -560,6 +636,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         country: country,
         city: city,
         exit_ip: testResult?.exit_ip,
+        ip_profile: mergeIpProfiles(chain.ip_profile, testResult?.ip_profile),
         latency: testResult?.latency !== undefined ? testResult.latency : chain.last_latency,
         speed: testResult?.speed !== undefined ? testResult.speed : chain.last_speed,
         speedError: testResult?.speed_error,
@@ -572,7 +649,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     return nodes;
   }, [subNodes, customNodes, proxyChains, geoipData, nodeTestResults]);
-
 
   // Get unique types and sources
   const nodeTypes = useMemo(() => {
@@ -766,6 +842,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return colors[type?.toLowerCase()] || 'bg-gray-500/20 text-gray-400';
   };
 
+  const getProtocolDisplayLabel = (type) => {
+    const normalizedType = String(type || '').toLowerCase();
+    return normalizedType === 'hysteria2' ? 'HY2' : normalizedType.toUpperCase() || '-';
+  };
+
   // Test single node
   const mergeNodeTestResults = (updates) => {
     setNodeTestResults(prev => {
@@ -794,12 +875,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
       return;
     }
+    if (node.valid === false) {
+      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
+      return;
+    }
     setNodeTesting(node.nodeKey, isRegionTest ? 'region' : 'latency');
     try {
       const payload = {
         test_latency: !isRegionTest,
         test_speed: false,
         test_region: isRegionTest,
+        test_ip_profile: false,
+        test_radar: false,
         timeout: testTimeout
       };
       if (isRegionTest) {
@@ -813,6 +900,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           newResult.region = testPayload.region;
           newResult.city = testPayload.city;
           newResult.exit_ip = testPayload.exit_ip;
+          const mergedIpProfile = mergeIpProfiles(node.ip_profile, testPayload.ip_profile);
+          if (mergedIpProfile) {
+            newResult.ip_profile = mergedIpProfile;
+          }
           newResult.regionError = false;
         } else {
           newResult.latency = testPayload.latency;
@@ -844,6 +935,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const testNodeSpeed = async (node) => {
     if (node.sourceType === 'chain') {
       showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
+      return;
+    }
+    if (node.valid === false) {
+      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
       return;
     }
     setNodeTesting(node.nodeKey, 'speed');
@@ -891,10 +986,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
 
     const selectedNodesToTest = filteredNodes.filter(n => selectedNodes.has(n.nodeKey));
-    const nodesToTest = selectedNodesToTest.filter(n => n.sourceType !== 'chain');
+    const skippedChainCount = selectedNodesToTest.filter(n => n.sourceType === 'chain').length;
+    const skippedIncompatibleCount = selectedNodesToTest.filter(
+      n => n.sourceType !== 'chain' && n.valid === false,
+    ).length;
+    const nodesToTest = selectedNodesToTest.filter(
+      n => n.sourceType !== 'chain' && n.valid !== false,
+    );
 
-    if (selectedNodesToTest.length !== nodesToTest.length) {
-      showToast?.('链式代理不支持单节点批量测速，已跳过所选链节点', 'info');
+    if (skippedChainCount > 0 || skippedIncompatibleCount > 0) {
+      const skipped = [];
+      if (skippedChainCount > 0) skipped.push(`${skippedChainCount} 个链式代理`);
+      if (skippedIncompatibleCount > 0) skipped.push(`${skippedIncompatibleCount} 个不兼容节点`);
+      showToast?.(`已跳过${skipped.join('、')}`, 'info');
     }
 
     if (nodesToTest.length === 0) {
@@ -902,7 +1006,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       return;
     }
 
-    if (!testLatency && !testRegion && !testSpeed) {
+    if (!testLatency && !testRegion && !testIppure && !testRadar && !testSpeed) {
       showToast?.('请至少选择一项检测内容', 'error');
       return;
     }
@@ -910,15 +1014,31 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setShowBatchTestMenu(false);
     setBatchTesting(true);
 
-    const totalSteps = (testLatency ? nodesToTest.length : 0) + (testRegion ? nodesToTest.length : 0) + (testSpeed ? nodesToTest.length : 0);
+    const totalSteps = (testLatency ? nodesToTest.length : 0)
+      + (testRegion ? nodesToTest.length : 0)
+      + (testIppure ? nodesToTest.length : 0)
+      + (testRadar ? nodesToTest.length : 0)
+      + (testSpeed ? nodesToTest.length : 0);
     let currentStep = 0;
-    const firstPhase = testLatency ? '延迟' : (testRegion ? '地区' : '速度');
+    const firstPhase = testLatency
+      ? '延迟'
+      : testRegion
+        ? 'IP/地区'
+        : testIppure
+          ? 'IP属性'
+          : testRadar
+            ? '人机流量比'
+            : '速度';
     setBatchTestProgress({ current: 0, total: totalSteps, phase: firstPhase });
 
     // Batch update results to reduce re-renders
     const batchResults = {};
     const saveData = {};  // 用于批量保存的数据结构
     let failedCount = 0;
+    const mergeBatchIpProfile = (node, profile) => {
+      const savedProfile = saveData[node.sourceId]?.[node.id]?.ip_profile;
+      return mergeIpProfiles(savedProfile || node.ip_profile, profile);
+    };
 
     // Phase 1: Test latency with concurrency
     if (testLatency) {
@@ -972,7 +1092,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     // Phase 2: Test region with concurrency
     if (testRegion) {
       const baseStep = testLatency ? nodesToTest.length : 0;
-      setBatchTestProgress(prev => ({ ...prev, phase: '地区' }));
+      setBatchTestProgress(prev => ({ ...prev, phase: 'IP/地区' }));
       for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
         const batch = nodesToTest.slice(i, i + testConcurrency);
         const results = await Promise.allSettled(batch.map(async (node) => {
@@ -991,10 +1111,23 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
             if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
             saveData[node.sourceId][node.id].exit_ip = testPayload.exit_ip;
+            const mergedIpProfile = mergeBatchIpProfile(node, testPayload.ip_profile);
+            if (mergedIpProfile) {
+              saveData[node.sourceId][node.id].ip_profile = mergedIpProfile;
+            }
             saveData[node.sourceId][node.id].region = testPayload.region;
             saveData[node.sourceId][node.id].city = testPayload.city;
-            
-            return { nodeKey: node.nodeKey, data: { region: testPayload.region, city: testPayload.city, exit_ip: testPayload.exit_ip, regionError: false } };
+
+            const regionData = {
+              region: testPayload.region,
+              city: testPayload.city,
+              exit_ip: testPayload.exit_ip,
+              regionError: false,
+            };
+            if (mergedIpProfile) {
+              regionData.ip_profile = mergedIpProfile;
+            }
+            return { nodeKey: node.nodeKey, data: regionData };
           } catch (err) {
             failedCount += 1;
             const message = err.response?.data?.detail || err.message || '未知错误';
@@ -1018,16 +1151,139 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         });
         
         currentStep = baseStep + Math.min(i + testConcurrency, nodesToTest.length);
-        setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '地区' });
+        setBatchTestProgress({ current: currentStep, total: totalSteps, phase: 'IP/地区' });
         
         // Update state every batch
         mergeNodeTestResults(batchResults);
       }
     }
 
-    // Phase 3: Test speed with concurrency (lower concurrency for speed test)
+    // Phase 3: Test IPPure attributes with the same concurrency as region.
+    if (testIppure) {
+      const baseStep = (testLatency ? nodesToTest.length : 0)
+        + (testRegion ? nodesToTest.length : 0);
+      setBatchTestProgress(prev => ({ ...prev, phase: 'IP属性' }));
+      for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
+        const batch = nodesToTest.slice(i, i + testConcurrency);
+        const results = await Promise.allSettled(batch.map(async (node) => {
+          try {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
+              test_latency: false,
+              test_speed: false,
+              test_region: false,
+              test_ip_profile: true,
+              test_radar: false,
+              timeout: testTimeout,
+              batch_mode: true,
+            });
+            const testPayload = parseNodeTestResponse(res);
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
+            saveData[node.sourceId][node.id].exit_ip = testPayload.exit_ip;
+            const mergedIpProfile = mergeBatchIpProfile(node, testPayload.ip_profile);
+            if (mergedIpProfile) {
+              saveData[node.sourceId][node.id].ip_profile = mergedIpProfile;
+            }
+            return {
+              nodeKey: node.nodeKey,
+              data: {
+                exit_ip: testPayload.exit_ip,
+                ip_profile: mergedIpProfile,
+                ippureError: false,
+              },
+            };
+          } catch (err) {
+            failedCount += 1;
+            const message = err.response?.data?.detail || err.message || '未知错误';
+            return {
+              nodeKey: node.nodeKey,
+              data: { ippureError: true, ippureErrorMessage: message },
+            };
+          }
+        }));
+
+        results.forEach(result => {
+          if (result.status === 'fulfilled') {
+            batchResults[result.value.nodeKey] = {
+              ...batchResults[result.value.nodeKey],
+              ...result.value.data,
+            };
+          }
+        });
+        currentStep = (testLatency ? nodesToTest.length : 0)
+          + (testRegion ? nodesToTest.length : 0)
+          + Math.min(i + testConcurrency, nodesToTest.length);
+        setBatchTestProgress({ current: currentStep, total: totalSteps, phase: 'IP属性' });
+        mergeNodeTestResults(batchResults);
+      }
+    }
+
+    // Phase 4: Test Cloudflare Radar human/bot ratio.
+    if (testRadar) {
+      const baseStep = (testLatency ? nodesToTest.length : 0)
+        + (testRegion ? nodesToTest.length : 0)
+        + (testIppure ? nodesToTest.length : 0);
+      setBatchTestProgress(prev => ({ ...prev, phase: '人机流量比' }));
+      for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
+        const batch = nodesToTest.slice(i, i + testConcurrency);
+        const results = await Promise.allSettled(batch.map(async (node) => {
+          try {
+            const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
+              test_latency: false,
+              test_speed: false,
+              test_region: false,
+              test_ip_profile: false,
+              test_radar: true,
+              timeout: testTimeout,
+              geoip_api: selectedGeoipApi,
+              batch_mode: true,
+            });
+            const testPayload = parseNodeTestResponse(res);
+            if (!saveData[node.sourceId]) saveData[node.sourceId] = {};
+            if (!saveData[node.sourceId][node.id]) saveData[node.sourceId][node.id] = {};
+            saveData[node.sourceId][node.id].exit_ip = testPayload.exit_ip;
+            const mergedIpProfile = mergeBatchIpProfile(node, testPayload.ip_profile);
+            if (mergedIpProfile) {
+              saveData[node.sourceId][node.id].ip_profile = mergedIpProfile;
+            }
+            return {
+              nodeKey: node.nodeKey,
+              data: {
+                exit_ip: testPayload.exit_ip,
+                ip_profile: mergedIpProfile,
+                radarError: false,
+              },
+            };
+          } catch (err) {
+            failedCount += 1;
+            const message = err.response?.data?.detail || err.message || '未知错误';
+            return {
+              nodeKey: node.nodeKey,
+              data: { radarError: true, radarErrorMessage: message },
+            };
+          }
+        }));
+
+        results.forEach(result => {
+          if (result.status === 'fulfilled') {
+            batchResults[result.value.nodeKey] = {
+              ...batchResults[result.value.nodeKey],
+              ...result.value.data,
+            };
+          }
+        });
+        currentStep = baseStep + Math.min(i + testConcurrency, nodesToTest.length);
+        setBatchTestProgress({ current: currentStep, total: totalSteps, phase: '人机流量比' });
+        mergeNodeTestResults(batchResults);
+      }
+    }
+
+    // Phase 5: Test speed with concurrency (lower concurrency for speed test)
     if (testSpeed) {
-      const baseStep = (testLatency ? nodesToTest.length : 0) + (testRegion ? nodesToTest.length : 0);
+      const baseStep = (testLatency ? nodesToTest.length : 0)
+        + (testRegion ? nodesToTest.length : 0)
+        + (testIppure ? nodesToTest.length : 0)
+        + (testRadar ? nodesToTest.length : 0);
       setBatchTestProgress(prev => ({ ...prev, phase: '速度' }));
       // Use lower concurrency for speed test (max 2) to avoid bandwidth saturation
       const speedConcurrency = Math.min(testConcurrency, 2);
@@ -1226,6 +1482,76 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       showToast?.('批量删除失败', 'error');
     }
   };
+
+  const testNodeMetadata = async (node, metadataType) => {
+    if (node.sourceType === 'chain') {
+      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点信息检测', 'warning');
+      return;
+    }
+    if (node.valid === false) {
+      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
+      return;
+    }
+
+    const requestFields = {
+      test_latency: false,
+      test_speed: false,
+      test_region: metadataType === 'region',
+      test_ip_profile: metadataType === 'ippure',
+      test_radar: metadataType === 'radar',
+      timeout: testTimeout,
+    };
+    if (metadataType !== 'ippure') {
+      requestFields.geoip_api = selectedGeoipApi;
+    }
+
+    setNodeTesting(node.nodeKey, metadataType);
+    try {
+      const res = await request.post(
+        `${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`,
+        requestFields,
+      );
+      const testPayload = parseNodeTestResponse(res);
+      setNodeTestResults(prev => {
+        const next = { ...prev[node.nodeKey] };
+        const mergedIpProfile = mergeIpProfiles(
+          next.ip_profile || node.ip_profile,
+          testPayload.ip_profile,
+        );
+        if (mergedIpProfile) next.ip_profile = mergedIpProfile;
+        if (testPayload.exit_ip) next.exit_ip = testPayload.exit_ip;
+        if (metadataType === 'region') {
+          next.region = testPayload.region;
+          next.city = testPayload.city;
+          next.regionError = false;
+        } else if (metadataType === 'ippure') {
+          next.ippureError = false;
+        } else {
+          next.radarError = false;
+        }
+        return { ...prev, [node.nodeKey]: next };
+      });
+    } catch (err) {
+      const failureMessage = err.response?.data?.detail || err.message || '未知错误';
+      setNodeTestResults(prev => ({
+        ...prev,
+        [node.nodeKey]: {
+          ...prev[node.nodeKey],
+          ...(metadataType === 'region'
+            ? { regionError: true, regionErrorMessage: failureMessage }
+            : metadataType === 'ippure'
+              ? { ippureError: true, ippureErrorMessage: failureMessage }
+              : { radarError: true, radarErrorMessage: failureMessage }),
+        },
+      }));
+      showToast?.(`节点信息检测失败: ${failureMessage}`, 'error');
+    } finally {
+      clearNodeTesting(node.nodeKey);
+    }
+  };
+
+  const testNodeIppure = (node) => testNodeMetadata(node, 'ippure');
+  const testNodeRadar = (node) => testNodeMetadata(node, 'radar');
 
   const updateCustomOrderValue = (nodeId, value) => {
     setCustomOrderMap(prev => ({
@@ -1916,17 +2242,30 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
 
   return (
-    <div className="h-[calc(100vh-80px)] flex flex-col space-y-4 overflow-hidden">
+    <div className="h-[calc(100vh-80px)] flex flex-col space-y-2 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4 flex-shrink-0">
+      <div className="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
         <div>
-          <h1 className="text-2xl font-bold text-white">节点管理</h1>
-          <p className="text-gray-400 text-sm mt-1">查看和管理所有节点</p>
+          <h1 className="text-xl font-bold text-white">节点管理</h1>
+          <p className="text-gray-400 text-sm mt-0.5">查看和管理所有节点</p>
+          <div className={`text-xs mt-1 ${radarEnabled ? 'text-green-400' : 'text-amber-400'}`}>
+            {radarEnabled ? (
+              'Cloudflare Radar 已配置'
+            ) : (
+              <>
+                Cloudflare Radar 未配置；请前往
+                <Link to="/settings#cloudflare-radar-settings" className="underline hover:text-amber-300 mx-1">
+                  系统设置 → Cloudflare Radar API
+                </Link>
+                填写 Token
+              </>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => { fetchAllPortMappings(); setShowPortMappingList(true); }}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
           >
             <Link2 size={18} />
             端口映射
@@ -1939,7 +2278,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <div className="relative add-dropdown">
             <button
               onClick={() => setShowAddDropdown(!showAddDropdown)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+              className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
             >
               <Plus size={18} />
               添加节点
@@ -1966,7 +2305,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           </div>
           <button
             onClick={() => setShowTestSettingsModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
           >
             <Settings size={18} />
             检测设置
@@ -1975,13 +2314,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             <button
               onClick={() => setShowBatchTestMenu(!showBatchTestMenu)}
               disabled={batchTesting}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors disabled:opacity-50"
             >
               <Play size={18} className={batchTesting ? 'animate-pulse' : ''} />
               {batchTesting ? `${batchTestProgress.phase}检测中 ${batchTestProgress.current}/${batchTestProgress.total}` : (selectedNodes.size > 0 ? `批量检测 (${selectedNodes.size})` : '批量检测')}
             </button>
             {showBatchTestMenu && !batchTesting && (
-              <div className="absolute right-0 top-full mt-2 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+              <div className="absolute right-0 top-full mt-2 w-72 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
                 <div className="p-3 space-y-3">
                   <div className="text-sm text-gray-400 font-medium">检测内容</div>
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -2000,7 +2339,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                       onChange={(e) => setTestRegion(e.target.checked)}
                       className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">地区检测</span>
+                    <span className="text-white text-sm">IP/地区检测</span>
+                    <span className="text-xs text-gray-500">（出口 IP、地区）</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={testIppure}
+                      onChange={(e) => setTestIppure(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                    />
+                    <span className="text-white text-sm">IP 属性检测</span>
+                    <span className="text-xs text-gray-500">（来源、属性、IPPure）</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={testRadar}
+                      onChange={(e) => setTestRadar(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                    />
+                    <span className="text-white text-sm">人机流量比检测</span>
+                    <span className="text-xs text-gray-500">（Cloudflare Radar）</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -2015,7 +2375,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   <div className="pt-2 border-t border-gray-700">
                     <button
                       onClick={batchTestNodes}
-                      disabled={!testLatency && !testRegion && !testSpeed}
+                      disabled={!testLatency && !testRegion && !testIppure && !testRadar && !testSpeed}
                       className="w-full px-3 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
                     >
                       开始检测
@@ -2028,7 +2388,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <button
             onClick={openBatchDeleteCustomNodes}
             disabled={selectedCustomCount === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50"
           >
             <Trash2 size={18} />
             {selectedCustomCount > 0 ? `批量删除 (${selectedCustomCount})` : '批量删除'}
@@ -2036,13 +2396,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <button
             onClick={refreshAllNodes}
             disabled={loadingNodes}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
           >
             <RefreshCw size={18} className={loadingNodes ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
-      <div className="flex flex-wrap gap-3 items-center flex-shrink-0">
+      <div className="flex flex-wrap gap-2 items-center flex-shrink-0">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
@@ -2050,14 +2410,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="搜索节点名称/服务器/地区..."
-            className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            className="w-full pl-9 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
         </div>
 
         <select
           value={filterSource}
           onChange={(e) => setFilterSource(e.target.value)}
-          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
           {sourceOptions.map(source => (
             <option key={source.id} value={source.id}>{source.name}</option>
@@ -2067,7 +2427,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
-          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
           {nodeTypes.map(t => (
             <option key={t} value={t}>{t === 'all' ? '全部协议' : t.toUpperCase()}</option>
@@ -2077,7 +2437,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterLatencyStatus}
           onChange={(e) => setFilterLatencyStatus(e.target.value)}
-          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
           <option value="all">延迟状态</option>
           <option value="untested">未测试</option>
@@ -2089,11 +2449,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
 
       {/* Filters Row 2 - Sort */}
-      <div className="flex flex-wrap gap-3 items-center">
+      <div className="flex flex-wrap gap-2 items-center">
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
           <option value="name">按名称</option>
           <option value="type">按类型</option>
@@ -2106,7 +2466,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
         >
           <option value="asc">升序 ↑</option>
           <option value="desc">降序 ↓</option>
@@ -2114,14 +2474,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
         <button
           onClick={clearFilters}
-          className="px-3 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+          className="px-2.5 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
         >
           重置
         </button>
       </div>
 
       {/* Stats */}
-      <div className="flex flex-wrap gap-4 text-sm flex-shrink-0">
+      <div className="flex flex-wrap gap-3 text-sm flex-shrink-0">
         <span className="text-gray-400">
           共 <span className="text-white font-medium">{filteredNodes.length}</span> 个节点
           {(search || filterSource !== 'all' || filterType !== 'all' || filterLatencyStatus !== 'all') &&
@@ -2145,8 +2505,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           </>
         )}
       </div>
-
-
       {/* Nodes Table */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
         {loadingNodes ? (
@@ -2157,30 +2515,49 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         ) : (
           <>
             <div className="overflow-x-auto overflow-y-auto flex-1">
-              <table className="w-full">
+              <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[2%]" />
+                <col className="w-[14%]" />
+                <col className="w-[7%]" />
+                <col className="w-[5%]" />
+                <col className="w-[11%]" />
+                <col className="w-[8%]" />
+                <col className="w-[5%]" />
+                <col className="w-[5%]" />
+                <col className="w-[5%]" />
+                <col className="w-[7%]" />
+                <col className="w-[5%]" />
+                <col className="w-[7%]" />
+                <col className="w-[15%]" />
+              </colgroup>
               <thead className="sticky top-0 bg-gray-800 z-10">
                 <tr className="border-b border-gray-700 text-left">
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400 whitespace-nowrap">
+                  <th className="px-1 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">
                     <button
                       onClick={toggleSelectAll}
-                      className="flex items-center gap-1 hover:text-white transition-colors"
+                      className="flex items-center hover:text-white transition-colors"
+                      title="全选/取消全选"
                     >
                       {selectedNodes.size === filteredNodes.length && filteredNodes.length > 0 ? (
                         <CheckSquare size={16} className="text-blue-400" />
                       ) : (
                         <Square size={16} />
                       )}
-                      <span>全选</span>
                     </button>
                   </th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">节点名称</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">来源</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">协议</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">地区</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">IP</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">延迟</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">速度</th>
-                  <th className="px-4 py-3 text-sm font-medium text-gray-400">操作</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">节点名称</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">来源</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">协议</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-cyan-300 whitespace-nowrap">地区</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-cyan-300 whitespace-nowrap">IP</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IP来源</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IP属性</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IPPure系数</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-orange-300 whitespace-nowrap">人机流量比</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">延迟</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">速度</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
@@ -2200,10 +2577,22 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     const visibleDisplayName = stripLeadingFlagIcon(rawDisplayName);
                     const nodeFlag = node.flag || (rawDisplayName.match(LEADING_FLAG_ICON_RE)?.[0]?.trim() ?? '');
                     const isDisabled = node.enabled === false;
+                    const isIncompatible = node.valid === false;
+                    const invalidReasonLabel = getNodeInvalidReasonLabel(node.invalid_reason);
+                    const ipProfile = mergeIpProfiles(node.ip_profile, testResult?.ip_profile);
+                    const displayedExitIp = testResult?.exit_ip || node.exit_ip;
+                    const ipStatus = ipProfile?.ip_status;
+                    const ippureStatus = ipProfile?.ippure_status;
+                    const radarStatus = ipProfile?.radar_status;
+                    const hasIpSource = Boolean(ipProfile?.ip_source);
+                    const hasNetworkType = Boolean(ipProfile?.network_type);
+                    const hasFraudScore = ipProfile?.fraud_score !== undefined;
+                    const hasRadarRatio = ipProfile?.radar_human_ratio !== undefined
+                      || ipProfile?.radar_bot_ratio !== undefined;
 
                     return (
                       <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''} ${isDisabled ? 'opacity-60' : ''}`}>
-                        <td className="px-4 py-3">
+                        <td className="px-1 py-1.5">
                           <button
                             onClick={() => toggleSelectNode(node.nodeKey)}
                             className="text-gray-400 hover:text-white transition-colors"
@@ -2215,8 +2604,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             )}
                           </button>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                        <td className="px-2 py-1.5">
+                          <div className="inline-flex min-w-0 max-w-full items-center gap-1">
                             {node.sourceType === 'custom' && node.id && (
                               <input
                                 type="number"
@@ -2230,7 +2619,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                     applyCustomOrder();
                                   }
                                 }}
-                                className="w-12 px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 text-xs font-mono border border-orange-500/30 focus:outline-none focus:border-orange-400"
+                                className="w-10 px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 text-xs font-mono border border-orange-500/30 focus:outline-none focus:border-orange-400"
                                 title="自建节点序号，修改后自动按序排列"
                               />
                             )}
@@ -2249,32 +2638,40 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {nodeFlag}
                               </span>
                             )}
-                            <span className={`text-white truncate max-w-[200px] ${isDisabled ? 'line-through decoration-gray-500' : ''}`} title={rawDisplayName}>
+                            <span className={`min-w-0 max-w-[145px] truncate text-white ${isDisabled ? 'line-through decoration-gray-500' : ''}`} title={rawDisplayName}>
                               {visibleDisplayName || rawDisplayName}
                             </span>
+                            {isIncompatible && (
+                              <span
+                                className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-xs whitespace-nowrap"
+                                title={invalidReasonLabel}
+                              >
+                                配置不兼容
+                              </span>
+                            )}
                             {node.sourceType !== 'chain' && (
                               <button
                                 onClick={() => toggleNodeEnabled(node)}
-                                className="text-gray-400 hover:text-white transition-colors"
+                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
                                 title={isDisabled ? '点击启用节点，重新加入聚合配置' : '点击禁用节点，从聚合配置中移除'}
                               >
                                 {isDisabled ? (
-                                  <ToggleLeft size={18} />
+                                  <ToggleLeft size={16} />
                                 ) : (
-                                  <ToggleRight size={18} className="text-green-400" />
+                                  <ToggleRight size={16} className="text-green-400" />
                                 )}
                               </button>
                             )}
                             {node.sourceType === 'chain' && (
                               <button
                                 onClick={() => toggleChain(node.chainId)}
-                                className="text-gray-400 hover:text-white transition-colors"
+                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
                                 title={node.enabled ? '点击禁用' : '点击启用'}
                               >
                                 {node.enabled ? (
-                                  <ToggleRight size={18} className="text-green-400" />
+                                  <ToggleRight size={16} className="text-green-400" />
                                 ) : (
-                                  <ToggleLeft size={18} />
+                                  <ToggleLeft size={16} />
                                 )}
                               </button>
                             )}
@@ -2290,28 +2687,66 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-1.5">
                           <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : 'text-gray-400'}`}>
                             {node.source}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${getTypeColor(node.type)}`}>
-                            {node.type?.toUpperCase() || '-'}
+                        <td className="px-2 py-1.5">
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getTypeColor(node.type)}`} title={node.type?.toUpperCase() || '-'}>
+                            {getProtocolDisplayLabel(node.type)}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-gray-400 text-sm">
-                          <span className="truncate max-w-[150px] inline-block" title={node.city ? `${node.region} ${node.city}` : node.region}>
-                            {node.region || '-'}{node.city ? ` ${node.city}` : ''}
+                        <td className="px-2 py-1.5 text-gray-400 text-sm">
+                          <span className="block w-full max-w-[180px] truncate" title={node.city ? `${node.region} ${node.city}` : node.region}>
+                            {node.region || getMetadataStatusLabel(ipStatus)}{node.city ? ` ${node.city}` : ''}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-gray-400 text-sm">
-                          <span className="truncate max-w-[120px] inline-block font-mono text-xs" title={testResult?.exit_ip || node.exit_ip || ''}>
-                            {testResult?.exit_ip || node.exit_ip || '-'}
+                        <td className="px-2 py-1.5 text-gray-400 text-sm">
+                          <span
+                            className={`truncate inline-block max-w-[130px] font-mono text-xs ${displayedExitIp ? '' : getMetadataStatusClass(ipStatus)}`}
+                            title={displayedExitIp || ''}
+                          >
+                            {displayedExitIp || getMetadataStatusLabel(ipStatus)}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                        <td className="px-2 py-1.5 text-xs whitespace-nowrap">
+                          <span className={hasIpSource ? 'text-cyan-300' : getMetadataStatusClass(ippureStatus)}>
+                            {hasIpSource ? getIpSourceLabel(ipProfile.ip_source) : getMetadataStatusLabel(ippureStatus)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-xs whitespace-nowrap">
+                          <span className={hasNetworkType ? 'text-purple-300' : getMetadataStatusClass(ippureStatus)}>
+                            {hasNetworkType ? getNetworkTypeLabel(ipProfile.network_type) : getMetadataStatusLabel(ippureStatus)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-xs whitespace-nowrap">
+                          <span className={hasFraudScore ? 'text-amber-300 font-mono' : getMetadataStatusClass(ippureStatus)}>
+                            {hasFraudScore ? formatIppureScore(ipProfile.fraud_score) : getMetadataStatusLabel(ippureStatus)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-xs">
+                          {hasRadarRatio ? (
+                            <div className="flex flex-col gap-0.5 whitespace-nowrap">
+                              {ipProfile?.radar_human_ratio !== undefined && (
+                                <span className="text-green-400">
+                                  人类 {formatRadarRatio(ipProfile.radar_human_ratio)}
+                                </span>
+                              )}
+                              {ipProfile?.radar_bot_ratio !== undefined && (
+                                <span className="text-orange-400">
+                                  机器人 {formatRadarRatio(ipProfile.radar_bot_ratio)}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className={getMetadataStatusClass(radarStatus)}>
+                              {getMetadataStatusLabel(radarStatus)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
                             {displayedLatency !== undefined && displayedLatency !== null && displayedLatency > 0 && !displayedError ? (
                               <span className={`font-mono text-sm ${getLatencyColor(displayedLatency)}`}>
                                 {displayedLatency}ms
@@ -2323,14 +2758,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
 	                            {displayedSpeedError ? (
 	                              <span className="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">
 	                                失败
 	                              </span>
 	                            ) : node.speed !== undefined && node.speed > 0 ? (
-	                              <span className="font-mono text-sm text-green-400">
+                              <span className="font-mono text-sm text-green-400 whitespace-nowrap">
 	                                {node.speed.toFixed(1)} MB/s
                               </span>
                             ) : (
@@ -2340,86 +2775,112 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1">
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          <div className="flex items-center gap-0">
                             <button
                               onClick={() => node.sourceType === 'chain' ? openChainModal(proxyChains.find(c => c.id === node.chainId)) : setEditingNode(node)}
-                              className="p-1.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
+                              className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
                               title="查看/编辑"
                             >
-                              <Edit2 size={16} />
+                              <Edit2 size={14} />
                             </button>
-                            {/* Region test button */}
+                            {/* IP/region test button */}
                             <button
                               onClick={() => testNode(node, true)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
-                              className="p-1.5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
-                              title="检测地区"
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              className="p-0.5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
+                              title={isIncompatible ? invalidReasonLabel : '检测 IP/地区'}
                             >
                               {activeTestType === 'region' ? (
-                                <RefreshCw size={16} className="animate-spin" />
+                                <RefreshCw size={14} className="animate-spin" />
                               ) : (
-                                <Globe size={16} />
+                                <Globe size={14} />
+                              )}
+                            </button>
+                            {/* IPPure attribute test button */}
+                            <button
+                              onClick={() => testNodeIppure(node)}
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors disabled:opacity-50"
+                              title={isIncompatible ? invalidReasonLabel : '检测 IP 来源/属性/IPPure'}
+                            >
+                              {activeTestType === 'ippure' ? (
+                                <RefreshCw size={14} className="animate-spin" />
+                              ) : (
+                                <ShieldCheck size={14} />
+                              )}
+                            </button>
+                            {/* Radar human/bot ratio test button */}
+                            <button
+                              onClick={() => testNodeRadar(node)}
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              className="p-0.5 text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 rounded transition-colors disabled:opacity-50"
+                              title={isIncompatible ? invalidReasonLabel : '检测人机流量比'}
+                            >
+                              {activeTestType === 'radar' ? (
+                                <RefreshCw size={14} className="animate-spin" />
+                              ) : (
+                                <Bot size={14} />
                               )}
                             </button>
                             {/* Latency test button */}
                             <button
                               onClick={() => testNode(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
-                              className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
-                              title="测试延迟"
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              className="p-0.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                              title={isIncompatible ? invalidReasonLabel : '测试延迟'}
                             >
                               {activeTestType === 'latency' ? (
-                                <RefreshCw size={16} className="animate-spin" />
+                                <RefreshCw size={14} className="animate-spin" />
                               ) : (
-                                <Clock size={16} />
+                                <Clock size={14} />
                               )}
                             </button>
                             {/* Speed test button */}
                             <button
                               onClick={() => testNodeSpeed(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain'}
-                              className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
-                              title="测试速度"
+                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              className="p-0.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
+                              title={isIncompatible ? invalidReasonLabel : '测试速度'}
                             >
                               {activeTestType === 'speed' ? (
-                                <RefreshCw size={16} className="animate-spin" />
+                                <RefreshCw size={14} className="animate-spin" />
                               ) : (
-                                <Play size={16} />
+                                <Play size={14} />
                               )}
                             </button>
                             <button
                               onClick={() => openPortMapping(node)}
-                              className={`p-1.5 rounded transition-colors ${currentMappedPort
+                              className={`p-0.5 rounded transition-colors ${currentMappedPort
                                 ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10'
                                 : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
                                 }`}
                               title={currentMappedPort ? `已绑定端口 ${currentMappedPort}` : '绑定端口'}
                             >
-                              <Link2 size={16} />
+                              <Link2 size={14} />
                             </button>
                             {node.sourceType === 'custom' && (
                               <>
                                 <button
                                   onClick={() => moveCustomNode(node.id, 'up')}
-                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="上移"
                                 >
-                                  <ChevronUp size={16} />
+                                  <ChevronUp size={14} />
                                 </button>
                                 <button
                                   onClick={() => moveCustomNode(node.id, 'down')}
-                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="下移"
                                 >
-                                  <ChevronDown size={16} />
+                                  <ChevronDown size={14} />
                                 </button>
                                 <button
                                   onClick={() => confirmDeleteNode(node.id)}
-                                  className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
-                                  <Trash2 size={16} />
+                                  <Trash2 size={14} />
                                 </button>
                               </>
                             )}
@@ -2427,24 +2888,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               <>
                                 <button
                                   onClick={() => moveChain(node.chainId, 'up')}
-                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="上移"
                                 >
-                                  <ChevronUp size={16} />
+                                  <ChevronUp size={14} />
                                 </button>
                                 <button
                                   onClick={() => moveChain(node.chainId, 'down')}
-                                  className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="下移"
                                 >
-                                  <ChevronDown size={16} />
+                                  <ChevronDown size={14} />
                                 </button>
                                 <button
                                   onClick={() => setDeleteChainConfirm({ open: true, chainId: node.chainId })}
-                                  className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
-                                  <Trash2 size={16} />
+                                  <Trash2 size={14} />
                                 </button>
                               </>
                             )}
@@ -2455,7 +2916,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   })
                 ) : (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
+                    <td colSpan={13} className="px-4 py-12 text-center text-gray-500">
                       {allNodes.length === 0 ? '暂无节点，请先添加订阅或自建节点' : '没有匹配的节点'}
                     </td>
                   </tr>
@@ -2616,7 +3077,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <p className="text-xs text-gray-500 mt-1">同时测试的节点数量，建议 3-10</p>
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-2">地区检测 API</label>
+                <label className="block text-sm text-gray-400 mb-2">IP/地区检测 API</label>
                 <select
                   value={selectedGeoipApi}
                   onChange={(e) => setSelectedGeoipApi(e.target.value)}
@@ -2628,7 +3089,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     </option>
                   ))}
                 </select>
-                <p className="text-xs text-gray-500 mt-1">用于检测节点出口 IP 地区的在线 API</p>
+                <p className="text-xs text-gray-500 mt-1">用于检测出口 IP、地区以及为 Radar 查询 ASN</p>
               </div>
             </div>
             <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">

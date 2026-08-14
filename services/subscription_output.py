@@ -17,13 +17,13 @@ from typing import AsyncContextManager, Awaitable, Callable, Optional
 from urllib.parse import quote
 
 import yaml
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from core.dependencies import verify_admin_or_user_token
 from helpers import load_subscription_yaml
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
-from services.link_exporter import proxy_to_link
+from services.link_exporter import export_proxy_link
 from services.name_transformer import NameTransformer
 from services.node_visibility import (
     YAMLDumper,
@@ -52,6 +52,13 @@ from services.subscription_state import (
     refresh_success_fields,
 )
 from services.subscription_storage import persist_subscription_content_and_record
+from services.singbox_export import (
+    SingboxExportError,
+    build_singbox_config_with_diagnostics,
+)
+from services.socks_export import SocksExportError, build_socks_config, parse_excluded_ports
+from services.proxy_filter import ProxyFilter
+from services.subscription_node_count import count_effective_subscription_nodes
 
 try:
     from yaml import CSafeLoader as YAMLLoader
@@ -68,6 +75,57 @@ def _safe_download_filename(value: object, fallback: str, extension: str) -> str
     safe = ''.join(char for char in raw if char.isalnum() or char in ' _-' or '\u4e00' <= char <= '\u9fff')
     safe = safe.strip(' .') or fallback
     return f"{safe}.{extension.lstrip('.')}"
+
+
+def _singbox_diagnostics_header(diagnostics, max_length: int = 2048) -> str:
+    """Return URL-encoded diagnostics safe for common proxy header limits."""
+
+    summaries = []
+    for diagnostic in diagnostics:
+        name = _safe_export_label(getattr(diagnostic, "name", "unnamed"))
+        reason = _safe_export_label(getattr(diagnostic, "reason", "unspecified"), "unspecified")
+        kind = _safe_export_label(getattr(diagnostic, "kind", "node"), "node")
+        summaries.append(f"{kind}:{name}: {reason}")
+
+    encoded = quote("; ".join(summaries), safe="")
+    if len(encoded) <= max_length:
+        return encoded
+    # Never cut through a percent-encoded byte; add an explicit truncation marker.
+    marker = quote("; diagnostics truncated", safe="")
+    prefix = encoded[: max(0, max_length - len(marker))]
+    while prefix.endswith("%") or (len(prefix) >= 2 and prefix[-2] == "%"):
+        prefix = prefix[:-1]
+    return prefix + marker
+
+
+def _safe_export_label(value: object, fallback: str = "unnamed") -> str:
+    """Keep export diagnostics useful without copying credentials or URIs."""
+
+    text = str(value or fallback).replace("\r", " ").replace("\n", " ").strip()
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("://", "@", "token=", "password=", "uuid=")):
+        return fallback
+    return text[:160] or fallback
+
+
+def _v2ray_diagnostics_header(issues: list[dict], max_length: int = 2048) -> str:
+    """Encode bounded V2Ray skip diagnostics without exposing node contents."""
+
+    summaries = []
+    for issue in issues:
+        name = _safe_export_label(issue.get("name"))
+        proxy_type = _safe_export_label(issue.get("type"), "unknown")
+        reason = _safe_export_label(issue.get("reason"), "unsupported_configuration")
+        summaries.append(f"{proxy_type}:{name}: {reason}")
+
+    encoded = quote("; ".join(summaries), safe="")
+    if len(encoded) <= max_length:
+        return encoded
+    marker = quote("; diagnostics truncated", safe="")
+    prefix = encoded[: max(0, max_length - len(marker))]
+    while prefix.endswith("%") or (len(prefix) >= 2 and prefix[-2] == "%"):
+        prefix = prefix[:-1]
+    return prefix + marker
 
 
 def create_subscription_output_router(
@@ -120,6 +178,8 @@ def create_subscription_output_router(
     async def get_merged_subscription(
         token: Optional[str] = None,
         format: Optional[str] = None,
+        start_port: int = Query(42000, ge=1, le=65535),
+        exclude_ports: Optional[str] = Query(None, max_length=2000),
         user_agent: Optional[str] = Header(None, alias="User-Agent")
     ):
         config = load_config()
@@ -247,6 +307,21 @@ def create_subscription_output_router(
                             content,
                             existing_nodes=existing_nodes,
                         )
+                        try:
+                            refreshed_cfg = yaml.load(content, Loader=YAMLLoader)
+                            refreshed_nodes = (
+                                refreshed_cfg.get('proxies', [])
+                                if isinstance(refreshed_cfg, dict)
+                                else []
+                            )
+                            node_count = count_effective_subscription_nodes(refreshed_nodes)
+                        except Exception:
+                            logger.warning(
+                                "Unable to recalculate node count for missing subscription %s",
+                                sub['id'],
+                                exc_info=True,
+                            )
+                            node_count = 0
                         successful_refresh = {
                             'upload': sub_info.get('upload', 0),
                             'download': sub_info.get('download', 0),
@@ -296,17 +371,31 @@ def create_subscription_output_router(
                     },
                 )
 
-        # Smart format detection: auto-select based on User-Agent
-        # Clash clients → YAML, others → Base64
-        if format is None and user_agent:
-            ua_lower = user_agent.lower()
-            # Clash client keywords
-            clash_keywords = ['clash', 'stash', 'shadowrocket', 'quantumult', 'surge', 'loon']
-            # If Clash client, use YAML; otherwise use Base64
-            is_clash = any(kw in ua_lower for kw in clash_keywords)
-            if not is_clash:
-                # V2RayN, V2RayNG, Nekoray etc use Base64
-                format = 'base64'
+        # Keep ``base64`` as a backward-compatible input alias, while public
+        # subscription links use the protocol-oriented name ``v2ray``.
+        format = format.strip().lower() if format else None
+        if format == 'base64':
+            format = 'v2ray'
+        if format == 'yaml':
+            format = 'clash'
+        if format is None:
+            ua_lower = (user_agent or '').lower()
+            if 'sing-box' in ua_lower or 'singbox' in ua_lower:
+                format = 'singbox'
+            elif any(kw in ua_lower for kw in ['clash', 'stash', 'shadowrocket', 'quantumult', 'surge', 'loon']):
+                format = 'clash'
+            else:
+                format = 'v2ray'
+        supported_formats = {'v2ray', 'clash', 'singbox', 'socks', 'socks-manual'}
+        if format not in supported_formats:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    'message': 'Unsupported subscription format',
+                    'format': format,
+                    'supported': ['v2ray', 'clash', 'singbox', 'socks'],
+                },
+            )
 
         # Get template based on template_id
         template_proxy_groups = None  # Will store template's proxy-groups if available
@@ -404,7 +493,8 @@ def create_subscription_output_router(
         merger = ConfigMerger(
             yaml_dir=YAML_SOURCE_DIR, output_file=OUTPUT_FILE,
             custom_header=header, custom_suffix=suffix, file_aliases=file_aliases,
-            include_source_metadata=True
+            include_source_metadata=True,
+            output_format=format,
         )
 
         try:
@@ -562,16 +652,13 @@ def create_subscription_output_router(
             proxy_chains = config.get('proxy_chains', [])
             chain_proxies = []
             chain_dependency_proxies = []
+            chain_dependency_names: set[str] = set()
             chain_proxy_names = []
             emitted_chain_reference_names = {}
 
             existing_names = {p.get('name') for p in proxies if isinstance(p, dict) and p.get('name')}
 
             pool_group_names = []
-            chain_allocations_enabled = user_allocations is not None and bool(
-                user_allocations.get('chain_nodes') or user_allocations.get('chain_pools')
-            )
-
             def short_node_name(name: str) -> str:
                 if not name:
                     return ''
@@ -697,36 +784,8 @@ def create_subscription_output_router(
                 dependency = filter_underscore_fields(dict(node_proxy))
                 if dependency.get('name') and not dependency['name'].startswith('📊'):
                     chain_dependency_proxies.append(dependency)
+                    chain_dependency_names.add(str(dependency['name']))
                     existing_names.add(node_name)
-
-            def is_allocated_ref(node_ref: dict, node_proxy: dict | None) -> bool:
-                if user_allocations is None:
-                    return True
-                if not node_ref:
-                    return False
-                sub_id = node_ref.get('sub_id')
-                if not sub_id:
-                    return False
-                alloc_key = 'custom_nodes' if sub_id == 'custom' else sub_id
-                allocated_nodes = user_allocations.get(alloc_key)
-                if not allocated_nodes:
-                    return False
-                if allocated_nodes == ['*']:
-                    return True
-
-                name = ''
-                if node_proxy and node_proxy.get('name'):
-                    name = node_proxy.get('name', '')
-                if not name:
-                    name = node_ref.get('node_name', '')
-
-                if not name:
-                    return False
-                return is_name_allocated(
-                    name,
-                    allocated_nodes,
-                    node_ref.get('node_id') or (node_proxy or {}).get('_allocation_id'),
-                )
 
             def is_allocated_chain_name(
                 name: str,
@@ -800,10 +859,148 @@ def create_subscription_output_router(
                     if len(chain.get('rows', [])) > 1:
                         chain_name = f"{chain_name} #{row_idx + 1}"
 
+                    # Resolve the row's own allocation before touching any of
+                    # its base nodes.  Previously a user who owned one chain
+                    # could cause dependencies from unrelated, unallocated
+                    # rows to be appended while those rows were later skipped.
+                    # The row must be selected first; only then may its
+                    # referenced nodes be included as required dialer
+                    # dependencies.
+                    chain_name_full = f"🔗 {chain_name}"
+                    chain_allocation_id = proxy_chain_virtual_node_id(
+                        'chain_nodes',
+                        chain_id,
+                        row_id,
+                    )
+
+                    final_group_allocation_id = None
+                    if group_spec:
+                        final_group_allocation_id = proxy_chain_virtual_node_id(
+                            'chain_pools',
+                            chain_id,
+                            str(group_spec.get('group_id') or f"legacy_group_{row_idx}_{group_spec_index}"),
+                        )
+                        final_group_name = resolved_chain_reference_names.get(final_group_allocation_id)
+                        if not final_group_name:
+                            final_group_name = unique_group_name(
+                                f"🔀 {group_spec.get('group_name') or f'{chain_name} 落地池'}",
+                                set(existing_group_names),
+                                group_spec.get('group_id'),
+                            )
+                        if user_allocations is not None and not is_allocated_chain_name(
+                            final_group_name,
+                            'chain_pools',
+                            final_group_allocation_id,
+                        ):
+                            continue
+                    elif user_allocations is not None and not is_allocated_chain_name(
+                        chain_name_full,
+                        'chain_nodes',
+                        chain_allocation_id,
+                    ):
+                        continue
+
+                    # Transit pools are also allocation boundaries.  Check all
+                    # of them up front so an earlier accepted pool cannot add
+                    # its member nodes before a later, unallocated pool aborts
+                    # the row.
+                    if user_allocations is not None:
+                        transit_group_names = set(existing_group_names)
+                        transit_group_index = 0
+                        transit_unallocated = False
+                        for hop in chain_hops:
+                            if hop.get('type') != 'group':
+                                continue
+                            transit_group_index += 1
+                            spec = hop['spec']
+                            group_id = str(spec.get('group_id') or f"legacy_group_{row_idx}_{hop['node_index']}")
+                            group_allocation_id = proxy_chain_virtual_node_id(
+                                'chain_pools',
+                                chain_id,
+                                group_id,
+                            )
+                            group_name = resolved_chain_reference_names.get(group_allocation_id)
+                            if not group_name:
+                                group_name = unique_group_name(
+                                    f"🔀 {spec.get('group_name') or f'{chain_name} 中转池{transit_group_index}'}",
+                                    transit_group_names,
+                                    spec.get('group_id'),
+                                )
+                            if not is_allocated_chain_name(
+                                group_name,
+                                'chain_pools',
+                                group_allocation_id,
+                            ):
+                                transit_unallocated = True
+                                break
+                        if transit_unallocated:
+                            continue
+
+                    # Resolve every referenced node before mutating proxy
+                    # groups or dependency lists.  A disabled/deleted base
+                    # node must invalidate the row without leaving behind
+                    # transit pools from a partially processed chain.
+                    resolved_hops = []
+                    unresolved_hop = False
+                    for hop in chain_hops:
+                        if hop['type'] == 'node':
+                            node_ref = hop['ref']
+                            node_proxy = find_node_by_reference(
+                                node_ref.get('sub_id'),
+                                node_ref.get('node_index'),
+                                node_ref.get('node_name'),
+                                node_id=node_ref.get('node_id'),
+                            )
+                            if not node_proxy:
+                                unresolved_hop = True
+                                break
+                            resolved_hops.append({
+                                'type': 'node',
+                                'proxy': dict(node_proxy),
+                            })
+                            continue
+
+                        member_proxies = []
+                        for member_ref in hop['spec'].get('group_nodes', []) or []:
+                            node_proxy = find_node_by_reference(
+                                member_ref.get('sub_id'),
+                                member_ref.get('node_index'),
+                                member_ref.get('node_name'),
+                                node_id=member_ref.get('node_id'),
+                            )
+                            if node_proxy:
+                                member_proxies.append(dict(node_proxy))
+                        if not member_proxies:
+                            unresolved_hop = True
+                            break
+                        resolved_hops.append({
+                            'type': 'group',
+                            'spec': hop['spec'],
+                            'node_index': hop['node_index'],
+                            'members': member_proxies,
+                        })
+                    if unresolved_hop:
+                        continue
+
+                    resolved_final_members = []
+                    if group_spec:
+                        for member_ref in group_spec.get('group_nodes', []) or []:
+                            node_proxy = find_node_by_reference(
+                                member_ref.get('sub_id'),
+                                member_ref.get('node_index'),
+                                member_ref.get('node_name'),
+                                node_id=member_ref.get('node_id'),
+                            )
+                            if node_proxy:
+                                resolved_final_members.append(dict(node_proxy))
+                        if not resolved_final_members:
+                            continue
+
                     def build_transit_group(
                         base_name: str,
                         spec: dict,
                         node_index: int,
+                        member_proxies: list[dict],
                     ) -> str | None:
                         group_base_name = spec.get('group_name') or base_name
                         group_allocation_id = proxy_chain_virtual_node_id(
@@ -824,18 +1021,8 @@ def create_subscription_output_router(
                             group_allocation_id,
                         ):
                             return None
-                        group_nodes = spec.get('group_nodes', []) or []
-                        member_proxies = []
-                        for member_ref in group_nodes:
-                            node_proxy = find_node_by_reference(
-                                member_ref.get('sub_id'),
-                                member_ref.get('node_index'),
-                                member_ref.get('node_name'),
-                                node_id=member_ref.get('node_id'),
-                            )
-                            if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
-                                include_chain_dependency(node_proxy)
-                                member_proxies.append(dict(node_proxy))
+                        for node_proxy in member_proxies:
+                            include_chain_dependency(node_proxy)
                         if not member_proxies:
                             return None
                         member_names = [p.get('name', '') for p in member_proxies if p.get('name')]
@@ -853,20 +1040,10 @@ def create_subscription_output_router(
                     # Resolve hops into chain nodes (proxies + group placeholders)
                     chain_nodes = []
                     base_allowed = True
-                    require_base_allocation = not (user_allocations is not None and chain_allocations_enabled)
                     transit_idx = 0
-                    for hop in chain_hops:
+                    for hop in resolved_hops:
                         if hop['type'] == 'node':
-                            node_ref = hop['ref']
-                            node_proxy = find_node_by_reference(
-                                node_ref.get('sub_id'),
-                                node_ref.get('node_index'),
-                                node_ref.get('node_name'),
-                                node_id=node_ref.get('node_id'),
-                            )
-                            if not node_proxy or (require_base_allocation and not is_allocated_ref(node_ref, node_proxy)):
-                                base_allowed = False
-                                break
+                            node_proxy = hop['proxy']
                             include_chain_dependency(node_proxy)
                             chain_nodes.append(dict(node_proxy))
                         else:
@@ -876,6 +1053,7 @@ def create_subscription_output_router(
                                 base_name,
                                 hop['spec'],
                                 hop['node_index'],
+                                hop['members'],
                             )
                             if not group_name:
                                 base_allowed = False
@@ -902,28 +1080,9 @@ def create_subscription_output_router(
                                 existing_group_names,
                                 group_spec.get('group_id'),
                             )
-                        if user_allocations is not None and not is_allocated_chain_name(
-                            group_name,
-                            'chain_pools',
-                            group_allocation_id,
-                        ):
-                            continue
-
-                        group_nodes = group_spec.get('group_nodes', []) or []
-                        member_proxies = []
-                        for member_ref in group_nodes:
-                            node_proxy = find_node_by_reference(
-                                member_ref.get('sub_id'),
-                                member_ref.get('node_index'),
-                                member_ref.get('node_name'),
-                                node_id=member_ref.get('node_id'),
-                            )
-                            if node_proxy and (chain_allocations_enabled or is_allocated_ref(member_ref, node_proxy)):
-                                include_chain_dependency(node_proxy)
-                                member_proxies.append(dict(node_proxy))
-
-                        if not member_proxies:
-                            continue
+                        member_proxies = resolved_final_members
+                        for node_proxy in member_proxies:
+                            include_chain_dependency(node_proxy)
 
                         chain_member_names = []
                         base_start_name = short_node_name(chain_nodes[0].get('name', '')) if chain_nodes else ''
@@ -953,18 +1112,6 @@ def create_subscription_output_router(
                     else:
                         # Normal chain (no group)
                         if len(chain_nodes) < 2:
-                            continue
-                        chain_name_full = f"🔗 {chain_name}"
-                        chain_allocation_id = proxy_chain_virtual_node_id(
-                            'chain_nodes',
-                            chain_id,
-                            row_id,
-                        )
-                        if user_allocations is not None and not is_allocated_chain_name(
-                            chain_name_full,
-                            'chain_nodes',
-                            chain_allocation_id,
-                        ):
                             continue
                         emitted_chain_name = build_chain_entry(
                             chain_name_full,
@@ -1128,32 +1275,62 @@ def create_subscription_output_router(
             expire_times = [s.get('expire', 0) or 0 for s in enabled_subs if (s.get('expire', 0) or 0) > 0]
             total_expire = min(expire_times) if expire_times else 0
 
-            # Base64 format output
-            if format == 'base64':
+            # V2Ray/v2rayN subscription output. The response is still the
+            # standard Base64-encoded URI list expected by v2rayN; ``v2ray``
+            # makes that protocol choice explicit in the URL and UI.
+            if format == 'v2ray':
                 links = []
-                unsupported = []
+                skipped_issues = []
                 for proxy in proxies:
                     if proxy.get('name', '').startswith('📊'):
                         continue
-                    if proxy.get('dialer-proxy') or proxy.get('type') == 'group':
-                        unsupported.append(proxy.get('name', 'unnamed'))
+                    if user_allocations is not None and proxy.get('name') in chain_dependency_names:
+                        skipped_issues.append({
+                            'name': _safe_export_label(proxy.get('name'), 'unnamed'),
+                            'type': str(proxy.get('type') or 'unknown'),
+                            'reason': 'chain_dependency_not_allocated',
+                        })
                         continue
-                    link = proxy_to_link(proxy)
-                    if link:
-                        links.append(link)
+                    if proxy.get('dialer-proxy') or proxy.get('type') == 'group':
+                        # v2rayN's Base64 subscription importer accepts a list
+                        # of standalone share links only.  A chain node or
+                        # proxy group cannot be represented without silently
+                        # losing its routing relationship, so omit it while
+                        # keeping the remaining leaf nodes importable.
+                        skipped_issues.append({
+                            'name': _safe_export_label(proxy.get('name'), 'unnamed'),
+                            'type': str(proxy.get('type') or 'chain'),
+                            'reason': 'chain_not_supported',
+                        })
+                        continue
+                    export_result = export_proxy_link(proxy)
+                    if export_result.link:
+                        links.append(export_result.link)
                     else:
-                        unsupported.append(proxy.get('name', 'unnamed'))
-                if unsupported:
+                        skipped_issues.append({
+                            'name': _safe_export_label(proxy.get('name'), 'unnamed'),
+                            'type': proxy.get('type', 'unknown'),
+                            'reason': export_result.reason or 'unsupported_configuration',
+                        })
+                if skipped_issues:
+                    logger.warning(
+                        "V2Ray export skipped %s node(s): %s",
+                        len(skipped_issues),
+                        ", ".join(
+                            f"{issue['type']}:{issue['name']} ({issue['reason']})"
+                            for issue in skipped_issues[:20]
+                        ),
+                    )
+                if not links:
                     raise HTTPException(
                         status_code=422,
                         detail={
-                            'message': 'Base64 format cannot represent one or more nodes without losing configuration',
-                            'nodes': unsupported[:50],
-                            'count': len(unsupported),
+                            'message': 'No standalone proxy nodes can be represented in V2Ray format',
+                            'nodes': [issue['name'] for issue in skipped_issues[:50]],
+                            'count': len(skipped_issues),
+                            'issues': skipped_issues[:50],
                         },
                     )
-                if not links:
-                    raise HTTPException(status_code=422, detail='No exportable proxy nodes')
                 content = base64.b64encode('\n'.join(links).encode()).decode()
 
                 # Get custom config name
@@ -1176,121 +1353,117 @@ def create_subscription_output_router(
                         "profile-title": encoded_name,
                         "profile-update-interval": "24",
                         "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+                        "x-v2ray-skipped-nodes": str(len(skipped_issues)),
+                        "x-v2ray-export-diagnostics": _v2ray_diagnostics_header(skipped_issues),
                     }
                 )
 
-            # SOCKS format output - minimal config with listeners
-            if format == 'socks' or format == 'socks-manual':
-                # Get custom config name
-                encoded_name = quote(sub_name)
+            # Sing-box JSON output. Chain nodes are represented with detour
+            # and transit pools with selector/urltest outbounds.
+            if format == 'singbox':
+                try:
+                    singbox_config, skipped_nodes = build_singbox_config_with_diagnostics(
+                        proxies,
+                        proxy_groups,
+                    )
+                except SingboxExportError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+                if skipped_nodes:
+                    logger.warning(
+                        "Sing-box export applied %s diagnostic adjustment(s): %s",
+                        len(skipped_nodes),
+                        ", ".join(_safe_export_label(item.name) for item in skipped_nodes[:20]),
+                    )
+
+                subject = user_info or admin_token_info or {}
+                filename = _safe_download_filename(
+                    subject.get('sub_filename') or auth.get('sub_filename'),
+                    sub_name or 'singbox-config',
+                    'json',
+                )
+                return PlainTextResponse(
+                    json.dumps(singbox_config, ensure_ascii=False, indent=2) + '\n',
+                    media_type='application/json; charset=utf-8',
+                    headers={
+                        "Cache-Control": "private, no-store, max-age=0",
+                        "Pragma": "no-cache",
+                        "Vary": "User-Agent",
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+                        "profile-title": quote(sub_name),
+                        "profile-update-interval": "24",
+                        "x-singbox-skipped-nodes": str(
+                            sum(item.kind == "node" for item in skipped_nodes)
+                        ),
+                        "x-singbox-export-diagnostics": _singbox_diagnostics_header(skipped_nodes),
+                        "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+                    },
+                )
+
+            # SOCKS output. ``socks-manual`` remains accepted as a compatibility
+            # alias, but both names now use automatic allocation with optional
+            # start/excluded ports.
+            if format in {'socks', 'socks-manual'}:
                 subject_filename = (
                     (user_info or admin_token_info or {}).get('sub_filename')
                     or auth.get('sub_filename')
                 )
-                safe_filename = _safe_download_filename(subject_filename, sub_name or 'socks-config', 'yaml')
+                safe_filename = _safe_download_filename(
+                    subject_filename,
+                    sub_name or 'socks-config',
+                    'yaml',
+                )
+                # The SOCKS exporter owns the final node-boundary filter so
+                # traffic-summary pseudo-nodes cannot consume listener ports.
+                socks_proxies = list(proxies)
 
-                # Filter out traffic info nodes (those starting with 📊)
-                socks_proxies = [p for p in proxies if not p.get('name', '').startswith('📊')]
-
-                # Parse header to extract DNS configuration
                 dns_config = None
                 try:
                     header_yaml = yaml.load(header, Loader=YAMLLoader)
-                    if isinstance(header_yaml, dict) and 'dns' in header_yaml:
+                    if isinstance(header_yaml, dict) and isinstance(header_yaml.get('dns'), dict):
                         dns_config = header_yaml['dns']
-                except Exception as e:
-                    logger.warning(f"Failed to parse DNS from header: {e}")
-
-                # Build minimal YAML with only 4 sections
-                output_parts = []
-
-                # 1. allow-lan
-                output_parts.append('allow-lan: true')
-
-                # 2. DNS configuration (from template or fallback)
-                if dns_config:
-                    output_parts.append('\ndns:')
-                    output_parts.append(yaml.dump({'dns': dns_config}, allow_unicode=True, default_flow_style=False).replace('dns:\n', '').rstrip())
-                else:
-                    # Fallback DNS config
-                    fallback_dns = {
-                        'dns': {
-                            'enable': True,
-                            'enhanced-mode': 'fake-ip',
-                            'fake-ip-range': '198.18.0.1/16',
-                            'default-nameserver': ['114.114.114.114'],
-                            'nameserver': ['https://doh.pub/dns-query'],
-                        }
+                except Exception as exc:
+                    logger.warning("Failed to parse DNS from header: %s", exc)
+                if dns_config is None:
+                    dns_config = {
+                        'enable': True,
+                        'enhanced-mode': 'fake-ip',
+                        'fake-ip-range': '198.18.0.1/16',
+                        'default-nameserver': ['114.114.114.114'],
+                        'nameserver': ['https://doh.pub/dns-query'],
                     }
-                    output_parts.append(
-                        yaml.dump(
-                            fallback_dns,
-                            allow_unicode=True,
-                            sort_keys=False,
-                            default_flow_style=False,
-                            Dumper=YAMLDumper,
-                        ).rstrip()
+
+                try:
+                    socks_config = build_socks_config(
+                        socks_proxies,
+                        proxy_groups,
+                        start_port=start_port,
+                        excluded_ports=parse_excluded_ports(exclude_ports),
+                        dns_config=dns_config,
+                        clean_proxy=filter_underscore_fields,
                     )
+                except SocksExportError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-                # 3. Listeners
-                output_parts.append('\nlisteners:')
-
-                if format == 'socks-manual':
-                    # Manual mode: only use configured port mappings
-                    port_mappings = config.get('port_mappings', {})
-                    if port_mappings:
-                        # Get current proxy names for validation (excluding traffic info nodes)
-                        proxy_names = {p.get('name', '') for p in socks_proxies}
-                        proxy_names.update({g.get('name', '') for g in proxy_groups if isinstance(g, dict)})
-
-                        # Build listeners for valid mappings only
-                        listener_idx = 0
-                        for node_reference, port in sorted(port_mappings.items(), key=lambda x: x[1]):
-                            node_name = emitted_chain_reference_names.get(
-                                node_reference,
-                                node_reference,
-                            )
-                            if node_name in proxy_names:
-                                listener = {
-                                    'name': f'mixed{listener_idx}',
-                                    'type': 'mixed',
-                                    'port': port,
-                                    'proxy': node_name
-                                }
-                                output_parts.append(f'  - {json.dumps(listener, ensure_ascii=False, separators=(",",":"))}')
-                                listener_idx += 1
-                else:
-                    # Auto mode: generate listeners for all nodes starting from port 42000
-                    start_port = 42000
-                    for idx, proxy in enumerate(socks_proxies):
-                        listener = {
-                            'name': f'mixed{idx}',
-                            'type': 'mixed',
-                            'port': start_port + idx,
-                            'proxy': proxy.get('name', '')
-                        }
-                        output_parts.append(f'  - {json.dumps(listener, ensure_ascii=False, separators=(",",":"))}')
-
-                # 4. Proxies (excluding traffic info nodes)
-                output_parts.append('\nproxies:')
-                for proxy in socks_proxies:
-                    output_parts.append(f'  - {json.dumps(filter_underscore_fields(proxy), ensure_ascii=False, separators=(",",":"))}')
-
-                yaml_content = "\n".join(output_parts)
-                response_headers = {
-                    "Cache-Control": "private, no-store, max-age=0",
-                    "Pragma": "no-cache",
-                    "Vary": "User-Agent",
-                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_filename)}",
-                    "profile-title": encoded_name,
-                    "profile-update-interval": "24",
-                    "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
-                }
-
+                yaml_content = yaml.dump(
+                    socks_config,
+                    allow_unicode=True,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    Dumper=YAMLDumper,
+                )
                 return PlainTextResponse(
                     yaml_content,
-                    media_type='text/yaml',
-                    headers=response_headers
+                    media_type='text/yaml; charset=utf-8',
+                    headers={
+                        "Cache-Control": "private, no-store, max-age=0",
+                        "Pragma": "no-cache",
+                        "Vary": "User-Agent",
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_filename)}",
+                        "profile-title": quote(sub_name),
+                        "profile-update-interval": "24",
+                        "subscription-userinfo": f"upload={total_upload}; download={total_download}; total={total_traffic}; expire={total_expire}",
+                    },
                 )
 
             # Clash YAML format output (default)
@@ -1375,5 +1548,23 @@ def create_subscription_output_router(
             logger.error("Failed to generate subscription", exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to generate subscription")
 
+
+    @router.get("/sub/{path_format}", tags=["Subscription Output"])
+    async def get_subscription_by_path(
+        path_format: str,
+        token: Optional[str] = None,
+        start_port: int = Query(42000, ge=1, le=65535),
+        exclude_ports: Optional[str] = Query(None, max_length=2000),
+        user_agent: Optional[str] = Header(None, alias="User-Agent"),
+    ):
+        """Support protocol-oriented links such as ``/sub/v2ray``."""
+
+        return await get_merged_subscription(
+            token=token,
+            format=path_format,
+            start_port=start_port,
+            exclude_ports=exclude_ports,
+            user_agent=user_agent,
+        )
 
     return router

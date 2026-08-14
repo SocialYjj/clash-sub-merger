@@ -853,6 +853,9 @@ def apply_geoip_runtime_config(config: Dict) -> Dict:
         "custom_apis": deepcopy(persisted.get("custom_apis") or []),
         "api_settings": deepcopy(persisted.get("api_settings") or {}),
     }
+    from services.cloudflare_radar import apply_cloudflare_radar_runtime_config
+
+    apply_cloudflare_radar_runtime_config(config)
     return deepcopy(_online_geoip_config)
 
 def get_all_geoip_apis() -> list:
@@ -1056,28 +1059,36 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
             # Get field paths, auto-detect if not specified
             country_code_path = api_config.get("country_code_path", "")
             country_name_path = api_config.get("country_name_path", "")
+            region_path = api_config.get("region_path", "")
             city_path = api_config.get("city_path", "")
             
             # Auto-detect paths if not specified
-            if not country_code_path:
-                detected = _auto_detect_json_paths(data)
-                if detected:
+            detected = _auto_detect_json_paths(data)
+            if detected:
+                if not country_code_path:
                     country_code_path = detected.get("country_code_path", "")
-                    country_name_path = detected.get("country_name_path", "") or country_name_path
-                    city_path = detected.get("city_path", "") or city_path
+                if not country_name_path:
+                    country_name_path = detected.get("country_name_path", "")
+                if not region_path:
+                    region_path = detected.get("region_path", "")
+                if not city_path:
+                    city_path = detected.get("city_path", "")
             
             country_code = _get_json_path(data, country_code_path) or "" if country_code_path else ""
             country_name = _get_json_path(data, country_name_path) or "" if country_name_path else ""
+            region = _get_json_path(data, region_path) or "" if region_path else ""
             city = _get_json_path(data, city_path) or "" if city_path else ""
             
             if not country_code:
                 return None
             
-            return {
-                "countryCode": country_code,
-                "country": country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
-                "city": city
-            }
+            return _build_provider_result(
+                data,
+                country_code,
+                country_name or COUNTRY_NAMES_FROM_CODE.get(country_code, country_code),
+                city,
+                region,
+            )
     except Exception as exc:
         # The URL may contain a substituted token, so never log the exception
         # text produced by the HTTP client.
@@ -1106,6 +1117,11 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
     # Common field names for city
     city_fields = [
         "city", "cityName", "city_name"
+    ]
+
+    # Common field names for state/province/region
+    region_fields = [
+        "region", "regionName", "region_name", "state", "state_prov", "stateProv"
     ]
     
     def find_field(fields, data, prefix="", check_2letter=False):
@@ -1144,32 +1160,210 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
     city_path = find_field(city_fields, data)
     if city_path:
         result["city_path"] = city_path
+
+    # Find state/province/region
+    region_path = find_field(region_fields, data)
+    if region_path:
+        result["region_path"] = region_path
     
     return result if result else None
 
 
+def _first_json_value(data: dict, paths: tuple[str, ...]):
+    """Return the first non-empty value from a list of common JSON paths."""
+    if not isinstance(data, dict):
+        return None
+    for path in paths:
+        value = _get_json_path(data, path)
+        if value is None or value == "":
+            continue
+        return value
+    return None
+
+
+def _coerce_optional_bool(value) -> Optional[bool]:
+    """Normalize provider boolean variants without turning missing into false."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "yes", "y", "1", "on"}:
+        return True
+    if normalized in {"false", "no", "n", "0", "off"}:
+        return False
+    return None
+
+
+def _coerce_optional_number(value):
+    """Normalize numeric risk fields while preserving unavailable values."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def _normalize_asn_value(value) -> Optional[str]:
+    """Extract a stable AS number from provider-specific values."""
+    if isinstance(value, dict):
+        value = (
+            value.get("asn")
+            or value.get("as_number")
+            or value.get("number")
+            or value.get("name")
+        )
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.search(r"\bAS\s*\d+\b", text, flags=re.IGNORECASE)
+    return match.group(0).replace(" ", "").upper() if match else text
+
+
+def _strip_asn_prefix(value: Optional[str]) -> Optional[str]:
+    """Remove a leading AS number from an organization string."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return re.sub(r"^AS\s*\d+\s*[-:]?\s*", "", text, flags=re.IGNORECASE) or text
+
+
+def _extract_provider_metadata(data: dict) -> Dict:
+    """Extract stable ASN/network fields shared by GeoIP providers."""
+    if not isinstance(data, dict):
+        return {}
+
+    raw_asn = _first_json_value(data, (
+        "asn.as_number", "asn.number", "asn", "as", "asn_number", "network.asn",
+    ))
+    raw_org = _first_json_value(data, (
+        "asn.organization", "asn.org", "asname", "org", "organization",
+        "company.name", "company.organization", "network.organization",
+    ))
+    raw_isp = _first_json_value(data, (
+        "isp", "company.name", "organization", "org",
+    ))
+
+    asn = _normalize_asn_value(raw_asn)
+    if not asn and raw_org is not None:
+        asn = _normalize_asn_value(raw_org)
+    metadata = {
+        "asn": asn,
+        "asn_org": _strip_asn_prefix(str(raw_org)) if raw_org is not None else None,
+        "isp": str(raw_isp).strip() if raw_isp not in (None, "") else None,
+        "is_hosting": _coerce_optional_bool(_first_json_value(data, (
+            "hosting", "is_hosting", "isHosting", "is_datacenter", "isDataCenter",
+            "security.is_cloud_provider", "security.isCloudProvider",
+        ))),
+        "is_mobile": _coerce_optional_bool(_first_json_value(data, (
+            "mobile", "is_mobile", "isMobile", "network.is_mobile",
+        ))),
+        "is_proxy": _coerce_optional_bool(_first_json_value(data, (
+            "proxy", "is_proxy", "isProxy", "security.is_proxy", "security.isProxy",
+        ))),
+        "is_vpn": _coerce_optional_bool(_first_json_value(data, (
+            "vpn", "is_vpn", "isVpn", "security.is_vpn", "security.isVpn",
+        ))),
+        "is_tor": _coerce_optional_bool(_first_json_value(data, (
+            "tor", "is_tor", "isTor", "security.is_tor", "security.isTor",
+        ))),
+        "fraud_score": _coerce_optional_number(_first_json_value(data, (
+            "fraudScore", "fraud_score", "security.fraud_score", "security.threat_score",
+        ))),
+    }
+
+    # Remove empty values so a failed/partial provider cannot overwrite a
+    # successful value from another provider or an older cached result.
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _build_provider_result(
+    data: dict,
+    country_code: str,
+    country: str,
+    city: str,
+    region: str = "",
+) -> Dict:
+    """Build the normalized provider payload consumed by the online lookup."""
+    return {
+        "countryCode": country_code or "",
+        "country": country or "",
+        "region": region or "",
+        "city": city or "",
+        **_extract_provider_metadata(data),
+    }
+
+
+def normalize_ippure_profile(data: dict, exit_ip: Optional[str] = None) -> Optional[Dict]:
+    """Normalize the small IPPure response used by node IP intelligence."""
+    if not isinstance(data, dict):
+        return None
+
+    is_broadcast = _coerce_optional_bool(
+        data.get("isBroadcast", data.get("is_broadcast"))
+    )
+    is_residential = _coerce_optional_bool(
+        data.get("isResidential", data.get("is_residential"))
+    )
+    fraud_score = _coerce_optional_number(
+        data.get("fraudScore", data.get("fraud_score"))
+    )
+    response_ip = str(data.get("ip") or exit_ip or "").strip()
+
+    if not response_ip and is_broadcast is None and is_residential is None and fraud_score is None:
+        return None
+
+    profile = {
+        "ip": response_ip or None,
+        "is_broadcast": is_broadcast,
+        "is_residential": is_residential,
+        "fraud_score": fraud_score,
+        "source": "ippure",
+        "checked_at": time.time(),
+    }
+    if is_broadcast is not None:
+        profile["ip_source"] = "broadcast" if is_broadcast else "native"
+    if is_residential is not None:
+        profile["network_type"] = "residential" if is_residential else "datacenter"
+    return {key: value for key, value in profile.items() if value is not None}
+
+
 async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
-    """Lookup using ip-api.com (free, 45 req/min, supports Chinese)"""
+    """Lookup location and network metadata using ip-api.com."""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,countryCode,city",
+                "http://ip-api.com/json/"
+                f"{ip}?lang=zh-CN&fields=status,message,query,country,countryCode,"
+                "regionName,city,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting",
                 timeout=timeout
             )
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("status") == "success":
-                    return {
-                        "countryCode": data.get("countryCode", ""),
-                        "country": data.get("country", ""),
-                        "city": data.get("city", "")
-                    }
+                    return _build_provider_result(
+                        data,
+                        data.get("countryCode", ""),
+                        data.get("country", ""),
+                        data.get("city", ""),
+                        data.get("regionName", ""),
+                    )
     except Exception as e:
-        logger.debug("ip-api.com lookup error for %s: %s", ip, e)
+        logger.debug("ip-api.com lookup error for %s: %s", ip, type(e).__name__)
     return None
 
 async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
-    """Lookup using ipwhois.app (free, 10k/month, supports Chinese)"""
+    """Lookup location and ASN metadata using ipwhois.app."""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -1182,17 +1376,19 @@ async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
                     country_name = data.get("country", "")
                     # Normalize "Republic of Korea" -> "South Korea"
                     country_name = COUNTRY_NAME_NORMALIZE.get(country_name, country_name)
-                    return {
-                        "countryCode": data.get("country_code", ""),
-                        "country": country_name,
-                        "city": data.get("city", "")
-                    }
+                    return _build_provider_result(
+                        data,
+                        data.get("country_code", ""),
+                        country_name,
+                        data.get("city", ""),
+                        data.get("region", ""),
+                    )
     except Exception as e:
-        logger.debug("ipwhois.app lookup error for %s: %s", ip, e)
+        logger.debug("ipwhois.app lookup error for %s: %s", ip, type(e).__name__)
     return None
 
 async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None) -> Optional[Dict]:
-    """Lookup using ipinfo.io (free 50k/month with token)"""
+    """Lookup location and network metadata using ipinfo.io."""
     try:
         if token is None:
             token = _online_geoip_config.get("ipinfo_token", "")
@@ -1209,14 +1405,20 @@ async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None)
                 
                 # ipinfo doesn't return country name in Chinese, need to map it
                 country_name = COUNTRY_NAMES_FROM_CODE.get(country_code, country_code)
-                
-                return {
-                    "countryCode": country_code,
-                    "country": country_name,
-                    "city": city
-                }
+
+                # Older IPinfo responses put the AS number and organization in
+                # ``org`` (for example ``AS15169 Google LLC``); newer plans may
+                # expose a nested ``asn`` object.  The common extractor handles
+                # both shapes without storing the token or raw response.
+                return _build_provider_result(
+                    data,
+                    country_code,
+                    country_name,
+                    city,
+                    data.get("region", ""),
+                )
     except Exception as e:
-        logger.debug("ipinfo.io lookup error for %s: %s", ip, e)
+        logger.debug("ipinfo.io lookup error for %s: %s", ip, type(e).__name__)
     return None
 
 # Country code to Chinese name mapping (complete world coverage, aligned with country_data.COUNTRY_NAMES)
@@ -1477,6 +1679,10 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
 
         return {
             **normalized,
+            **_extract_provider_metadata(raw_data),
+            "region_name": convert_to_simplified(
+                str(raw_data.get("region") or raw_data.get("regionName") or "").strip()
+            ) or None,
             "source": "online",
             "api_id": selected_api_id or target_api,
             "timestamp": time.time()

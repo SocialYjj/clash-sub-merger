@@ -512,6 +512,52 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
 
         record_failure.assert_not_called()
 
+    def test_scheduled_refresh_recounts_processed_valid_nodes(self):
+        content = """proxies:
+  - name: US-01
+    type: socks5
+    server: us.example.com
+    port: 443
+  - name: "机场公告: 请更新订阅"
+    type: socks5
+    server: notice.example.com
+    port: 443
+  - name: JP-01
+    type: socks5
+    server: jp.example.com
+    port: 443
+"""
+        subscription = {"id": "sub_1", "url": "https://example.com/sub"}
+
+        with (
+            patch.object(server, "_load_existing_nodes", return_value=[]),
+            patch.object(
+                server.asyncio,
+                "run",
+                side_effect=lambda coroutine: (coroutine.close(), (content, {"upload": 0}, 3))[1],
+            ),
+            patch.object(
+                server,
+                "apply_region_history_to_yaml_content",
+                side_effect=lambda value, **_: (value, False, False),
+            ),
+            patch.object(
+                server,
+                "apply_node_test_metadata_to_yaml_content",
+                side_effect=lambda value, **_: (value, False),
+            ),
+            patch.object(
+                server,
+                "apply_node_visibility_to_yaml_content",
+                side_effect=lambda value, **_: (value, False),
+            ),
+        ):
+            _content, _usage, node_count, *_rest = server._fetch_and_process_subscription(
+                subscription
+            )
+
+        self.assertEqual(node_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

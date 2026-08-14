@@ -12,7 +12,7 @@ COPY submerger/ ./
 RUN npm run build
 
 # Multi-stage build - Go speedtest service
-FROM golang:1.26.5-alpine3.23 AS go-builder
+FROM golang:1.26.6-alpine3.23 AS go-builder
 WORKDIR /app/speedtest
 COPY speedtest/go.mod speedtest/go.sum ./
 RUN go mod download

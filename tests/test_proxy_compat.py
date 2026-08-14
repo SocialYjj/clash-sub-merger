@@ -1,13 +1,36 @@
 import unittest
 
 from core.proxy_compat import (
+    certificate_pin_fingerprint,
+    certificate_pins_equal,
     normalize_config_nodes,
     normalize_subscription_data,
     normalize_xhttp_proxy,
+    store_certificate_pin,
 )
 
 
 class ProxyCompatTests(unittest.TestCase):
+    def test_store_certificate_pin_converts_base64_sha256_and_preserves_source(self):
+        import base64
+
+        digest = bytes(range(32))
+        source = base64.b64encode(digest).decode()
+        proxy = {}
+
+        self.assertTrue(store_certificate_pin(proxy, source))
+        self.assertEqual(proxy["fingerprint"], digest.hex())
+        self.assertEqual(proxy["_v2rayn-certificate-pin"], source)
+        self.assertEqual(certificate_pin_fingerprint(source), digest.hex())
+        self.assertTrue(certificate_pins_equal(source, digest.hex()))
+
+    def test_store_certificate_pin_keeps_opaque_value_out_of_mihomo_fields(self):
+        proxy = {}
+
+        self.assertTrue(store_certificate_pin(proxy, "opaque-pin+/="))
+        self.assertNotIn("fingerprint", proxy)
+        self.assertEqual(proxy["_v2rayn-certificate-pin"], "opaque-pin+/=")
+
     def test_normalize_xhttp_proxy_moves_legacy_fields_to_xhttp_opts(self):
         proxy = {
             "name": "legacy-xhttp",
@@ -95,6 +118,22 @@ class ProxyCompatTests(unittest.TestCase):
         self.assertEqual(changed, 1)
         self.assertEqual(data["proxies"][0]["sni"], "cdn.example.com")
         self.assertNotIn("servername", data["proxies"][0])
+
+    def test_normalize_subscription_data_infers_trojan_websocket_transport(self):
+        proxy = {
+            "name": "Trojan WS",
+            "type": "trojan",
+            "server": "example.com",
+            "port": 443,
+            "password": "secret",
+            "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example.com"}},
+        }
+        data = {"proxies": [proxy]}
+
+        changed = normalize_subscription_data(data)
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(proxy["network"], "ws")
 
 
 class CoreDatabaseCompatibilityTests(unittest.TestCase):

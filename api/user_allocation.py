@@ -10,6 +10,7 @@ from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.proxy_filter import ProxyFilter
 
 
 def create_user_allocation_router(
@@ -29,19 +30,6 @@ def create_user_allocation_router(
         config = load_config()
         sources = {}
 
-        # Info node keywords to filter out
-        info_keywords = [
-            '剩余流量', '套餐到期', '距离下次重置', '建议', '官网', '未到期',
-            '剩余', '到期', '重置', '流量', '过期', '订阅', '网址', '公告',
-            '群组', 'Telegram', 'TG', '客服', '续费', '购买', '套餐',
-            '使用说明', '教程', '更新', '通知', '邀请', '返利'
-        ]
-
-        def is_info_node(name: str) -> bool:
-            if not name:
-                return True
-            return any(kw in name for kw in info_keywords)
-
         # Get custom nodes first
         custom_nodes = config.get('custom_nodes', [])
         if custom_nodes:
@@ -50,7 +38,7 @@ def create_user_allocation_router(
                 if not is_node_enabled(node):
                     continue
                 original_name = node.get('name', '')
-                if is_info_node(original_name):
+                if not ProxyFilter.is_valid_proxy(node):
                     continue
                 transformed = NameTransformer.transform_name(node, 'Custom')
                 available_nodes.append({
@@ -78,7 +66,7 @@ def create_user_allocation_router(
                     if not is_node_enabled(proxy):
                         continue
                     original_name = proxy.get('name', '')
-                    if is_info_node(original_name):
+                    if not ProxyFilter.is_valid_proxy(proxy):
                         continue
                     transformed = NameTransformer.transform_name(proxy, sub['name'])
                     available_nodes.append({

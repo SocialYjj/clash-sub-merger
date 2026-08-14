@@ -194,6 +194,8 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
     for i, node in enumerate(config.get('custom_nodes', [])):
         if not is_node_enabled(node):
             continue
+        if not ProxyFilter.is_valid_proxy(node):
+            continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         nodes.append({
             'sub_id': 'custom',

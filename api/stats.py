@@ -26,10 +26,13 @@ YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 # ==================== Helper Functions ====================
 
 def _is_info_node(name: str) -> bool:
-    """Check if node is an info/advertisement node"""
-    # Only the name is available here. The full proxy validator also requires
-    # type/server/port, so using it would classify every real node as invalid.
+    """Check whether a display name is an informational node label."""
     return ProxyFilter.get_invalid_reason({'name': name}) is not None
+
+
+def _is_countable_node(node: dict) -> bool:
+    """Use the same info and structural rules as subscription node counts."""
+    return ProxyFilter.is_valid_proxy(node)
 
 
 def _get_all_nodes_with_country():
@@ -46,9 +49,9 @@ def _get_all_nodes_with_country():
             for i, proxy in enumerate(sub_data.get('proxies', [])):
                 if not is_node_enabled(proxy):
                     continue
-                # Skip info/advertisement nodes
-                node_name = proxy.get('name', '')
-                if _is_info_node(node_name):
+                # Keep dashboard counts consistent with node-management and
+                # subscription filtering rules.
+                if not _is_countable_node(proxy):
                     continue
                     
                 transformed = NameTransformer.transform_name(proxy, sub['name'])
@@ -70,6 +73,8 @@ def _get_all_nodes_with_country():
     # Get custom nodes
     for i, node in enumerate(config.get('custom_nodes', [])):
         if not is_node_enabled(node):
+            continue
+        if not _is_countable_node(node):
             continue
         transformed = NameTransformer.transform_name(node, 'Custom')
         country_info = transformed.get('_country', {})
@@ -116,8 +121,7 @@ def get_stats_overview(_: bool = Depends(verify_session)):
             for proxy in sub_data.get('proxies', []):
                 if not is_node_enabled(proxy):
                     continue
-                # Skip info/advertisement nodes
-                if _is_info_node(proxy.get('name', '')):
+                if not _is_countable_node(proxy):
                     continue
                     
                 total_nodes += 1
@@ -149,10 +153,11 @@ def get_stats_overview(_: bool = Depends(verify_session)):
             )
     
     # Count custom nodes
-    custom_nodes_list = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]
+    custom_nodes_list = [
+        node for node in config.get('custom_nodes', [])
+        if is_node_enabled(node) and _is_countable_node(node)
+    ]
     for node in custom_nodes_list:
-        if _is_info_node(node.get('name', '')):
-            continue
         ptype = node.get('type', 'unknown')
         by_protocol[ptype] = by_protocol.get(ptype, 0) + 1
 

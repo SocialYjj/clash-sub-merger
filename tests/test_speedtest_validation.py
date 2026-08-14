@@ -144,6 +144,38 @@ class SpeedtestValidationTests(unittest.TestCase):
             [subscription_node_id("my_sub_1", node) for node in nodes],
         )
 
+    def test_subscription_speedtest_skips_disabled_and_information_nodes_without_renumbering(self):
+        nodes = [
+            {"name": "US 01", "type": "http", "server": "a.example.com", "port": 8080},
+            {"name": "加入频道获取更多节点", "type": "http", "server": "info.example.com", "port": 8080},
+            {"name": "US 02", "type": "http", "server": "disabled.example.com", "port": 8080, "enabled": False},
+            {"name": "US 03", "type": "http", "server": "c.example.com", "port": 8080},
+        ]
+
+        async def fake_batch(node_ids, test_speed=False, timeout=10, concurrency=10):
+            return {"node_ids": node_ids}
+
+        async def run_test():
+            with (
+                patch.object(speedtest_api, "load_config", return_value={
+                    "subscriptions": [{"id": "my_sub_1", "name": "Demo", "enabled": True}]
+                }),
+                patch.object(speedtest_api, "load_subscription_yaml", return_value={"proxies": nodes}),
+                patch.object(speedtest_api, "_speedtest_batch", side_effect=fake_batch),
+            ):
+                endpoint = inspect.unwrap(speedtest_api.speedtest_subscription)
+                return await endpoint("my_sub_1", request=None, _=True)
+
+        result = asyncio.run(run_test())
+
+        self.assertEqual(
+            result["node_ids"],
+            [
+                subscription_node_id("my_sub_1", nodes[0]),
+                subscription_node_id("my_sub_1", nodes[3]),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

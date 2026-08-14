@@ -45,6 +45,14 @@ class Socks5SupportTests(unittest.TestCase):
         self.assertEqual(node["username"], "user")
         self.assertEqual(node["password"], "pass")
 
+    def test_percent_encoded_literal_in_username_is_decoded_once(self):
+        node = parse_node_link(
+            "socks5://user%252Fname:p%3A%25%2Fword@example.com:11111#US-NYC"
+        )
+
+        self.assertEqual(node["username"], "user%2Fname")
+        self.assertEqual(node["password"], "p:%/word")
+
     def test_socks5_query_credentials_are_supported(self):
         node = parse_node_link(
             "socks5://example.com:11111?username=user&password=pass#US-NYC"

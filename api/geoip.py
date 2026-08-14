@@ -286,6 +286,7 @@ def export_geoip_cache_entries(
 class OnlineGeoIPConfig(BaseModel):
     preferred_api: str | None = Field(None, max_length=100)
     ipinfo_token: str | None = Field(None, max_length=4096)
+    cloudflare_radar_token: str | None = Field(None, max_length=4096)
 
     @field_validator('preferred_api')
     @classmethod
@@ -345,6 +346,7 @@ def _enabled_geoip_api_ids(geoip_config: dict) -> list[str]:
 def get_online_geoip_config(_: bool = Depends(verify_session)):
     """Get online GeoIP configuration"""
     from geoip_service import get_all_geoip_apis
+    from services.cloudflare_radar import is_radar_enabled
     
     config = load_config()
     geoip_config = config.get('geoip_config', {})
@@ -361,6 +363,10 @@ def get_online_geoip_config(_: bool = Depends(verify_session)):
         "apis": public_apis,
         "preferred_api": geoip_config.get('preferred_api', 'ip-api.com'),
         "has_ipinfo_token": bool(geoip_config.get('ipinfo_token')),
+        # This is a boolean capability flag only; the Radar token itself is
+        # never returned to the browser.
+        "radar_enabled": is_radar_enabled(),
+        "has_radar_token": bool(geoip_config.get('cloudflare_radar_token')) or is_radar_enabled(),
     }
 
 
@@ -376,6 +382,8 @@ def update_online_geoip_config(data: OnlineGeoIPConfig, _: bool = Depends(verify
             geoip_config['preferred_api'] = data.preferred_api
         if data.ipinfo_token is not None:
             geoip_config['ipinfo_token'] = data.ipinfo_token
+        if data.cloudflare_radar_token is not None:
+            geoip_config['cloudflare_radar_token'] = data.cloudflare_radar_token.strip()
 
     update_config(set_geoip_config)
     _apply_persisted_geoip_config()

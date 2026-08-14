@@ -2,6 +2,8 @@
 Nodes API
 Custom nodes and subscription nodes management
 """
+import json
+import time
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -85,12 +87,127 @@ def _resolve_city_name(node: dict) -> str:
     return translate_city_name(city) if city else ''
 
 
+async def _lookup_ippure_via_node(
+    base_payload: dict,
+    timeout_seconds: int,
+    exit_ip: Optional[str] = None,
+) -> Optional[dict]:
+    """Fetch IPPure caller data through the tested node, not through the VPS."""
+    from api.speedtest import _go_speedtest_request
+    from geoip_service import normalize_ippure_profile
+
+    fetch_result = await _go_speedtest_request(
+        "/api/fetch-url",
+        {
+            **base_payload,
+            "url": "https://my.ippure.com/v1/info",
+            "timeout": max(1, timeout_seconds),
+        },
+        max(2, timeout_seconds + 2),
+    )
+    if not fetch_result.get("success") or fetch_result.get("statusCode") != 200:
+        return {"ippure_status": "failed"}
+
+    content = fetch_result.get("content")
+    if not isinstance(content, str):
+        return {"ippure_status": "failed"}
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return {"ippure_status": "failed"}
+    profile = normalize_ippure_profile(payload, exit_ip=exit_ip)
+    if not profile:
+        return {"ippure_status": "no_data"}
+    return {**profile, "ippure_status": "success"}
+
+
+def _compose_ip_profile(
+    exit_ip: str,
+    geo_result: Optional[dict],
+    ippure_result: Optional[dict],
+    radar_result: Optional[dict] = None,
+) -> dict:
+    """Combine GeoIP, IPPure and optional ASN-level Radar metadata."""
+    geo_result = geo_result if isinstance(geo_result, dict) else {}
+    ippure_result = ippure_result if isinstance(ippure_result, dict) else {}
+    radar_result = radar_result if isinstance(radar_result, dict) else {}
+    profile = {
+        "exit_ip": exit_ip,
+        "country": geo_result.get("country_name"),
+        "country_code": geo_result.get("iso_code"),
+        "region": geo_result.get("region_name"),
+        "city": geo_result.get("city"),
+        "asn": geo_result.get("asn"),
+        "asn_org": geo_result.get("asn_org"),
+        "isp": geo_result.get("isp"),
+        "is_broadcast": ippure_result.get("is_broadcast"),
+        "is_residential": ippure_result.get("is_residential"),
+        "ip_source": ippure_result.get("ip_source"),
+        "network_type": ippure_result.get("network_type"),
+        "fraud_score": ippure_result.get("fraud_score"),
+        "geoip_api": geo_result.get("api_id"),
+        "ippure_checked_at": ippure_result.get("checked_at"),
+        "ippure_status": ippure_result.get("ippure_status"),
+        "radar_human_ratio": radar_result.get("radar_human_ratio"),
+        "radar_bot_ratio": radar_result.get("radar_bot_ratio"),
+        "radar_checked_at": radar_result.get("radar_checked_at"),
+        "radar_date_range": radar_result.get("radar_date_range"),
+        "radar_status": radar_result.get("radar_status"),
+        "radar_confidence_level": radar_result.get("radar_confidence_level"),
+        "radar_source": radar_result.get("radar_source"),
+    }
+    return {key: value for key, value in profile.items() if value is not None}
+
+
+def _fresh_ippure_profile(node: dict, exit_ip: str) -> Optional[dict]:
+    """Reuse a recent per-node IPPure result to avoid needless quota usage."""
+    profile = node.get("ip_profile") if isinstance(node, dict) else None
+    if not isinstance(profile, dict) or profile.get("exit_ip") != exit_ip:
+        return None
+    if "is_broadcast" not in profile or "is_residential" not in profile or "fraud_score" not in profile:
+        return None
+    try:
+        checked_at = float(profile.get("ippure_checked_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if checked_at <= 0 or time.time() - checked_at >= 7 * 24 * 3600:
+        return None
+    return {
+        "is_broadcast": profile.get("is_broadcast"),
+        "is_residential": profile.get("is_residential"),
+        "ip_source": profile.get("ip_source"),
+        "network_type": profile.get("network_type"),
+        "fraud_score": profile.get("fraud_score"),
+        "checked_at": checked_at,
+        "source": "ippure",
+        "ippure_status": "success",
+    }
+
+
+def _merge_ip_profile(previous: object, current: dict, exit_ip: str) -> dict:
+    """Merge partial IP metadata without dropping data from another provider.
+
+    Region and Cloudflare Radar checks do not return IPPure fields.  They may
+    nevertheless report a different observed exit IP because a provider can
+    rotate egress addresses between requests.  Treat each response as a
+    partial update so a Radar refresh cannot erase the last known IPPure
+    values; a later IPPure check will replace them with fresh values.
+    """
+    if not isinstance(current, dict):
+        current = {}
+    merged = dict(previous) if isinstance(previous, dict) else {}
+    merged.update(current)
+    if exit_ip:
+        merged["exit_ip"] = exit_ip
+    return merged
+
+
 # ==================== Data Models ====================
 
 _NODE_ADMIN_FIELDS = {
     'id', 'link', 'enabled', 'display_name', 'index',
     'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'geoip',
+    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'ip_profile', 'geoip',
     'region', 'city',
 }
 
@@ -145,6 +262,7 @@ class UpdateNodeFull(BaseModel):
         normalized = dict(v)
         normalized['name'] = str(v['name']).strip()
         normalized['type'] = str(v['type']).strip().lower()
+        normalized = ProxyFilter.sanitize_proxy(normalized)
         invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
         if invalid_reason:
             raise ValueError(f'Invalid node configuration: {invalid_reason}')
@@ -178,6 +296,7 @@ class UpdateSubNodeFull(BaseModel):
         normalized = dict(value)
         normalized['name'] = str(value['name']).strip()
         normalized['type'] = str(value['type']).strip().lower()
+        normalized = ProxyFilter.sanitize_proxy(normalized)
         invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
         if invalid_reason:
             raise ValueError(f'Invalid node configuration: {invalid_reason}')
@@ -227,6 +346,11 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
         # the same deterministic fallback used by save/test endpoints so the
         # frontend never submits an unusable ``undefined`` node ID.
         enhanced['id'] = get_custom_node_id(node)
+        enhanced['valid'] = ProxyFilter.is_valid_proxy(node)
+        enhanced['invalid_reason'] = (
+            ProxyFilter.get_target_invalid_reason(node, 'clash')
+            if not enhanced['valid'] else None
+        )
         transformed = NameTransformer.transform_name(node, 'Custom')
         enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
         enhanced['region'] = _resolve_region_info(node, transformed)
@@ -247,6 +371,13 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     parsed = parse_node_link(data.link)
     if not parsed:
         raise HTTPException(status_code=400, detail="Invalid node link format")
+    invalid_reason = ProxyFilter.get_structural_invalid_reason(parsed)
+    if invalid_reason:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid node configuration: {invalid_reason}",
+        )
+    parsed = ProxyFilter.sanitize_proxy(parsed)
     
     node_id = generate_timestamp_id('node_')
     node = {
@@ -289,6 +420,14 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
         if not parsed:
             errors.append({'link': link, 'reason': 'Invalid node link format'})
             continue
+        invalid_reason = ProxyFilter.get_structural_invalid_reason(parsed)
+        if invalid_reason:
+            errors.append({
+                'link': link,
+                'reason': f'Invalid node configuration: {invalid_reason}',
+            })
+            continue
+        parsed = ProxyFilter.sanitize_proxy(parsed)
 
         node_id = f"{generate_timestamp_id('node_')}_{idx}"
         node = {
@@ -422,6 +561,9 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
             if 'link' in node:
                 parsed = parse_node_link(node['link'])
                 if parsed:
+                    if ProxyFilter.get_structural_invalid_reason(parsed):
+                        continue
+                    parsed = ProxyFilter.sanitize_proxy(parsed)
                     preserved = {
                         key: value
                         for key, value in node.items()
@@ -459,6 +601,13 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
                 previous = dict(node)
                 parsed = parse_node_link(node['link'])
                 if parsed:
+                    invalid_reason = ProxyFilter.get_structural_invalid_reason(parsed)
+                    if invalid_reason:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid node configuration: {invalid_reason}",
+                        )
+                    parsed = ProxyFilter.sanitize_proxy(parsed)
                     previous_enabled = node.get('enabled')
                     previous_name = node.get('name')
                     remember_nodes_region([previous], source='custom:reparse-one-existing')
@@ -550,7 +699,18 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     node_ids = subscription_node_ids(sub_id, nodes)
     enhanced_nodes = []
     for i, node in enumerate(nodes):
+        # Keep the management list aligned with the nodes that can actually
+        # enter the generated Clash output. Disabled nodes remain visible so
+        # the user can re-enable them, but informational and incompatible
+        # entries must not reappear as phantom nodes in the UI.
+        if ProxyFilter.get_target_invalid_reason(node, 'clash') is not None:
+            continue
         enhanced = dict(node)
+        enhanced['valid'] = ProxyFilter.is_valid_proxy(node)
+        enhanced['invalid_reason'] = (
+            ProxyFilter.get_target_invalid_reason(node, 'clash')
+            if not enhanced['valid'] else None
+        )
         enhanced['index'] = i
         enhanced['id'] = node_ids[i]
         transformed = NameTransformer.transform_name(node, sub['name'])
@@ -650,6 +810,8 @@ class NodeTestRequest(BaseModel):
     test_latency: bool = True
     test_speed: bool = False
     test_region: bool = False
+    test_ip_profile: bool = False
+    test_radar: bool = False
     geoip_api: Optional[str] = None
     batch_mode: bool = False  # 批量模式下不立即保存
     # The node-management UI sends milliseconds, matching the Go delay/IP API.
@@ -666,6 +828,7 @@ class NodeTestResultPayload(BaseModel):
     speed: Optional[float] = Field(None, ge=0)
     peak_speed: Optional[float] = Field(None, ge=0)
     exit_ip: Optional[str] = Field(None, max_length=128)
+    ip_profile: Optional[Dict[str, Any]] = None
     city: Optional[str] = Field(None, max_length=200)
     region: Optional[Dict[str, Any]] = None
     latency_status: Optional[str] = Field(None, max_length=32)
@@ -722,6 +885,32 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                             node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         if 'exit_ip' in result:
                             node['exit_ip'] = result['exit_ip']
+                        if isinstance(result.get('ip_profile'), dict):
+                            profile_update = dict(result['ip_profile'])
+                            profile_exit_ip = (
+                                str(
+                                    result.get('exit_ip')
+                                    or profile_update.get('exit_ip')
+                                    or node.get('exit_ip')
+                                    or ''
+                                ).strip()
+                            )
+                            if profile_exit_ip:
+                                profile_update.setdefault('exit_ip', profile_exit_ip)
+                                node['ip_profile'] = _merge_ip_profile(
+                                    node.get('ip_profile'),
+                                    profile_update,
+                                    profile_exit_ip,
+                                )
+                            else:
+                                node['ip_profile'] = {
+                                    **(
+                                        node.get('ip_profile')
+                                        if isinstance(node.get('ip_profile'), dict)
+                                        else {}
+                                    ),
+                                    **profile_update,
+                                }
                         if 'region' in result:
                             node['region'] = result['region']
                         if 'city' in result:
@@ -770,6 +959,32 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                             node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         if 'exit_ip' in result:
                             node['exit_ip'] = result['exit_ip']
+                        if isinstance(result.get('ip_profile'), dict):
+                            profile_update = dict(result['ip_profile'])
+                            profile_exit_ip = (
+                                str(
+                                    result.get('exit_ip')
+                                    or profile_update.get('exit_ip')
+                                    or node.get('exit_ip')
+                                    or ''
+                                ).strip()
+                            )
+                            if profile_exit_ip:
+                                profile_update.setdefault('exit_ip', profile_exit_ip)
+                                node['ip_profile'] = _merge_ip_profile(
+                                    node.get('ip_profile'),
+                                    profile_update,
+                                    profile_exit_ip,
+                                )
+                            else:
+                                node['ip_profile'] = {
+                                    **(
+                                        node.get('ip_profile')
+                                        if isinstance(node.get('ip_profile'), dict)
+                                        else {}
+                                    ),
+                                    **profile_update,
+                                }
                         if 'region' in result:
                             node['region'] = result['region']
                         if 'city' in result:
@@ -800,7 +1015,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
 @limiter.limit(AppConfig.RATE_LIMIT_NODE_TEST)
 @handle_api_errors
 async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request: Request, _: bool = Depends(verify_session)):
-    """Test latency/speed/region for any node (subscription or custom)"""
+    """Run one or more independent node measurements for a subscription or custom node."""
     import asyncio
     import math
     from datetime import datetime
@@ -845,6 +1060,15 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         persistent_custom_node_id = None
         is_custom = False
 
+    # Speed testing is backed by Mihomo/Go's Clash-compatible adapter. Keep
+    # protocol-neutral validation for storage/export, but do not attempt to
+    # test a node whose target adapter would reject or reinterpret it.
+    invalid_reason = ProxyFilter.get_target_invalid_reason(node, 'clash')
+    if invalid_reason:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid node configuration: {invalid_reason}",
+        )
     normalized_node = ProxyFilter.sanitize_proxy(node)
     normalization_changed = normalized_node != node
     if normalization_changed:
@@ -888,41 +1112,116 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 need_save = True
             
-        # Test region (get exit IP)
-        if data.test_region:
+        # Test IP/region, IPPure attributes, and Radar independently.  All
+        # three measurements share the node's current exit IP, but each
+        # result records its own status so an unavailable provider is not
+        # confused with an untested field.
+        if data.test_region or data.test_ip_profile or data.test_radar:
             ip_result = await _go_speedtest_request(
                 "/api/ip",
                 {**base_payload, "timeout": timeout_ms},
                 timeout_seconds + 2,
             )
-            if ip_result.get('success'):
+            if ip_result.get('success') and ip_result.get('ip'):
                 exit_ip = ip_result.get('ip')
                 result['exit_ip'] = exit_ip
-                    
-                if exit_ip:
-                    from geoip_service import lookup_ip_online
-                    geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
-                    if geo_result:
-                        result['region'] = {
-                            'country': geo_result.get('country_name'),
-                            'country_code': geo_result.get('iso_code'),
-                            'flag': geo_result.get('flag'),
-                            'display': geo_result.get('country_name')
-                        }
-                        result['city'] = geo_result.get('city')
-                            
-                        node['exit_ip'] = exit_ip
-                        node['region'] = {
-                            'country': geo_result.get('country_name'),
-                            'country_code': geo_result.get('iso_code'),
-                            'flag': geo_result.get('flag')
-                        }
-                        node['city'] = geo_result.get('city')
-                        remember_nodes_region([node], source=f'speedtest:single:{source_id}')
-                        need_save = True
+
+                from geoip_service import lookup_ip_online
+
+                geo_result = None
+                if data.test_region or data.test_radar:
+                    try:
+                        geo_result = await lookup_ip_online(exit_ip, api_id=data.geoip_api)
+                    except Exception as exc:
+                        logger.debug("GeoIP lookup failed for %s: %s", exit_ip, type(exc).__name__)
+
+                ippure_result = None
+                if data.test_ip_profile:
+                    cached_ippure = _fresh_ippure_profile(node, exit_ip)
+                    if cached_ippure is not None:
+                        ippure_result = cached_ippure
                     else:
-                        result['success'] = False
-                        result['error'] = 'GeoIP lookup failed'
+                        try:
+                            ippure_result = await _lookup_ippure_via_node(
+                                base_payload, timeout_seconds, exit_ip
+                            )
+                        except Exception as exc:
+                            logger.debug("IPPure lookup failed for %s: %s", exit_ip, type(exc).__name__)
+                            ippure_result = {"ippure_status": "failed"}
+
+                radar_result = None
+                if data.test_radar:
+                    radar_result = {"radar_status": "no_data"}
+                    if isinstance(geo_result, dict) and geo_result.get("asn"):
+                        try:
+                            from services.cloudflare_radar import (
+                                is_radar_enabled,
+                                lookup_radar_for_asn,
+                            )
+
+                            if is_radar_enabled():
+                                radar_result = await lookup_radar_for_asn(
+                                    geo_result.get("asn"),
+                                    timeout=min(timeout_seconds, AppConfig.CLOUDFLARE_RADAR_TIMEOUT),
+                                ) or {"radar_status": "failed"}
+                            else:
+                                radar_result = {"radar_status": "not_configured"}
+                        except Exception as exc:
+                            logger.debug(
+                                "Cloudflare Radar lookup failed for %s: %s",
+                                geo_result.get("asn"),
+                                type(exc).__name__,
+                            )
+                            radar_result = {"radar_status": "failed"}
+
+                profile_updates = _compose_ip_profile(
+                    exit_ip,
+                    geo_result,
+                    ippure_result,
+                    radar_result,
+                )
+                if data.test_region:
+                    profile_updates["ip_status"] = "success" if geo_result else "no_data"
+                if data.test_ip_profile:
+                    profile_updates["ippure_status"] = (
+                        (ippure_result or {}).get("ippure_status") or "failed"
+                    )
+                if data.test_radar:
+                    profile_updates["radar_status"] = (
+                        (radar_result or {}).get("radar_status") or "failed"
+                    )
+
+                ip_profile = _merge_ip_profile(
+                    node.get("ip_profile"),
+                    profile_updates,
+                    exit_ip,
+                )
+                result['ip_profile'] = ip_profile
+                node['ip_profile'] = ip_profile
+                node['exit_ip'] = exit_ip
+                need_save = True
+
+                if data.test_region and geo_result:
+                    result['region'] = {
+                        'country': geo_result.get('country_name'),
+                        'country_code': geo_result.get('iso_code'),
+                        'flag': geo_result.get('flag'),
+                        'display': geo_result.get('country_name')
+                    }
+                    result['city'] = geo_result.get('city')
+                    node['region'] = {
+                        'country': geo_result.get('country_name'),
+                        'country_code': geo_result.get('iso_code'),
+                        'flag': geo_result.get('flag')
+                    }
+                    node['city'] = geo_result.get('city')
+                    remember_nodes_region([node], source=f'speedtest:single:{source_id}')
+                elif data.test_region:
+                    # The exit IP test itself succeeded.  Keep the response
+                    # successful and expose ``ip_status=no_data`` in the
+                    # profile so the UI can distinguish this from an
+                    # untested node.
+                    result['metadata_warning'] = 'GeoIP lookup returned no data'
             else:
                 result['success'] = False
                 result['error'] = ip_result.get('error', 'IP lookup failed')

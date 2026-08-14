@@ -20,7 +20,10 @@ class UserAllocationRoutesTest(unittest.TestCase):
             "auth": {},
             "subscriptions": [],
             "custom_nodes": [
-                {"name": "US 01", "type": "ss", "server": "example.com"},
+                {
+                    "name": "US 01", "type": "ss", "server": "example.com",
+                    "port": 443, "cipher": "aes-128-gcm", "password": "secret",
+                },
                 {"name": "US Disabled", "type": "ss", "server": "disabled.example.com", "enabled": False},
                 {"name": "剩余流量 10G", "type": "ss", "server": "info.example.com"},
             ],

@@ -4,6 +4,7 @@ import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
+import SocksExportModal from '../components/SocksExportModal';
 
 const API_BASE = '/api';
 
@@ -187,6 +188,7 @@ const AdminTokenSection = ({ showToast }) => {
   const [deleteConfirm, setDeleteConfirm] = useState(null);  // Token ID to delete
   const [configToken, setConfigToken] = useState(null);  // Token for visual config editor
   const [showFormatSelector, setShowFormatSelector] = useState(null);  // Token ID for format selector
+  const [showSocksExportModal, setShowSocksExportModal] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -280,13 +282,19 @@ const AdminTokenSection = ({ showToast }) => {
     }
   };
 
-  const copySubUrl = async (tokenId, format = 'base64') => {
+  const copySubUrl = async (tokenId, format, socksOptions = null) => {
     try {
       // Fetch full token from API
       const res = await request.get(`${API_BASE}/admin-tokens/${tokenId}`);
       const fullToken = res.data.token.token;
       let url = `${window.location.origin}/sub?token=${encodeURIComponent(fullToken)}`;
       url += `&format=${format}`;
+      if (format === 'socks' && socksOptions) {
+        url += `&start_port=${encodeURIComponent(socksOptions.startPort)}`;
+        if (socksOptions.excludePorts) {
+          url += `&exclude_ports=${encodeURIComponent(socksOptions.excludePorts)}`;
+        }
+      }
       const copied = await copyToClipboard(url);
       if (!copied) {
         throw new Error('clipboard unavailable');
@@ -730,11 +738,11 @@ const AdminTokenSection = ({ showToast }) => {
             </div>
             <div className="space-y-2">
               <button
-                onClick={() => copySubUrl(showFormatSelector, 'base64')}
+                onClick={() => copySubUrl(showFormatSelector, 'v2ray')}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">Base64</div>
-                <div className="text-xs text-gray-400 mt-1">通用订阅格式</div>
+                <div className="font-medium">V2Ray</div>
+                <div className="text-xs text-gray-400 mt-1">用于导入 v2rayN 的订阅格式</div>
               </button>
               <button
                 onClick={() => copySubUrl(showFormatSelector, 'clash')}
@@ -744,22 +752,31 @@ const AdminTokenSection = ({ showToast }) => {
                 <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
               </button>
               <button
-                onClick={() => copySubUrl(showFormatSelector, 'socks')}
+                onClick={() => copySubUrl(showFormatSelector, 'singbox')}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">SOCKS (自动)</div>
-                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口（从42000开始）</div>
+                <div className="font-medium">Sing-box</div>
+                <div className="text-xs text-gray-400 mt-1">Sing-box JSON 配置格式</div>
               </button>
               <button
-                onClick={() => copySubUrl(showFormatSelector, 'socks-manual')}
+                onClick={() => setShowSocksExportModal(true)}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">SOCKS (手动)</div>
-                <div className="text-xs text-gray-400 mt-1">仅使用手动配置的端口映射</div>
+                <div className="font-medium">SOCKS</div>
+                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口</div>
               </button>
             </div>
           </div>
         </div>
+      )}
+      {showSocksExportModal && (
+        <SocksExportModal
+          onClose={() => setShowSocksExportModal(false)}
+          onConfirm={(options) => {
+            copySubUrl(showFormatSelector, 'socks', options);
+            setShowSocksExportModal(false);
+          }}
+        />
       )}
     </div>
   );
@@ -778,9 +795,11 @@ export default function Settings({
   const [onlineGeoipConfig, setOnlineGeoipConfig] = useState({
     preferred_api: 'ip-api.com',
     has_ipinfo_token: false,
+    has_radar_token: false,
     apis: []
   });
   const [savingOnlineConfig, setSavingOnlineConfig] = useState(false);
+  const [cloudflareRadarToken, setCloudflareRadarToken] = useState('');
   const [showAddApiModal, setShowAddApiModal] = useState(false);
   const [editingApi, setEditingApi] = useState(null);
   const [deleteApiConfirm, setDeleteApiConfirm] = useState(null);
@@ -952,6 +971,43 @@ export default function Settings({
       fetchOnlineGeoipConfig();
     } catch (err) {
       showToast('保存失败', 'error');
+    } finally {
+      setSavingOnlineConfig(false);
+    }
+  };
+
+  const saveCloudflareRadarToken = async () => {
+    const token = cloudflareRadarToken.trim();
+    if (!token) {
+      showToast?.('请输入 Cloudflare Radar API Token；清除已有配置请点击“清除”', 'error');
+      return;
+    }
+    setSavingOnlineConfig(true);
+    try {
+      await request.post(`${API_BASE}/geoip/online-config`, {
+        cloudflare_radar_token: token,
+      });
+      setCloudflareRadarToken('');
+      showToast?.('Cloudflare Radar Token 已保存');
+      await fetchOnlineGeoipConfig();
+    } catch (err) {
+      showToast?.(`保存失败: ${err.response?.data?.detail || err.message}`, 'error');
+    } finally {
+      setSavingOnlineConfig(false);
+    }
+  };
+
+  const clearCloudflareRadarToken = async () => {
+    setSavingOnlineConfig(true);
+    try {
+      await request.post(`${API_BASE}/geoip/online-config`, {
+        cloudflare_radar_token: '',
+      });
+      setCloudflareRadarToken('');
+      showToast?.('Cloudflare Radar Token 已清除');
+      await fetchOnlineGeoipConfig();
+    } catch (err) {
+      showToast?.(`清除失败: ${err.response?.data?.detail || err.message}`, 'error');
     } finally {
       setSavingOnlineConfig(false);
     }
@@ -1401,6 +1457,65 @@ export default function Settings({
             <Plus size={18} />
             添加自定义 API
           </button>
+        </div>
+      </div>
+
+      {/* Cloudflare Radar configuration */}
+      <div id="cloudflare-radar-settings" className="bg-gray-800/50 border border-blue-500/30 rounded-xl p-6">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <Globe size={20} />
+              Cloudflare Radar API
+            </h2>
+            <p className="text-sm text-gray-400 mt-2">
+              填写 Cloudflare API Token 后，节点地区/IP 信息检测会按 ASN 查询人类/机器人流量参考值。
+            </p>
+          </div>
+          <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${onlineGeoipConfig.has_radar_token
+            ? 'bg-green-500/20 text-green-300'
+            : 'bg-gray-700 text-gray-400'}`}>
+            {onlineGeoipConfig.has_radar_token ? '已配置' : '未配置'}
+          </span>
+        </div>
+        <div className="space-y-3">
+          <label className="block text-sm text-gray-300" htmlFor="cloudflare-radar-token">
+            Cloudflare API Token
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              id="cloudflare-radar-token"
+              type="password"
+              value={cloudflareRadarToken}
+              onChange={(event) => setCloudflareRadarToken(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') saveCloudflareRadarToken();
+              }}
+              placeholder={onlineGeoipConfig.has_radar_token ? '已配置，输入新 Token 可覆盖' : '粘贴 Cloudflare API Token'}
+              autoComplete="new-password"
+              className="flex-1 min-w-[260px] px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              disabled={savingOnlineConfig}
+            />
+            <button
+              onClick={saveCloudflareRadarToken}
+              disabled={savingOnlineConfig || !cloudflareRadarToken.trim()}
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg"
+            >
+              保存 Token
+            </button>
+            {onlineGeoipConfig.has_radar_token && (
+              <button
+                onClick={clearCloudflareRadarToken}
+                disabled={savingOnlineConfig}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:text-gray-500 text-gray-200 text-sm rounded-lg"
+              >
+                清除
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            Token 只保存在后端，不会回显到前端；保存后重新执行“地区/IP 信息检测”，节点表才会填充人机流量比。
+          </p>
         </div>
       </div>
 

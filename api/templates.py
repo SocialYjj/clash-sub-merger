@@ -15,6 +15,7 @@ from core.database import load_config, update_config
 from helpers import handle_api_errors, generate_timestamp_id
 from logger_config import get_logger
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
+from services.node_metadata import strip_node_metadata
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -420,7 +421,9 @@ def preview_template(data: TemplateContent, _: bool = Depends(verify_session)):
         if proxies:
             preview_parts.append('\nproxies:')
             for proxy in proxies:
-                preview_parts.append(f'  - {json.dumps(proxy, ensure_ascii=False, separators=(",",":"))}')
+                preview_parts.append(
+                    f'  - {json.dumps(strip_node_metadata(proxy), ensure_ascii=False, separators=(",",":"))}'
+                )
         if proxy_groups:
             preview_parts.append('\nproxy-groups:')
             for group in proxy_groups:

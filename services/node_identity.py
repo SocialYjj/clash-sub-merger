@@ -20,6 +20,7 @@ _VOLATILE_NODE_FIELDS = {
     "last_speed_time",
     "last_peak_speed_time",
     "exit_ip",
+    "ip_profile",
     "geoip",
     "region",
     "city",

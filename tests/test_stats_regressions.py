@@ -23,6 +23,7 @@ class DashboardStatsRegressionTests(unittest.TestCase):
                     "type": "vmess",
                     "server": "custom.example.com",
                     "port": 443,
+                    "uuid": "11111111-1111-1111-1111-111111111111",
                     "last_latency": 88,
                 },
             ],

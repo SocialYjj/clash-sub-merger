@@ -69,11 +69,12 @@ type SpeedResponse struct {
 }
 
 type FetchURLRequest struct {
-	Link    string                   `json:"link"`
-	Node    map[string]interface{}   `json:"node"`
-	Chain   []map[string]interface{} `json:"chain"`
-	URL     string                   `json:"url"`     // Target URL to fetch
-	Timeout int                      `json:"timeout"` // seconds
+	Link        string                   `json:"link"`
+	Node        map[string]interface{}   `json:"node"`
+	Chain       []map[string]interface{} `json:"chain"`
+	URL         string                   `json:"url"`     // Target URL to fetch
+	Timeout     int                      `json:"timeout"` // seconds
+	DialerProxy string                   `json:"dialer_proxy"`
 }
 
 type FetchURLResponse struct {
@@ -314,9 +315,19 @@ func handleFetchURL(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if len(req.Chain) > 0 {
-		content, headers, statusCode, err = fetchURLWithChain(req.Chain, req.URL, time.Duration(req.Timeout)*time.Second)
+		content, headers, statusCode, err = fetchURLWithChainAndDialer(
+			req.Chain,
+			req.URL,
+			time.Duration(req.Timeout)*time.Second,
+			req.DialerProxy,
+		)
 	} else if req.Node != nil {
-		content, headers, statusCode, err = fetchURLWithNode(req.Node, req.URL, time.Duration(req.Timeout)*time.Second)
+		content, headers, statusCode, err = fetchURLWithNodeAndDialer(
+			req.Node,
+			req.URL,
+			time.Duration(req.Timeout)*time.Second,
+			req.DialerProxy,
+		)
 	} else {
 		content, headers, statusCode, err = fetchURL(req.Link, req.URL, time.Duration(req.Timeout)*time.Second)
 	}

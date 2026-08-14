@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from services.custom_node_storage import update_custom_nodes
 from services.name_transformer import NameTransformer
-from services.node_identity import subscription_node_id
+from services.node_identity import subscription_node_id, subscription_node_ids
 from services.node_reference_updates import (
     reconcile_subscription_node_references,
     update_subscription_yaml_with_references,
@@ -27,6 +27,46 @@ def _subscription_node(name: str, server: str) -> dict:
 
 
 class StableNodeReferenceTests(unittest.TestCase):
+    def test_duplicate_technical_nodes_survive_display_name_rename(self):
+        old_nodes = [
+            _subscription_node("Old A", "same.example"),
+            _subscription_node("Old B", "same.example"),
+        ]
+        new_nodes = [
+            _subscription_node("New A", "same.example"),
+            _subscription_node("New B", "same.example"),
+        ]
+        old_ids = subscription_node_ids("sub_1", old_nodes)
+        new_ids = subscription_node_ids("sub_1", new_nodes)
+        config = {
+            "subscriptions": [{"id": "sub_1", "name": "Provider"}],
+            "users": [{"allocations": {"sub_1": old_ids}}],
+            "admin_tokens": [],
+            "custom_nodes": [],
+            "proxy_chains": [],
+            "speedtest_results": {"sub_1": {
+                old_ids[0]: {"latency": 10},
+                old_ids[1]: {"latency": 20},
+            }},
+        }
+
+        with patch("services.proxy_chain_references._base_node_names", side_effect=lambda _config: set()):
+            reconcile_subscription_node_references(
+                config,
+                "sub_1",
+                old_nodes=old_nodes,
+                new_nodes=new_nodes,
+                old_subscription_name="Provider",
+                new_subscription_name="Provider",
+            )
+
+        self.assertNotEqual(old_ids, new_ids)
+        self.assertEqual(config["users"][0]["allocations"]["sub_1"], new_ids)
+        self.assertEqual(
+            config["speedtest_results"]["sub_1"],
+            {new_ids[0]: {"latency": 10}, new_ids[1]: {"latency": 20}},
+        )
+
     def test_unique_same_name_migrates_after_technical_configuration_change(self):
         old_node = _subscription_node("Stable Name", "old.example")
         new_node = _subscription_node("Stable Name", "new.example")

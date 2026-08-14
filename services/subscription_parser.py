@@ -10,6 +10,7 @@ from typing import Tuple, List, Optional
 from logger_config import get_logger
 from services.node_parser import parse_node_link
 from services.proxy_filter import ProxyFilter
+from services.subscription_node_count import count_effective_subscription_nodes
 
 logger = get_logger(__name__)
 
@@ -212,7 +213,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     # characters that are also valid in a Base64 alphabet.
     proxies = parse_yaml_proxies(content)
     if proxies is not None:
-        valid_count = len(ProxyFilter.filter_proxies(proxies))
+        valid_count = count_effective_subscription_nodes(proxies)
         if valid_count <= 0:
             raise InvalidContentError("Subscription contains no valid proxy nodes")
         logger.info("Parsed %s nodes from YAML content", valid_count)
@@ -224,7 +225,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
         logger.debug("Successfully decoded Base64 content")
         proxies = parse_yaml_proxies(decoded_content)
         if proxies is not None:
-            valid_count = len(ProxyFilter.filter_proxies(proxies))
+            valid_count = count_effective_subscription_nodes(proxies)
             if valid_count <= 0:
                 raise InvalidContentError("Subscription contains no valid proxy nodes")
             logger.info("Parsed %s nodes from Base64 YAML content", valid_count)
@@ -235,7 +236,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     proxies = parse_uri_list(uri_content)
     if proxies:
         yaml_content = proxies_to_yaml(proxies)
-        valid_count = len(ProxyFilter.filter_proxies(proxies))
+        valid_count = count_effective_subscription_nodes(proxies)
         if valid_count <= 0:
             raise InvalidContentError("Subscription contains no valid proxy nodes")
         logger.info("Parsed %s nodes from URI list", valid_count)
@@ -289,7 +290,7 @@ def count_nodes(content: str) -> int:
             proxies = cfg.get('proxies', [])
             if not isinstance(proxies, list):
                 return 0
-            count = len(ProxyFilter.filter_proxies(proxies))
+            count = count_effective_subscription_nodes(proxies)
             logger.debug(f"Counted {count} nodes in content")
             return count
     except yaml.YAMLError as e:

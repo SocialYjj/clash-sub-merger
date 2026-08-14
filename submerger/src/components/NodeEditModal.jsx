@@ -4,6 +4,217 @@ import request from '../utils/request';
 
 const API_BASE = '/api';
 
+
+const TRANSPORT_OPTIONS = {
+    vless: ['tcp', 'ws', 'httpupgrade', 'http', 'h2', 'grpc', 'xhttp'],
+    vmess: ['tcp', 'ws', 'httpupgrade', 'http', 'h2', 'grpc'],
+    trojan: ['tcp', 'ws', 'httpupgrade', 'grpc'],
+};
+
+const EDITABLE_PROTOCOLS = [
+    'vless', 'vmess', 'trojan', 'ss', 'socks5', 'http',
+    'hysteria2', 'tuic', 'anytls',
+];
+
+const REALITY_PROTOCOLS = new Set(['vless', 'vmess', 'trojan']);
+const TLS_PROTOCOLS = new Set([
+    'vless', 'vmess', 'trojan', 'http',
+    'hysteria2', 'tuic', 'anytls',
+]);
+
+function normalizeProtocol(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function transportValue(node) {
+    const network = String(node?.network || 'tcp').trim().toLowerCase();
+    if (network === 'ws' && node?.['ws-opts']?.['v2ray-http-upgrade']) {
+        return 'httpupgrade';
+    }
+    return network;
+}
+
+function setOrDelete(target, key, value) {
+    if (value === undefined || value === null || value === '') {
+        delete target[key];
+    } else {
+        target[key] = value;
+    }
+}
+
+function replaceHostHeader(headers, host) {
+    const normalized = headers && typeof headers === 'object' && !Array.isArray(headers)
+        ? { ...headers }
+        : {};
+    for (const key of Object.keys(normalized)) {
+        if (key.toLowerCase() === 'host') delete normalized[key];
+    }
+    if (host) normalized.Host = host;
+    return normalized;
+}
+
+export function getTransportOptions(type) {
+    return TRANSPORT_OPTIONS[normalizeProtocol(type)] || [];
+}
+
+export function buildEditedNode(node, formData) {
+    const metadataFields = new Set([
+        'id', 'link', 'enabled', 'display_name', 'index', 'last_latency',
+        'last_latency_time', 'last_speed', 'last_peak_speed', 'last_speed_time',
+        'last_peak_speed_time', 'exit_ip', 'geoip', 'region', 'city',
+        'sourceType', 'sourceName',
+    ]);
+    const nodeObj = Object.fromEntries(
+        Object.entries(node || {}).filter(([key]) => !metadataFields.has(key) && !key.startsWith('_'))
+    );
+    const originalType = normalizeProtocol(node?.type);
+    const type = normalizeProtocol(formData.type) || 'vless';
+    const typeChanged = originalType !== type;
+
+    for (const key of [
+        'uuid', 'username', 'password', 'alterId', 'cipher', 'method',
+        'flow', 'encryption', 'obfs', 'obfs-password',
+        'congestion-controller', 'udp-relay-mode', 'smux',
+        'header-type', 'ws-opts', 'grpc-opts', 'h2-opts', 'http-opts',
+        'xhttp-opts', 'xhttp-mode', 'host', 'path', 'seed', 'mtu',
+        'tls', 'sni', 'servername', 'reality-opts', 'client-fingerprint',
+        'fingerprint', 'alpn', 'skip-cert-verify',
+    ]) {
+        delete nodeObj[key];
+    }
+    if (typeChanged) {
+        for (const key of [
+            'network', 'plugin', 'plugin-opts', 'token', 'auth', 'auth-str',
+            'private-key', 'public-key', 'ip', 'ports', 'mport',
+            'up', 'down', 'up-speed', 'down-speed',
+        ]) {
+            delete nodeObj[key];
+        }
+    }
+
+    Object.assign(nodeObj, {
+        name: formData.name,
+        type,
+        server: formData.server,
+        port: parseInt(formData.port, 10) || 443,
+    });
+
+    if (['vless', 'vmess', 'tuic'].includes(type)) nodeObj.uuid = formData.uuid || '';
+    if (type === 'vmess') {
+        nodeObj.alterId = parseInt(formData.alterId, 10) || 0;
+        nodeObj.cipher = formData.cipher || 'auto';
+    }
+    if (['trojan', 'ss', 'hysteria2', 'tuic', 'anytls'].includes(type)) {
+        nodeObj.password = formData.password || '';
+    }
+    if (['socks5', 'http'].includes(type)) {
+        setOrDelete(nodeObj, 'username', String(formData.username || '').trim());
+        setOrDelete(nodeObj, 'password', String(formData.password || ''));
+    }
+    if (type === 'ss') nodeObj.cipher = formData.cipher || 'aes-256-gcm';
+    if (type === 'vless') {
+        setOrDelete(nodeObj, 'flow', formData.flow);
+        setOrDelete(nodeObj, 'encryption', String(formData.encryption || '').trim() || 'none');
+    }
+
+    const transportOptions = getTransportOptions(type);
+    const requestedTransport = String(formData.network || 'tcp').trim().toLowerCase();
+    const network = transportOptions.includes(requestedTransport) ? requestedTransport : 'tcp';
+    const sameTransport = !typeChanged && transportValue(node) === network;
+    if (transportOptions.length > 0) {
+        if (network !== 'tcp') nodeObj.network = network === 'httpupgrade' ? 'ws' : network;
+        else delete nodeObj.network;
+
+        if (network === 'ws' || network === 'httpupgrade') {
+            const opts = sameTransport && node?.['ws-opts'] && typeof node['ws-opts'] === 'object'
+                ? { ...node['ws-opts'] }
+                : {};
+            delete opts.path;
+            opts.headers = replaceHostHeader(opts.headers, formData.host);
+            if (Object.keys(opts.headers).length === 0) delete opts.headers;
+            setOrDelete(opts, 'path', formData.path);
+            if (network === 'httpupgrade') opts['v2ray-http-upgrade'] = true;
+            else delete opts['v2ray-http-upgrade'];
+            nodeObj['ws-opts'] = opts;
+        } else if (network === 'grpc') {
+            const opts = sameTransport && node?.['grpc-opts'] && typeof node['grpc-opts'] === 'object'
+                ? { ...node['grpc-opts'] }
+                : {};
+            delete opts.mode;
+            delete opts.authority;
+            setOrDelete(opts, 'grpc-service-name', formData.grpcServiceName);
+            nodeObj['grpc-opts'] = opts;
+        } else if (network === 'h2') {
+            const opts = sameTransport && node?.['h2-opts'] && typeof node['h2-opts'] === 'object'
+                ? { ...node['h2-opts'] }
+                : {};
+            setOrDelete(opts, 'host', formData.host ? [formData.host] : '');
+            setOrDelete(opts, 'path', formData.path);
+            nodeObj['h2-opts'] = opts;
+        } else if (network === 'http') {
+            const opts = sameTransport && node?.['http-opts'] && typeof node['http-opts'] === 'object'
+                ? { ...node['http-opts'] }
+                : {};
+            setOrDelete(opts, 'path', formData.path ? [formData.path] : '');
+            opts.headers = replaceHostHeader(opts.headers, formData.host ? [formData.host] : '');
+            if (Object.keys(opts.headers).length === 0) delete opts.headers;
+            nodeObj['http-opts'] = opts;
+        } else if (network === 'xhttp') {
+            const opts = sameTransport && node?.['xhttp-opts'] && typeof node['xhttp-opts'] === 'object'
+                ? { ...node['xhttp-opts'] }
+                : {};
+            setOrDelete(opts, 'mode', formData.xhttpMode);
+            setOrDelete(opts, 'path', formData.path);
+            setOrDelete(opts, 'host', formData.host);
+            if (Object.keys(opts).length > 0) nodeObj['xhttp-opts'] = opts;
+        }
+    } else if (typeChanged) {
+        delete nodeObj.network;
+    }
+
+    const requestedSecurity = String(formData.security || '').trim().toLowerCase();
+    const security = requestedSecurity === 'reality' && !REALITY_PROTOCOLS.has(type)
+        ? 'tls'
+        : requestedSecurity;
+    const usesSniField = ['trojan', 'hysteria2', 'tuic', 'anytls'].includes(type);
+    if (security === 'tls' && TLS_PROTOCOLS.has(type)) {
+        nodeObj.tls = true;
+        setOrDelete(nodeObj, usesSniField ? 'sni' : 'servername', formData.sni);
+        setOrDelete(nodeObj, 'client-fingerprint', formData.clientFingerprint);
+        setOrDelete(nodeObj, 'fingerprint', formData.certificateFingerprint);
+        const alpn = String(formData.alpn || '').split(',').map(value => value.trim()).filter(Boolean);
+        if (alpn.length > 0) nodeObj.alpn = alpn;
+        if (formData.allowInsecure) nodeObj['skip-cert-verify'] = true;
+    } else if (security === 'reality' && REALITY_PROTOCOLS.has(type)) {
+        nodeObj.tls = true;
+        const originalReality = !typeChanged && node?.['reality-opts'] && typeof node['reality-opts'] === 'object'
+            ? { ...node['reality-opts'] }
+            : {};
+        setOrDelete(originalReality, 'public-key', formData.publicKey);
+        setOrDelete(originalReality, 'short-id', formData.shortId);
+        nodeObj['reality-opts'] = originalReality;
+        setOrDelete(nodeObj, usesSniField ? 'sni' : 'servername', formData.sni);
+        setOrDelete(nodeObj, 'client-fingerprint', formData.clientFingerprint);
+        setOrDelete(nodeObj, 'fingerprint', formData.certificateFingerprint);
+        const alpn = String(formData.alpn || '').split(',').map(value => value.trim()).filter(Boolean);
+        if (alpn.length > 0) nodeObj.alpn = alpn;
+    }
+
+    if (formData.muxEnabled && ['vless', 'vmess', 'trojan'].includes(type)) {
+        nodeObj.smux = { enabled: true };
+    }
+    if (type === 'hysteria2') {
+        setOrDelete(nodeObj, 'obfs', formData.obfs);
+        setOrDelete(nodeObj, 'obfs-password', formData.obfsPassword);
+    }
+    if (type === 'tuic') {
+        setOrDelete(nodeObj, 'congestion-controller', formData.congestionController);
+        setOrDelete(nodeObj, 'udp-relay-mode', formData.udpRelayMode);
+    }
+
+    return nodeObj;
+}
+
 // Field component - V2RayN style (label on left, input on right, single column)
 function Field({ label, children }) {
     return (
@@ -38,11 +249,14 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
             const realityOpts = node['reality-opts'] || {};
             const h2Opts = node['h2-opts'] || {};
             const xhttpOpts = node['xhttp-opts'] || {};
+            const httpOpts = node['http-opts'] || {};
+            const currentTransport = transportValue(node);
+            const httpHost = httpOpts.headers?.Host;
 
             setFormData({
                 // Basic
                 name: node.name || '',
-                type: node.type || 'vless',
+                type: normalizeProtocol(node.type) || 'vless',
                 server: node.server || '',
                 port: node.port || 443,
                 // Auth
@@ -54,23 +268,29 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                 flow: node.flow || '',
                 encryption: node.encryption || 'none',
                 // Transport
-                network: node.network || 'tcp',
-                headerType: node['header-type'] || '',
-                host: wsOpts.headers?.Host || (Array.isArray(h2Opts.host) ? h2Opts.host[0] : h2Opts.host) || xhttpOpts.host || node.host || '',
-                path: wsOpts.path || h2Opts.path || xhttpOpts.path || node.path || '',
+                network: currentTransport,
+                host: wsOpts.headers?.Host
+                    || (Array.isArray(h2Opts.host) ? h2Opts.host[0] : h2Opts.host)
+                    || (Array.isArray(httpHost) ? httpHost[0] : httpHost)
+                    || xhttpOpts.host || node.host || '',
+                path: wsOpts.path
+                    || (Array.isArray(httpOpts.path) ? httpOpts.path[0] : httpOpts.path)
+                    || h2Opts.path || xhttpOpts.path || node.path || '',
                 grpcServiceName: grpcOpts['grpc-service-name'] || '',
-                grpcMode: grpcOpts.mode || 'gun',
                 xhttpMode: xhttpOpts.mode || node['xhttp-mode'] || 'auto',
                 // TLS
                 security: node['reality-opts'] ? 'reality' : (node.tls ? 'tls' : ''),
                 sni: node.sni || node.servername || '',
-                fingerprint: node['client-fingerprint'] || '',
+                // Keep the uTLS browser fingerprint and the server certificate
+                // pin separate. They are both called "fingerprint" in some
+                // clients but have different Mihomo fields and semantics.
+                clientFingerprint: node['client-fingerprint'] || '',
+                certificateFingerprint: node.fingerprint || '',
                 alpn: Array.isArray(node.alpn) ? node.alpn.join(',') : (node.alpn || ''),
                 allowInsecure: node['skip-cert-verify'] || false,
                 // Reality
                 publicKey: realityOpts['public-key'] || '',
                 shortId: realityOpts['short-id'] || '',
-                spiderX: realityOpts['spider-x'] || '',
                 // Mux
                 muxEnabled: node.smux?.enabled || false,
                 // SS
@@ -86,135 +306,58 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
     }, [node]);
 
     const handleChange = (field, value) => {
-        setFormData(prev => ({ ...prev, [field]: value }));
-    };
-
-    const buildNodeObject = () => {
-        const metadataFields = new Set([
-            'id', 'link', 'enabled', 'display_name', 'index', 'last_latency',
-            'last_latency_time', 'last_speed', 'last_peak_speed', 'last_speed_time',
-            'last_peak_speed_time',
-            'exit_ip', 'geoip', 'region', 'city',
-        ]);
-        const nodeObj = Object.fromEntries(
-            Object.entries(node || {}).filter(([key]) => !metadataFields.has(key) && !key.startsWith('_'))
-        );
-        Object.assign(nodeObj, {
-            name: formData.name,
-            type: formData.type,
-            server: formData.server,
-            port: parseInt(formData.port) || 443,
+        setFormData(prev => {
+            if (field === 'type') {
+                const type = normalizeProtocol(value);
+                const transportOptions = getTransportOptions(type);
+                const network = transportOptions.includes(prev.network)
+                    ? prev.network
+                    : (transportOptions[0] || 'tcp');
+                const security = prev.security === 'reality' && !REALITY_PROTOCOLS.has(type)
+                    ? (TLS_PROTOCOLS.has(type) ? 'tls' : '')
+                    : (TLS_PROTOCOLS.has(type) ? prev.security : '');
+                return {
+                    ...prev,
+                    type,
+                    network,
+                    security,
+                    host: '',
+                    path: '',
+                    grpcServiceName: '',
+                    xhttpMode: 'auto',
+                    flow: '',
+                    encryption: type === 'vless' ? 'none' : '',
+                    obfs: '',
+                    obfsPassword: '',
+                    congestionController: 'bbr',
+                    udpRelayMode: 'native',
+                    muxEnabled: false,
+                };
+            }
+            if (field === 'network') {
+                return {
+                    ...prev,
+                    network: value,
+                    host: '',
+                    path: '',
+                    grpcServiceName: '',
+                    xhttpMode: 'auto',
+                };
+            }
+            if (field === 'security') {
+                return {
+                    ...prev,
+                    security: value,
+                    publicKey: value === 'reality' ? prev.publicKey : '',
+                    shortId: value === 'reality' ? prev.shortId : '',
+                    allowInsecure: value === 'tls' ? prev.allowInsecure : false,
+                };
+            }
+            return { ...prev, [field]: value };
         });
-
-        // Auth
-        if (['vless', 'vmess', 'tuic'].includes(formData.type)) {
-            nodeObj.uuid = formData.uuid;
-        }
-        if (formData.type === 'vmess') {
-            nodeObj.alterId = parseInt(formData.alterId) || 0;
-            nodeObj.cipher = formData.cipher || 'auto';
-        }
-        if (['trojan', 'ss', 'hysteria2', 'tuic'].includes(formData.type)) {
-            nodeObj.password = formData.password;
-        }
-        if (['socks5', 'socks5h', 'http', 'https'].includes(formData.type)) {
-            const username = String(formData.username || '').trim();
-            const password = String(formData.password || '');
-            if (username) {
-                nodeObj.username = username;
-            } else {
-                delete nodeObj.username;
-            }
-            if (password) {
-                nodeObj.password = password;
-            } else {
-                delete nodeObj.password;
-            }
-        }
-        if (formData.type === 'ss') {
-            nodeObj.cipher = formData.cipher;
-        }
-
-        // VLESS
-        if (formData.type === 'vless') {
-            if (formData.flow) nodeObj.flow = formData.flow;
-            if (formData.encryption !== undefined) {
-                const enc = String(formData.encryption || '').trim();
-                if (enc) {
-                    nodeObj.encryption = enc;
-                }
-            }
-        }
-
-        // Transport
-        if (formData.network && formData.network !== 'tcp') {
-            nodeObj.network = formData.network;
-        }
-        // Header type for tcp, kcp, quic
-        if (['tcp', 'kcp', 'quic'].includes(formData.network) && formData.headerType) {
-            nodeObj['header-type'] = formData.headerType;
-        }
-        if (formData.network === 'ws' || formData.network === 'httpupgrade') {
-            nodeObj['ws-opts'] = {};
-            if (formData.path) nodeObj['ws-opts'].path = formData.path;
-            if (formData.host) nodeObj['ws-opts'].headers = { Host: formData.host };
-        }
-        if (formData.network === 'grpc') {
-            nodeObj['grpc-opts'] = {};
-            if (formData.grpcServiceName) nodeObj['grpc-opts']['grpc-service-name'] = formData.grpcServiceName;
-            if (formData.grpcMode) nodeObj['grpc-opts'].mode = formData.grpcMode;
-        }
-        if (formData.network === 'h2') {
-            nodeObj['h2-opts'] = {};
-            if (formData.host) nodeObj['h2-opts'].host = [formData.host];
-            if (formData.path) nodeObj['h2-opts'].path = formData.path;
-        }
-        if (formData.network === 'xhttp') {
-            nodeObj['xhttp-opts'] = {};
-            if (formData.xhttpMode) nodeObj['xhttp-opts'].mode = formData.xhttpMode;
-            if (formData.path) nodeObj['xhttp-opts'].path = formData.path;
-            if (formData.host) nodeObj['xhttp-opts'].host = formData.host;
-            if (Object.keys(nodeObj['xhttp-opts']).length === 0) {
-                delete nodeObj['xhttp-opts'];
-            }
-        }
-
-        // TLS
-        if (formData.security === 'tls') {
-            nodeObj.tls = true;
-            if (formData.sni) nodeObj.servername = formData.sni;
-            if (formData.fingerprint) nodeObj['client-fingerprint'] = formData.fingerprint;
-            if (formData.alpn) nodeObj.alpn = formData.alpn.split(',').map(s => s.trim()).filter(Boolean);
-            if (formData.allowInsecure) nodeObj['skip-cert-verify'] = true;
-        } else if (formData.security === 'reality') {
-            nodeObj.tls = true;
-            nodeObj['reality-opts'] = {};
-            if (formData.publicKey) nodeObj['reality-opts']['public-key'] = formData.publicKey;
-            if (formData.shortId) nodeObj['reality-opts']['short-id'] = formData.shortId;
-            if (formData.spiderX) nodeObj['reality-opts']['spider-x'] = formData.spiderX;
-            if (formData.sni) nodeObj.servername = formData.sni;
-            if (formData.fingerprint) nodeObj['client-fingerprint'] = formData.fingerprint;
-        }
-
-        // Mux
-        if (formData.muxEnabled) {
-            nodeObj.smux = { enabled: true };
-        }
-
-        // Hysteria2
-        if (formData.type === 'hysteria2') {
-            if (formData.obfs) nodeObj.obfs = formData.obfs;
-            if (formData.obfsPassword) nodeObj['obfs-password'] = formData.obfsPassword;
-        }
-
-        // TUIC
-        if (formData.type === 'tuic') {
-            if (formData.congestionController) nodeObj['congestion-controller'] = formData.congestionController;
-            if (formData.udpRelayMode) nodeObj['udp-relay-mode'] = formData.udpRelayMode;
-        }
-
-        return nodeObj;
     };
+
+    const buildNodeObject = () => buildEditedNode(node, formData);
 
     const handleSave = async () => {
         if (!isCustomNode) {
@@ -261,6 +404,12 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                     {/* Configuration */}
                     <Divider title="配置项" />
                     
+                    <Field label="协议类型 (type)">
+                        <select value={formData.type} onChange={(e) => handleChange('type', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
+                            {EDITABLE_PROTOCOLS.map(type => <option key={type} value={type}>{type}</option>)}
+                        </select>
+                    </Field>
+
                     <Field label="别名 (remarks)">
                         <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
                     </Field>
@@ -280,7 +429,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </Field>
                     )}
 
-                    {['socks5', 'socks5h', 'http', 'https'].includes(formData.type) && (
+                    {['socks5', 'http'].includes(formData.type) && (
                         <>
                             <Field label="用户名 (username)">
                                 <input type="text" value={formData.username} onChange={(e) => handleChange('username', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
@@ -291,7 +440,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </>
                     )}
 
-                    {['trojan', 'ss', 'hysteria2', 'tuic'].includes(formData.type) && (
+                    {['trojan', 'ss', 'hysteria2', 'tuic', 'anytls'].includes(formData.type) && (
                         <Field label="密码 (password)">
                             <input type="text" value={formData.password} onChange={(e) => handleChange('password', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
                         </Field>
@@ -352,60 +501,26 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                     )}
 
                     {/* Mux */}
-                    <Field label="开启 Mux 多路复用">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" checked={formData.muxEnabled} onChange={(e) => handleChange('muxEnabled', e.target.checked)} disabled={!isCustomNode} className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500" />
-                        </label>
-                    </Field>
+                    {['vless', 'vmess', 'trojan'].includes(formData.type) && (
+                        <Field label="开启 Mux 多路复用">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={formData.muxEnabled} onChange={(e) => handleChange('muxEnabled', e.target.checked)} disabled={!isCustomNode} className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500" />
+                            </label>
+                        </Field>
+                    )}
 
                     {/* Transport layer */}
-                    <Divider title="底层传输方式 (transport)" />
-                    
-                    <Field label="传输协议 (network)">
-                        <select value={formData.network} onChange={(e) => handleChange('network', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                            <option value="tcp">tcp</option>
-                            <option value="kcp">kcp</option>
-                            <option value="ws">ws</option>
-                            <option value="httpupgrade">httpupgrade</option>
-                            <option value="xhttp">xhttp</option>
-                            <option value="h2">h2</option>
-                            <option value="quic">quic</option>
-                            <option value="grpc">grpc</option>
-                        </select>
-                    </Field>
-
-                    {/* Header type for tcp, kcp, quic, ws, httpupgrade, h2 */}
-                    {['tcp', 'kcp', 'quic'].includes(formData.network) && (
-                        <Field label="伪装类型 (type)">
-                            <select value={formData.headerType} onChange={(e) => handleChange('headerType', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                                <option value="">none</option>
-                                <option value="srtp">srtp</option>
-                                <option value="utp">utp</option>
-                                <option value="wechat-video">wechat-video</option>
-                                <option value="dtls">dtls</option>
-                                <option value="wireguard">wireguard</option>
-                                <option value="dns">dns</option>
-                            </select>
-                        </Field>
-                    )}
-
-                    {/* Header type for ws, httpupgrade, h2 - only none */}
-                    {['ws', 'httpupgrade', 'h2'].includes(formData.network) && (
-                        <Field label="伪装类型 (type)">
-                            <select value={formData.headerType} onChange={(e) => handleChange('headerType', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                                <option value="">none</option>
-                            </select>
-                        </Field>
-                    )}
-
-                    {/* grpc mode */}
-                    {formData.network === 'grpc' && (
-                        <Field label="gRPC Mode">
-                            <select value={formData.grpcMode} onChange={(e) => handleChange('grpcMode', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                                <option value="gun">gun</option>
-                                <option value="multi">multi</option>
-                            </select>
-                        </Field>
+                    {getTransportOptions(formData.type).length > 0 && (
+                        <>
+                            <Divider title="底层传输方式 (transport)" />
+                            <Field label="传输协议 (network)">
+                                <select value={formData.network} onChange={(e) => handleChange('network', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
+                                    {getTransportOptions(formData.type).map(network => (
+                                        <option key={network} value={network}>{network}</option>
+                                    ))}
+                                </select>
+                            </Field>
+                        </>
                     )}
 
                     {/* xhttp mode */}
@@ -420,13 +535,16 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                         </Field>
                     )}
 
-                    {/* Host and path for ALL network types */}
-                    <Field label="伪装域名 (host)">
-                        <input type="text" value={formData.host} onChange={(e) => handleChange('host', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
-                    </Field>
-                    <Field label="路径 (path)">
-                        <input type="text" value={formData.path} onChange={(e) => handleChange('path', e.target.value)} disabled={!isCustomNode} placeholder="/" className={inputClass(!isCustomNode)} />
-                    </Field>
+                    {['ws', 'httpupgrade', 'http', 'h2', 'xhttp'].includes(formData.network) && (
+                        <>
+                            <Field label="伪装域名 (host)">
+                                <input type="text" value={formData.host} onChange={(e) => handleChange('host', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
+                            </Field>
+                            <Field label="路径 (path)">
+                                <input type="text" value={formData.path} onChange={(e) => handleChange('path', e.target.value)} disabled={!isCustomNode} placeholder="/" className={inputClass(!isCustomNode)} />
+                            </Field>
+                        </>
+                    )}
 
                     {/* gRPC serviceName - only for grpc */}
                     {formData.network === 'grpc' && (
@@ -436,23 +554,26 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                     )}
 
                     {/* Transport layer security */}
-                    <Divider title="传输层安全 (TLS)" />
-                    
-                    <Field label="传输层安全 (TLS)">
-                        <select value={formData.security} onChange={(e) => handleChange('security', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                            <option value=""></option>
-                            <option value="tls">tls</option>
-                            <option value="reality">reality</option>
-                        </select>
-                    </Field>
+                    {TLS_PROTOCOLS.has(formData.type) && (
+                        <>
+                            <Divider title="传输层安全 (TLS)" />
+                            <Field label="传输层安全 (TLS)">
+                                <select value={formData.security} onChange={(e) => handleChange('security', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
+                                    <option value=""></option>
+                                    <option value="tls">tls</option>
+                                    {REALITY_PROTOCOLS.has(formData.type) && <option value="reality">reality</option>}
+                                </select>
+                            </Field>
+                        </>
+                    )}
 
                     {(formData.security === 'tls' || formData.security === 'reality') && (
                         <>
                             <Field label="SNI">
                                 <input type="text" value={formData.sni} onChange={(e) => handleChange('sni', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
                             </Field>
-                            <Field label="Fingerprint">
-                                <select value={formData.fingerprint} onChange={(e) => handleChange('fingerprint', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
+                            <Field label="客户端指纹 (uTLS fingerprint)">
+                                <select value={formData.clientFingerprint} onChange={(e) => handleChange('clientFingerprint', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
                                     <option value=""></option>
                                     <option value="chrome">chrome</option>
                                     <option value="firefox">firefox</option>
@@ -466,10 +587,20 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                                     <option value="randomized">randomized</option>
                                 </select>
                             </Field>
+                            <Field label="证书指纹 (SHA-256 pin)">
+                                <input
+                                    type="text"
+                                    value={formData.certificateFingerprint}
+                                    onChange={(e) => handleChange('certificateFingerprint', e.target.value)}
+                                    disabled={!isCustomNode}
+                                    placeholder="pinSHA256 / Mihomo fingerprint"
+                                    className={inputClass(!isCustomNode) + ' font-mono text-xs'}
+                                />
+                            </Field>
                         </>
                     )}
 
-                    {formData.security === 'tls' && (
+                    {(formData.security === 'tls' || formData.security === 'reality') && (
                         <>
                             <Field label="Alpn">
                                 <select value={formData.alpn} onChange={(e) => handleChange('alpn', e.target.value)} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
@@ -482,12 +613,14 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                                     <option value="h3,h2,http/1.1">h3,h2,http/1.1</option>
                                 </select>
                             </Field>
-                            <Field label="跳过证书验证 (allowInsecure)">
-                                <select value={formData.allowInsecure ? 'true' : 'false'} onChange={(e) => handleChange('allowInsecure', e.target.value === 'true')} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
-                                    <option value="false">false</option>
-                                    <option value="true">true</option>
-                                </select>
-                            </Field>
+                            {formData.security === 'tls' && (
+                                <Field label="跳过证书验证 (allowInsecure)">
+                                    <select value={formData.allowInsecure ? 'true' : 'false'} onChange={(e) => handleChange('allowInsecure', e.target.value === 'true')} disabled={!isCustomNode} className={selectClass(!isCustomNode)}>
+                                        <option value="false">false</option>
+                                        <option value="true">true</option>
+                                    </select>
+                                </Field>
+                            )}
                         </>
                     )}
 
@@ -498,9 +631,6 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                             </Field>
                             <Field label="ShortId">
                                 <input type="text" value={formData.shortId} onChange={(e) => handleChange('shortId', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode) + ' font-mono'} />
-                            </Field>
-                            <Field label="SpiderX">
-                                <input type="text" value={formData.spiderX} onChange={(e) => handleChange('spiderX', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
                             </Field>
                         </>
                     )}

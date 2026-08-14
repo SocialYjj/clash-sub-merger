@@ -9,12 +9,210 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 
 import api.health as health_api
+import api.subscriptions as subscriptions_api
 import server
 from services.node_identity import subscription_node_id, subscription_node_ids
 from services.node_manager import find_subscription_node, get_proxy_node_by_id
+from services.subscription_node_count import count_effective_subscription_nodes
 
 
 class ServerBugfixTests(unittest.TestCase):
+    def test_effective_subscription_count_excludes_info_and_disabled_nodes(self):
+        nodes = [
+            {
+                "name": "US 01",
+                "type": "http",
+                "server": "us.example.com",
+                "port": 8080,
+            },
+            {
+                "name": "US 02",
+                "type": "http",
+                "server": "disabled.example.com",
+                "port": 8080,
+                "enabled": False,
+            },
+            {
+                "name": "加入频道获取更多节点",
+                "type": "http",
+                "server": "info.example.com",
+                "port": 8080,
+            },
+        ]
+
+        self.assertEqual(count_effective_subscription_nodes(nodes), 1)
+
+    def test_subscription_list_does_not_return_persisted_count_when_yaml_is_unavailable(self):
+        config = {
+            "subscriptions": [{
+                "id": "sub_missing",
+                "name": "Missing",
+                "enabled": True,
+                "node_count": 54,
+            }],
+        }
+
+        with (
+            patch.object(subscriptions_api, "load_config", return_value=config),
+            patch.object(subscriptions_api, "load_subscription_yaml", side_effect=FileNotFoundError),
+        ):
+            response = subscriptions_api.list_subscriptions.__wrapped__(True)
+
+        subscription = response["subscriptions"][0]
+        self.assertEqual(subscription["node_count"], 0)
+        self.assertTrue(subscription["node_count_stale"])
+        self.assertEqual(subscription["node_count_error"], "Subscription data unavailable")
+
+    def test_subscription_node_count_migration_updates_once_and_preserves_fields(self):
+        config = {
+            "subscriptions": [
+                {
+                    "id": "sub_demo",
+                    "name": "Demo",
+                    "node_count": 99,
+                    "enabled": True,
+                    "last_success": 123,
+                },
+            ],
+        }
+        source_nodes = [
+            {
+                "name": "US 01",
+                "type": "http",
+                "server": "us.example.com",
+                "port": 8080,
+            },
+            {
+                "name": "US 02",
+                "type": "http",
+                "server": "disabled.example.com",
+                "port": 8080,
+                "enabled": False,
+            },
+        ]
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml", return_value={"proxies": source_nodes}),
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        self.assertEqual(config["subscriptions"][0]["node_count"], 1)
+        self.assertEqual(config["subscriptions"][0]["last_success"], 123)
+        self.assertTrue(config["migration_versions"]["subscription_node_counts_v1"])
+        save_config.assert_called_once_with(config)
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml") as load_yaml,
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        load_yaml.assert_not_called()
+        save_config.assert_not_called()
+
+    def test_subscription_node_count_migration_waits_for_missing_enabled_source(self):
+        config = {
+            "subscriptions": [
+                {"id": "sub_missing", "name": "Missing", "node_count": 4, "enabled": True},
+            ],
+        }
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml", side_effect=FileNotFoundError),
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        self.assertNotIn("migration_versions", config)
+        save_config.assert_not_called()
+
+    def test_subscription_node_count_migration_skips_source_without_proxy_list(self):
+        config = {
+            "subscriptions": [
+                {"id": "sub_partial", "name": "Partial", "node_count": 7, "enabled": True},
+            ],
+        }
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml", return_value={"dns": {"enable": True}}),
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        self.assertEqual(config["subscriptions"][0]["node_count"], 7)
+        self.assertNotIn("migration_versions", config)
+        save_config.assert_not_called()
+
+    def test_subscription_node_count_migration_preserves_positive_count_for_empty_source(self):
+        config = {
+            "subscriptions": [
+                {"id": "sub_empty", "name": "Empty", "node_count": 12, "enabled": True},
+            ],
+        }
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml", return_value={"proxies": []}),
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        self.assertEqual(config["subscriptions"][0]["node_count"], 12)
+        self.assertNotIn("migration_versions", config)
+        save_config.assert_not_called()
+
+    def test_subscription_node_count_migration_accepts_already_empty_source(self):
+        config = {
+            "subscriptions": [
+                {"id": "sub_empty", "name": "Empty", "node_count": 0, "enabled": True},
+            ],
+        }
+
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch.object(server, "load_subscription_yaml", return_value={"proxies": []}),
+            patch.object(server, "save_config") as save_config,
+        ):
+            server.migrate_subscription_node_counts()
+
+        self.assertTrue(config["migration_versions"]["subscription_node_counts_v1"])
+        save_config.assert_called_once_with(config)
+
+    def test_filter_underscore_fields_removes_all_management_metadata(self):
+        node = {
+            "name": "🇯🇵 Node",
+            "type": "http",
+            "server": "example.com",
+            "port": 8080,
+            "source": "provider",
+            "sourceId": "sub_1",
+            "sourceType": "subscription",
+            "idx": 3,
+            "nodeKey": "internal-key",
+            "final_name": "internal-name",
+            "flag": "🇯🇵",
+            "country": "Japan",
+            "region": "Tokyo",
+            "city": "Tokyo",
+            "last_latency": 42,
+            "last_speed": 1024,
+            "_source_id": "sub_1",
+        }
+
+        cleaned = server.filter_underscore_fields(node)
+
+        self.assertEqual(cleaned, {
+            "name": "🇯🇵 Node",
+            "type": "http",
+            "server": "example.com",
+            "port": 8080,
+        })
+
     def test_base64_padding_adds_only_missing_padding(self):
         self.assertEqual(server._pad_base64("abcd"), "abcd")
         self.assertEqual(server._pad_base64("abc"), "abc=")

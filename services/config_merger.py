@@ -14,6 +14,7 @@ from services.country_grouper import CountryGrouper
 from services.node_visibility import filter_enabled_nodes, strip_visibility_fields
 from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_utils import unique_name
+from services.node_metadata import strip_node_metadata
 
 logger = get_logger(__name__)
 
@@ -198,7 +199,8 @@ rule-providers:
 
     def __init__(self, yaml_dir: str, output_file: str, custom_header: str = None, 
                  custom_suffix: str = None, file_aliases: Dict[str, str] = None,
-                 include_source_metadata: bool = False):
+                 include_source_metadata: bool = False,
+                 output_format: str | None = None):
         self.yaml_dir = yaml_dir
         self.output_file = output_file
         self.all_proxies: List[dict] = []
@@ -206,6 +208,7 @@ rule-providers:
         self.suffix = custom_suffix if custom_suffix is not None else self.DEFAULT_SUFFIX
         self.file_aliases = file_aliases or {}
         self.include_source_metadata = include_source_metadata
+        self.output_format = str(output_format or '').strip().lower()
 
     @staticmethod
     def _source_id_from_filename(file_name: str) -> str:
@@ -319,10 +322,17 @@ rule-providers:
 
             source_id = self._source_id_from_filename(file_name)
             
-            # Filter invalid nodes and admin-disabled nodes. Disabled nodes stay
-            # manageable in the admin UI, but must never enter generated output.
+            # Filter info banners and nodes that cannot be represented by the
+            # selected output format. V2Ray/sing-box receive minimally valid
+            # nodes as well, so their exporters can return a precise diagnostic
+            # for format-specific options instead of silently losing a node.
             unique_ids = subscription_node_ids(source_id, proxies)
-            valid_proxies = ProxyFilter.filter_proxies(proxies)
+            if self.output_format in {'v2ray', 'singbox'}:
+                valid_proxies = ProxyFilter.filter_minimally_valid_proxies(proxies)
+            else:
+                valid_proxies = ProxyFilter.filter_proxies(proxies)
+            if self.output_format in {'clash', 'socks', 'socks-manual'}:
+                valid_proxies = ProxyFilter.filter_clash_proxies(valid_proxies)
             enabled_proxies = filter_enabled_nodes(valid_proxies, strip=True)
             
             disabled_count = len(valid_proxies) - len(enabled_proxies)
@@ -336,9 +346,20 @@ rule-providers:
             
             identified_proxies = []
             for proxy_index, proxy in enumerate(proxies):
-                if not ProxyFilter.is_valid_proxy(proxy) or not filter_enabled_nodes([proxy], strip=True):
+                if self.output_format in {'v2ray', 'singbox'}:
+                    output_eligible = ProxyFilter.is_minimally_valid_proxy(proxy)
+                else:
+                    output_eligible = ProxyFilter.is_clash_compatible_proxy(proxy)
+                if not output_eligible or not filter_enabled_nodes([proxy], strip=True):
                     continue
-                identified_proxy = strip_visibility_fields(dict(proxy))
+                if (
+                    self.output_format in {'clash', 'socks', 'socks-manual'}
+                    and not ProxyFilter.is_clash_compatible_proxy(proxy)
+                ):
+                    continue
+                identified_proxy = strip_visibility_fields(
+                    ProxyFilter.sanitize_proxy(dict(proxy))
+                )
                 identified_proxy['_allocation_id'] = (
                     custom_node_id(proxy)
                     if source_id == 'custom_nodes'
@@ -384,7 +405,11 @@ rule-providers:
 
         output_parts = [self.header, '\nproxies:\n']
         for proxy in proxies:
-            proxy_json = json.dumps(proxy, ensure_ascii=False, separators=(',', ':'))
+            proxy_json = json.dumps(
+                strip_node_metadata(proxy),
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
             output_parts.append(f'  - {proxy_json}\n')
 
         output_parts.append('\nproxy-groups:\n')

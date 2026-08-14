@@ -9,6 +9,7 @@ import Layout from './components/Layout';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import ErrorBoundary from './components/ErrorBoundary';
+import SocksExportModal from './components/SocksExportModal';
 
 // Lazy load pages for code splitting (reduces initial bundle size by ~800KB)
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -128,6 +129,7 @@ export default function App() {
 
   // Format selector state for user subscription
   const [formatSelectorUser, setFormatSelectorUser] = useState(null);
+  const [showUserSocksExportModal, setShowUserSocksExportModal] = useState(false);
 
   const showToast = (message, type = 'success') => {
     if (toastTimerRef.current) {
@@ -409,11 +411,17 @@ export default function App() {
     setFormatSelectorUser(user);
   };
 
-  const copyUserSubUrlWithFormat = async (user, format) => {
+  const copyUserSubUrlWithFormat = async (user, format, socksOptions = null) => {
     try {
       const res = await request.get(`${API_BASE}/users/${user.id}`);
       let url = `${window.location.origin}/sub?token=${encodeURIComponent(res.data.user.token)}`;
       url += `&format=${format}`;
+      if (format === 'socks' && socksOptions) {
+        url += `&start_port=${encodeURIComponent(socksOptions.startPort)}`;
+        if (socksOptions.excludePorts) {
+          url += `&exclude_ports=${encodeURIComponent(socksOptions.excludePorts)}`;
+        }
+      }
       const copied = await copyToClipboard(url);
       if (!copied) {
         throw new Error('clipboard unavailable');
@@ -550,11 +558,11 @@ export default function App() {
             </div>
             <div className="space-y-2">
               <button
-                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'base64')}
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'v2ray')}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">Base64</div>
-                <div className="text-xs text-gray-400 mt-1">通用订阅格式</div>
+                <div className="font-medium">V2Ray</div>
+                <div className="text-xs text-gray-400 mt-1">用于导入 v2rayN 的订阅格式</div>
               </button>
               <button
                 onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'clash')}
@@ -564,22 +572,31 @@ export default function App() {
                 <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
               </button>
               <button
-                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'socks')}
+                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'singbox')}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">SOCKS (自动)</div>
-                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口（从42000开始）</div>
+                <div className="font-medium">Sing-box</div>
+                <div className="text-xs text-gray-400 mt-1">Sing-box JSON 配置格式</div>
               </button>
               <button
-                onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'socks-manual')}
+                onClick={() => setShowUserSocksExportModal(true)}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
               >
-                <div className="font-medium">SOCKS (手动)</div>
-                <div className="text-xs text-gray-400 mt-1">仅使用手动配置的端口映射</div>
+                <div className="font-medium">SOCKS</div>
+                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口</div>
               </button>
             </div>
           </div>
         </div>
+      )}
+      {showUserSocksExportModal && formatSelectorUser && (
+        <SocksExportModal
+          onClose={() => setShowUserSocksExportModal(false)}
+          onConfirm={(options) => {
+            copyUserSubUrlWithFormat(formatSelectorUser, 'socks', options);
+            setShowUserSocksExportModal(false);
+          }}
+        />
       )}
       </BrowserRouter>
     </ErrorBoundary>

@@ -164,7 +164,7 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                             <div>
                                 <label className="block text-sm text-gray-400 mb-1">
                                     订阅内容
-                                    <span className="text-gray-500 ml-2">(自动识别 YAML / Base64 / 节点链接)</span>
+                                    <span className="text-gray-500 ml-2">(自动识别 YAML / V2Ray / 节点链接)</span>
                                 </label>
                                 <textarea
                                     value={content}

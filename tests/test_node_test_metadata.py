@@ -27,6 +27,12 @@ class NodeTestMetadataTests(unittest.TestCase):
             "region": {"country_code": "JP", "country": "Japan", "flag": "🇯🇵"},
             "city": "Tokyo",
             "exit_ip": "192.0.2.10",
+            "ip_profile": {
+                "exit_ip": "192.0.2.10",
+                "ip_source": "native",
+                "network_type": "residential",
+                "fraud_score": 4,
+            },
         }
         refreshed = {
             "name": "JP 01",
@@ -44,6 +50,7 @@ class NodeTestMetadataTests(unittest.TestCase):
         self.assertEqual(refreshed["region"]["country_code"], "JP")
         self.assertEqual(refreshed["city"], "Tokyo")
         self.assertEqual(refreshed["exit_ip"], "192.0.2.10")
+        self.assertEqual(refreshed["ip_profile"]["ip_source"], "native")
 
     def test_ambiguous_endpoint_does_not_copy_wrong_measurement(self):
         previous = [
@@ -124,6 +131,54 @@ class NodeTestMetadataTests(unittest.TestCase):
         self.assertEqual(config["custom_nodes"][0]["last_speed"], 12.5)
         self.assertEqual(config["custom_nodes"][0]["last_peak_speed"], 20.0)
         self.assertTrue(config["custom_nodes"][0]["last_speed_time"])
+
+    def test_batch_ip_profile_update_preserves_fields_from_previous_phase(self):
+        import api.nodes as nodes_api
+
+        config = {
+            "custom_nodes": [{
+                "id": "node_1",
+                "name": "US 01",
+                "type": "http",
+                "server": "us.example",
+                "port": 8080,
+                "exit_ip": "203.0.113.10",
+                "ip_profile": {
+                    "exit_ip": "203.0.113.10",
+                    "ip_source": "native",
+                    "network_type": "residential",
+                    "fraud_score": 8,
+                },
+            }]
+        }
+
+        def fake_update_custom_nodes(mutator):
+            return mutator(config)
+
+        endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
+        request = nodes_api.BatchSaveRequest(
+            results={"custom": {"node_1": {
+                # A rotating provider can expose a different egress IP during
+                # the Radar request.  The partial Radar profile must not erase
+                # the previously saved IPPure values.
+                "exit_ip": "203.0.113.11",
+                "ip_profile": {
+                    "exit_ip": "203.0.113.11",
+                    "radar_status": "no_data",
+                },
+            }}}
+        )
+
+        with patch.object(nodes_api, "update_custom_nodes", side_effect=fake_update_custom_nodes):
+            response = asyncio.run(endpoint(request, request=None, _=True))
+
+        self.assertEqual(response["saved_count"], 1)
+        saved_profile = config["custom_nodes"][0]["ip_profile"]
+        self.assertEqual(saved_profile["exit_ip"], "203.0.113.11")
+        self.assertEqual(saved_profile["ip_source"], "native")
+        self.assertEqual(saved_profile["network_type"], "residential")
+        self.assertEqual(saved_profile["fraud_score"], 8)
+        self.assertEqual(saved_profile["radar_status"], "no_data")
 
 
 if __name__ == "__main__":

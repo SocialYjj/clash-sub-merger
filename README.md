@@ -33,7 +33,7 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 
 - 🔗 **Multi-subscription Aggregation** - Merge multiple subscriptions into one
 - 🛠️ **Custom Nodes** - Add your own nodes (vmess/vless/ss/trojan/hysteria2, etc.)
-- 📁 **Local Import** - Import subscriptions from local YAML/Base64 files
+- 📁 **Local Import** - Import subscriptions from local YAML/V2Ray files
 - 🔄 **Auto Refresh** - Scheduled subscription updates with Cron expression
 - 📊 **Traffic Statistics** - Display traffic usage and expiration time
 - 🎯 **Drag & Drop Sorting** - Customize node order
@@ -77,7 +77,7 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
 
 ### Subscription Output
 
-- 📱 **Smart Format** - Auto-detect client and return YAML or Base64
+- 📱 **Smart Format** - Auto-detect client and return Clash YAML, V2Ray, or Sing-box JSON
 - 🐱 **One-click Import** - Support `clash://` protocol
 - 📷 **QR Code** - Scan to subscribe on mobile
 - 📝 **Custom Template** - Customize Clash configuration template
@@ -180,10 +180,11 @@ docker compose up -d
 
 | Client              | Format      | Note                                   |
 | ------------------- | ----------- | -------------------------------------- |
-| Clash/FlClash/Stash | YAML        | Auto-detect                            |
-| V2RayN/V2RayNG      | Base64      | Auto-detect                            |
-| Shadowrocket        | YAML/Base64 | Auto-detect                            |
-| Manual              | -           | `?format=yaml` or `?format=base64` |
+| Clash/FlClash/Stash | Clash YAML    | `?format=clash` |
+| V2RayN/V2RayNG      | V2Ray         | `?format=v2ray` (response body is a Base64-encoded URI list for v2rayN) |
+| sing-box            | Sing-box JSON | `?format=singbox` |
+| SOCKS tools         | SOCKS YAML    | `?format=socks` with optional `start_port` and `exclude_ports` |
+| Legacy links        | -             | `base64`, `yaml`, and `socks-manual` are compatibility aliases |
 
 ### Supported Protocols
 
@@ -197,7 +198,7 @@ docker compose up -d
 - WireGuard
 - AnyTLS
 - SOCKS5 / HTTP
-- Snell is supported in YAML output; Base64 export returns an explicit error because
+- Snell is supported in Clash YAML output; V2Ray export returns an explicit error because
   there is no interoperable Snell share-link format.
 
 ## 🔧 Configuration
