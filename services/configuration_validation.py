@@ -448,6 +448,16 @@ def validate_and_normalize_configuration(config: dict) -> dict:
         raise ValueError("Imported auth configuration must be an object")
     if "settings" in normalized and not isinstance(normalized["settings"], dict):
         raise ValueError("Imported settings configuration must be an object")
+    if "translation_config" in normalized:
+        translation_config = normalized["translation_config"]
+        if not isinstance(translation_config, dict):
+            raise ValueError("Imported translation configuration must be an object")
+        providers = translation_config.get("providers", {})
+        if not isinstance(providers, dict) or any(
+            not isinstance(provider_settings, dict)
+            for provider_settings in providers.values()
+        ):
+            raise ValueError("Imported translation providers must be objects")
     _validate_auth(normalized)
 
     subscriptions = normalized.get("subscriptions", [])

@@ -1,6 +1,6 @@
 // Service Worker for static asset caching only.
 // Dynamic and authenticated responses must always bypass the Cache API.
-const CACHE_NAME = 'submerger-static-v5.0.0';
+const CACHE_NAME = 'submerger-static-v5.1.0';
 const PRECACHE_ASSETS = ['/manifest.json'];
 
 // Vite's hashed assets are safe to cache for the lifetime of this version.

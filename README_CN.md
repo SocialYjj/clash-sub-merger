@@ -58,10 +58,9 @@ SubMerger 能够将多个分散的机场订阅、自建节点合并为一个统�
   - 内置 API：ip-api.com（45次/分钟，支持中文）、ipwhois.app、ipinfo.io
   - 支持自定义 API（使用 `{ip}` 和 `{key}` 占位符）
   - Token 安全保护
-  - 城市名称翻译（Tokyo→东京、Seoul→首尔）
-  - 特殊地区显示（HK→中国香港、TW→中国台湾、MO→中国澳门）
+  - 支持 Google、微软、腾讯云、OpenAI 翻译供应商
+  - 翻译结果缓存和供应商失败降级，不再依赖硬编码城市名称映射
   - **异步 GeoIP 查询** (v2.6.0) - 通过 IP 地址识别国家，减少"未知"节点
-  - **大小写不敏感城市映射** (v2.6.0) - 支持所有大小写格式（Boydton/boydton/BOYDTON）
 - **链式代理** - 创建链式代理配置（节点A → 节点B → 目标服务）
 - **端口映射** - 将节点映射到本地端口，直接访问（生成 Clash listeners 配置）
 - **高级筛选器** - 支持按协议类型、国家地区、延迟状态进行多维度筛选。
@@ -222,6 +221,8 @@ docker compose up -d
 | `SCHEDULED_REFRESH_JITTER_SECONDS` | `120` | 相同 Cron 时间任务的随机错峰窗口（秒） |
 | `RATE_LIMIT_GEOIP` | `30/minute` | GeoIP 查询和 API 测试接口限流 |
 | `CUSTOM_GEOIP_MAX_RESPONSE_BYTES` | `1048576` | 自定义 GeoIP API 最大响应大小（字节） |
+| `TRANSLATION_PROVIDER_ORDER` | Google、微软、腾讯、OpenAI | 地点名称翻译供应商优先级 |
+| `TRANSLATION_CACHE_TTL_SECONDS` | `2592000` | 翻译缓存有效期（秒） |
 
 多个订阅均设置为 `0 0 * * *` 时，任务会在错峰窗口内依次启动，不保证全部恰好在 00:00:00 开始。
 
@@ -231,6 +232,7 @@ docker compose up -d
 - `logs/`: 脱敏后的轮转日志。
 - `backups/`: 配置备份。
 - `refresh_locks/`: 跨进程订阅刷新锁文件；锁文件存在不表示仍被锁定，不要手工删除。
+- `translation_cache.json`: 地点名称翻译缓存；不包含供应商密钥。
 
 升级前应备份整个 `data/`。已保存的订阅获取代理和 IPv6 测试代理只返回“是否已配置”，管理界面不能读取明文；需要变更时应直接替换或清除。配置导出与备份属于完整迁移数据，包含密码哈希和订阅 Token，必须按敏感文件保管；登录会话不会导出或恢复。
 

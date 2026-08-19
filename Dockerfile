@@ -55,7 +55,7 @@ COPY VERSION ./
 
 # Copy only application entry modules. Avoid wildcard copies that can bake
 # local operator scripts or credentials into a published image.
-COPY server.py helpers.py helpers_ua.py logger_config.py scheduler_service.py speedtest_service.py geoip_service.py ./
+COPY server.py helpers.py helpers_ua.py logger_config.py scheduler_service.py speedtest_service.py geoip_service.py translation_service.py ./
 COPY api/ ./api/
 COPY services/ ./services/
 COPY core/ ./core/

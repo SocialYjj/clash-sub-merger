@@ -432,6 +432,17 @@ def export_config() -> dict:
     geoip_config = config.get('geoip_config')
     if isinstance(geoip_config, dict):
         geoip_config.pop('cloudflare_radar_token', None)
+    translation_config = config.get('translation_config')
+    if isinstance(translation_config, dict):
+        providers = translation_config.get('providers')
+        if isinstance(providers, dict):
+            sensitive_provider_fields = {
+                'api_key', 'secret_key', 'secret_id',
+            }
+            for provider_record in providers.values():
+                if isinstance(provider_record, dict):
+                    for field_name in sensitive_provider_fields:
+                        provider_record.pop(field_name, None)
     remove_legacy_stale_references(config)
     
     return {
@@ -529,11 +540,11 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                 # Preserve imported non-collection settings without replacing
                 # operator-specific runtime values.  Mapping keys are stable
                 # node/chain references, so a shallow union is safe here.
-                for key in ('settings', 'geoip_config', 'port_mappings', 'speedtest_profiles'):
+                for key in ('settings', 'geoip_config', 'translation_config', 'port_mappings', 'speedtest_profiles'):
                     incoming_value = new_config.get(key)
                     if incoming_value is None:
                         continue
-                    if key in ('settings', 'geoip_config'):
+                    if key in ('settings', 'geoip_config', 'translation_config'):
                         existing_value = merged_config.setdefault(key, {})
                         if not isinstance(existing_value, dict) or not isinstance(incoming_value, dict):
                             raise ValueError(f"Imported {key} configuration is invalid")

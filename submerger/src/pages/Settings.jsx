@@ -10,6 +10,19 @@ const API_BASE = '/api';
 
 const shouldIgnoreRequest = (err, signal) => signal?.aborted || isRequestCanceled(err);
 
+const translationFieldLabels = {
+  api_key: 'API Key',
+  secret_key: 'Secret Key',
+  secret_id: 'Secret ID',
+  model: '模型',
+  region: '区域',
+  endpoint: '接口地址'
+};
+
+const translationSecretFields = new Set([
+  'api_key', 'secret_key', 'secret_id'
+]);
+
 // Proxy Node Settings Component
 // Subscription Proxy Settings Component
 const SubscriptionProxySection = ({ showToast }) => {
@@ -800,6 +813,13 @@ export default function Settings({
   });
   const [savingOnlineConfig, setSavingOnlineConfig] = useState(false);
   const [cloudflareRadarToken, setCloudflareRadarToken] = useState('');
+  const [translationConfig, setTranslationConfig] = useState({
+    preferred_provider: 'google',
+    provider_order: [],
+    providers: []
+  });
+  const [translationInputs, setTranslationInputs] = useState({});
+  const [savingTranslation, setSavingTranslation] = useState(false);
   const [showAddApiModal, setShowAddApiModal] = useState(false);
   const [editingApi, setEditingApi] = useState(null);
   const [deleteApiConfirm, setDeleteApiConfirm] = useState(null);
@@ -834,6 +854,7 @@ export default function Settings({
     const controller = new AbortController();
     fetchSpeedtestConfig(controller.signal);
     fetchOnlineGeoipConfig(controller.signal);
+    fetchTranslationConfig(controller.signal);
     fetchGeoipCacheStats(controller.signal);
     return () => {
       controller.abort();
@@ -862,6 +883,17 @@ export default function Settings({
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch online GeoIP config', err);
+    }
+  };
+
+  const fetchTranslationConfig = async (signal) => {
+    try {
+      const res = await request.get(`${API_BASE}/translation/config`, { signal });
+      if (signal?.aborted) return;
+      setTranslationConfig(res.data);
+    } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
+      console.error('Failed to fetch translation config', err);
     }
   };
 
@@ -1010,6 +1042,58 @@ export default function Settings({
       showToast?.(`清除失败: ${err.response?.data?.detail || err.message}`, 'error');
     } finally {
       setSavingOnlineConfig(false);
+    }
+  };
+
+  const saveTranslationSettings = async (providerId, updates) => {
+    setSavingTranslation(true);
+    try {
+      const providerUpdates = { ...updates };
+      Object.keys(providerUpdates).forEach((fieldName) => {
+        if (typeof providerUpdates[fieldName] === 'string') {
+          providerUpdates[fieldName] = providerUpdates[fieldName].trim();
+        }
+      });
+      const res = await request.post(`${API_BASE}/translation/config`, {
+        providers: { [providerId]: providerUpdates }
+      });
+      setTranslationConfig(res.data);
+      setTranslationInputs(prev => ({ ...prev, [providerId]: {} }));
+      showToast?.('翻译设置已保存');
+    } catch (err) {
+      showToast?.(`保存失败: ${err.response?.data?.detail || err.message}`, 'error');
+    } finally {
+      setSavingTranslation(false);
+    }
+  };
+
+  const savePreferredTranslationProvider = async (providerId) => {
+    setSavingTranslation(true);
+    try {
+      const res = await request.post(`${API_BASE}/translation/config`, {
+        preferred_provider: providerId
+      });
+      setTranslationConfig(res.data);
+      showToast?.('首选翻译服务已保存');
+    } catch (err) {
+      showToast?.(`保存失败: ${err.response?.data?.detail || err.message}`, 'error');
+    } finally {
+      setSavingTranslation(false);
+    }
+  };
+
+  const toggleTranslationProvider = async (provider) => {
+    await saveTranslationSettings(provider.id, { enabled: provider.enabled !== true });
+  };
+
+  const testTranslationProvider = async (providerId) => {
+    try {
+      await request.post(`${API_BASE}/translation/providers/${providerId}/test`, {
+        text: 'Mountain View'
+      });
+      showToast?.('测试成功');
+    } catch (err) {
+      showToast?.(`测试失败: ${err.response?.data?.detail || err.message}`, 'error');
     }
   };
 
@@ -1172,6 +1256,8 @@ export default function Settings({
     const mb = bytes / 1024 / 1024;
     return `${mb.toFixed(2)} MB`;
   };
+
+  const selectedTranslationProviderId = translationConfig.preferred_provider || 'google';
 
   return (
     <div className="space-y-6">
@@ -1516,6 +1602,117 @@ export default function Settings({
           <p className="text-xs text-gray-500">
             Token 只保存在后端，不会回显到前端；保存后重新执行“地区/IP 信息检测”，节点表才会填充人机流量比。
           </p>
+        </div>
+      </div>
+
+      {/* Location translation providers */}
+      <div className="bg-gray-800/50 border border-purple-500/30 rounded-xl p-6">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <Globe size={20} />
+              地点名称翻译 API
+            </h2>
+            <p className="text-sm text-gray-400 mt-2">
+              将 GeoIP 返回的英文国家、地区和城市名称翻译为简体中文。已是中文的结果不会重复请求。
+            </p>
+          </div>
+          <span className="text-xs px-2 py-1 rounded bg-purple-500/20 text-purple-300 whitespace-nowrap">
+            支持多供应商降级
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 mb-4">
+          <label className="text-sm text-gray-300" htmlFor="preferred-translation-provider">首选服务</label>
+          <select
+            id="preferred-translation-provider"
+            value={translationConfig.preferred_provider || 'google'}
+            onChange={(event) => savePreferredTranslationProvider(event.target.value)}
+            disabled={savingTranslation}
+            className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+          >
+            {(translationConfig.providers || []).map(provider => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}{provider.configured ? '' : '（未配置）'}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-3">
+          {(translationConfig.providers || []).filter(provider => provider.id === selectedTranslationProviderId).map(provider => {
+            const pendingValues = translationInputs[provider.id] || {};
+            return (
+              <div key={provider.id} className="p-3 rounded-lg bg-gray-700/40 border border-gray-600">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-white font-medium">{provider.name}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${provider.configured ? 'bg-green-500/20 text-green-300' : 'bg-gray-600 text-gray-400'}`}>
+                        {provider.configured ? '已配置' : '未配置'}
+                      </span>
+                      {provider.id === translationConfig.preferred_provider && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">首选</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => testTranslationProvider(provider.id)}
+                      disabled={!provider.configured || savingTranslation}
+                      className="px-2 py-1 text-xs text-blue-300 hover:bg-gray-600 disabled:text-gray-500 rounded"
+                    >
+                      测试
+                    </button>
+                    <button
+                      onClick={() => toggleTranslationProvider(provider)}
+                      disabled={savingTranslation || (!provider.enabled && !provider.configured)}
+                      className={`px-2 py-1 text-xs rounded ${provider.enabled ? 'text-green-300 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-700'}`}
+                    >
+                      {provider.enabled ? '已启用' : '已禁用'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                  {(provider.fields || []).map(fieldName => {
+                    const isSecret = translationSecretFields.has(fieldName);
+                    return (
+                      <div key={fieldName}>
+                        <label className="block text-xs text-gray-400 mb-1">
+                          {translationFieldLabels[fieldName] || fieldName}
+                        </label>
+                        <input
+                          type={isSecret ? 'password' : 'text'}
+                          value={pendingValues[fieldName] || ''}
+                          onChange={(event) => setTranslationInputs(prev => ({
+                            ...prev,
+                            [provider.id]: {
+                              ...(prev[provider.id] || {}),
+                              [fieldName]: event.target.value
+                            }
+                          }))}
+                          placeholder={isSecret && provider.has_credentials ? '已配置，留空保持不变' : (provider[fieldName] || '')}
+                          autoComplete="new-password"
+                          className="w-full px-2 py-1.5 bg-gray-800 border border-gray-600 rounded text-white text-xs placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                          disabled={savingTranslation}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-end mt-3">
+                  <button
+                    onClick={() => saveTranslationSettings(provider.id, pendingValues)}
+                    disabled={savingTranslation || Object.keys(pendingValues).length === 0}
+                    className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded"
+                  >
+                    保存此服务
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 

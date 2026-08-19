@@ -18,6 +18,7 @@ from .stats import router as stats_router
 from .speedtest import router as speedtest_router
 from .scheduler import router as scheduler_router
 from .geoip import router as geoip_router
+from .translation import router as translation_router
 from .proxy_chains import router as proxy_chains_router
 
 # Create main API router
@@ -64,6 +65,9 @@ api_router.include_router(scheduler_router, prefix="/api/scheduler", tags=["sche
 
 # GeoIP endpoints (/api/geoip/*)
 api_router.include_router(geoip_router, prefix="/api/geoip", tags=["geoip"])
+
+# Translation endpoints (/api/translation/*)
+api_router.include_router(translation_router, prefix="/api/translation", tags=["translation"])
 
 # Proxy chains endpoints (/api/proxy-chains/*)
 api_router.include_router(proxy_chains_router, prefix="/api/proxy-chains", tags=["proxy-chains"])

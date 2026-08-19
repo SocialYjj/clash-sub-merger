@@ -10,4 +10,5 @@ pydantic==2.12.5
 filelock==3.25.1
 prometheus-client==0.24.1
 aiofiles==25.1.0
+pycountry==24.6.1
 python-dotenv==1.2.2

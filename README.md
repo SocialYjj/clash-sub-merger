@@ -49,10 +49,9 @@ A modern and beautiful subscription aggregation management panel for Clash/Mihom
   - Built-in: ip-api.com (45 req/min, Chinese), ipwhois.app, ipinfo.io
   - Custom API support with `{ip}` and `{key}` placeholders
   - Token security protection
-  - City name translations (Tokyo→东京, Seoul→首尔)
-  - Special region display (HK→中国香港, TW→中国台湾)
+  - Translation providers: Google, Microsoft, Tencent Cloud, and OpenAI
+  - Translation caching and provider fallback without hard-coded city-name mappings
   - **Async GeoIP lookup** (v2.6.0) - Reduce "unknown" nodes with IP-based country detection
-  - **Case-insensitive city mapping** (v2.6.0) - Support all case formats (Boydton/boydton/BOYDTON)
 - 🔗 **Proxy Chain** - Create chained proxy configurations (Node A → Node B → Target)
 - 🔌 **Port Mapping** - Map nodes to local ports for direct access (generates Clash listeners)
 - 🏷️ **Smart Filtering** - Filter by country, protocol, subscription, latency status
@@ -230,6 +229,8 @@ docker compose up -d
 | `SCHEDULED_REFRESH_JITTER_SECONDS` | `120` | Random staggering window for jobs sharing the same Cron time |
 | `RATE_LIMIT_GEOIP` | `30/minute` | Limit for GeoIP lookup and API-test endpoints |
 | `CUSTOM_GEOIP_MAX_RESPONSE_BYTES` | `1048576` | Maximum custom GeoIP API response size in bytes |
+| `TRANSLATION_PROVIDER_ORDER` | Google, Microsoft, Tencent, OpenAI | Translation provider fallback order |
+| `TRANSLATION_CACHE_TTL_SECONDS` | `2592000` | Translation cache lifetime in seconds |
 
 Scheduled jobs configured for the same time, such as `0 0 * * *`, run within the jitter window instead of all starting at exactly midnight.
 
@@ -242,6 +243,7 @@ All data is stored in `/app/data`:
 - `logs/` - Rotating, credential-redacted application logs
 - `backups/` - Configuration backups
 - `refresh_locks/` - OS-backed refresh lock files; file presence alone does not mean a lock is held
+- `translation_cache.json` - Cached location translations; provider credentials are not stored here
 
 Back up the complete `data/` directory before upgrades. Saved subscription-fetch and IPv6-test proxy credentials are write-only: the API reports only whether a value exists, so replace or clear them instead of reading them back. Configuration exports and backups are full migration data containing password hashes and subscription tokens and must be protected as sensitive files; login sessions are neither exported nor restored.
 
