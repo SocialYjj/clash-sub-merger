@@ -17,6 +17,8 @@ BASE_DIR = os.path.dirname(_core_dir)  # Go up from core/ to project root
 DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
 YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
+DATABASE_FILE = os.path.join(DATA_DIR, 'app.db')
+STORAGE_BACKEND = os.environ.get('STORAGE_BACKEND', 'sqlite').strip().lower()
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 LOG_DIR = os.path.join(DATA_DIR, 'logs')
 REFRESH_LOCK_DIR = os.path.join(DATA_DIR, 'refresh_locks')
@@ -81,6 +83,8 @@ class AppConfig:
     DATA_DIR = DATA_DIR
     YAML_SOURCE_DIR = YAML_SOURCE_DIR
     CONFIG_FILE = CONFIG_FILE
+    DATABASE_FILE = DATABASE_FILE
+    STORAGE_BACKEND = STORAGE_BACKEND
     BACKUP_DIR = BACKUP_DIR
     LOG_DIR = LOG_DIR
     REFRESH_LOCK_DIR = REFRESH_LOCK_DIR
@@ -210,6 +214,11 @@ class AppConfig:
 def get_config_file() -> str:
     """Get config file path"""
     return CONFIG_FILE
+
+
+def get_database_file() -> str:
+    """Get the SQLite database path."""
+    return DATABASE_FILE
 
 
 def get_data_dir() -> str:

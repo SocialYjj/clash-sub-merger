@@ -16,6 +16,7 @@ import yaml
 from filelock import FileLock
 
 from core.config import DATA_DIR, env_int
+from core.storage import database_lock_path, read_cache_document, write_cache_document
 from helpers import atomic_write_text
 from logger_config import get_logger
 from services.name_transformer import NameTransformer
@@ -28,6 +29,7 @@ except ImportError:
     from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
 
 REGION_HISTORY_FILE = os.path.join(DATA_DIR, 'node_region_history.json')
+_DEFAULT_REGION_HISTORY_FILE = REGION_HISTORY_FILE
 REGION_HISTORY_LOCK = f"{REGION_HISTORY_FILE}.lock"
 REGION_HISTORY_VERSION = 1
 REGION_HISTORY_MAX_AGE_DAYS = env_int('NODE_REGION_HISTORY_MAX_AGE_DAYS', 180, minimum=1)
@@ -392,13 +394,17 @@ def _find_history_entry_for_node(node: dict, entries: Dict[str, dict]) -> Option
 
 
 def _load_history_entries() -> Dict[str, dict]:
-    """Load region history entries from disk."""
-    if not os.path.exists(REGION_HISTORY_FILE):
-        return {}
-
+    """Load region history entries from SQLite or an explicit legacy file."""
     try:
-        with open(REGION_HISTORY_FILE, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
+        if REGION_HISTORY_FILE != _DEFAULT_REGION_HISTORY_FILE:
+            if not os.path.exists(REGION_HISTORY_FILE):
+                return {}
+            with open(REGION_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        else:
+            payload = read_cache_document('region_history', default=None)
+            if payload is None:
+                return {}
         if isinstance(payload, dict) and isinstance(payload.get('entries'), dict):
             return payload['entries']
         if isinstance(payload, dict):
@@ -453,22 +459,28 @@ def _entry_updated_at(entry: dict) -> int:
 
 
 def _save_history_entries(entries: Dict[str, dict]):
-    """Persist region history entries to disk."""
-    os.makedirs(DATA_DIR, exist_ok=True)
+    """Persist region history entries in SQLite or a test override file."""
     payload = {
         'version': REGION_HISTORY_VERSION,
         'updated_at': int(time.time()),
         'entries': _trim_entries(entries),
     }
-    atomic_write_text(
-        REGION_HISTORY_FILE,
-        json.dumps(payload, ensure_ascii=False, indent=2),
-    )
+    if REGION_HISTORY_FILE != _DEFAULT_REGION_HISTORY_FILE:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        atomic_write_text(
+            REGION_HISTORY_FILE,
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+    else:
+        write_cache_document('region_history', payload)
 
 
 def _with_history_lock():
     os.makedirs(DATA_DIR, exist_ok=True)
-    return FileLock(REGION_HISTORY_LOCK, timeout=10)
+    return FileLock(
+        REGION_HISTORY_LOCK if REGION_HISTORY_FILE != _DEFAULT_REGION_HISTORY_FILE else database_lock_path(),
+        timeout=10,
+    )
 
 
 def node_needs_region_inheritance(node: dict) -> bool:

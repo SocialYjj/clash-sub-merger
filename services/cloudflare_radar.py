@@ -20,12 +20,14 @@ from typing import Any, Dict, Optional
 import httpx
 
 from core.config import AppConfig, DATA_DIR, env_int
+from core.storage import read_cache_document, write_cache_document
 from logger_config import get_logger
 
 logger = get_logger(__name__)
 
 RADAR_ENDPOINT = "https://api.cloudflare.com/client/v4/radar/http/summary/BOT_CLASS"
 RADAR_CACHE_FILE = os.path.join(DATA_DIR, "cloudflare_radar_cache.json")
+_DEFAULT_RADAR_CACHE_FILE = RADAR_CACHE_FILE
 RADAR_CACHE_VERSION = 1
 RADAR_CACHE_TTL_SECONDS = env_int(
     "CLOUDFLARE_RADAR_CACHE_TTL_SECONDS",
@@ -210,13 +212,18 @@ def _get_cached_profile(cache_key: str) -> tuple[bool, Optional[Dict[str, Any]]]
 
 
 def load_radar_cache_from_disk() -> None:
-    """Load only recent positive results; malformed cache data is ignored."""
+    """Load only recent positive results from SQLite or a test override file."""
     global _radar_cache
     try:
-        if not os.path.exists(RADAR_CACHE_FILE):
-            return
-        with open(RADAR_CACHE_FILE, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        if RADAR_CACHE_FILE != _DEFAULT_RADAR_CACHE_FILE:
+            if not os.path.exists(RADAR_CACHE_FILE):
+                return
+            with open(RADAR_CACHE_FILE, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        else:
+            payload = read_cache_document("radar", default=None)
+            if payload is None:
+                return
         if isinstance(payload, dict) and "entries" in payload:
             if payload.get("version") != RADAR_CACHE_VERSION:
                 return
@@ -234,7 +241,7 @@ def load_radar_cache_from_disk() -> None:
 
 
 async def save_radar_cache_to_disk() -> None:
-    """Persist positive Radar results with an atomic replace."""
+    """Persist positive Radar results in SQLite with legacy-file compatibility."""
     async with _radar_save_lock:
         temporary_path = f"{RADAR_CACHE_FILE}.{os.getpid()}.tmp"
         try:
@@ -244,21 +251,20 @@ async def save_radar_cache_to_disk() -> None:
                     for key, value in _radar_cache.items()
                     if isinstance(value, dict) and not value.get("_negative")
                 }
-            os.makedirs(os.path.dirname(RADAR_CACHE_FILE) or ".", exist_ok=True)
-            with open(temporary_path, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {"version": RADAR_CACHE_VERSION, "entries": snapshot},
-                    handle,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.chmod(temporary_path, 0o600)
-            except OSError:
-                logger.debug("Could not restrict Cloudflare Radar cache permissions")
-            os.replace(temporary_path, RADAR_CACHE_FILE)
+            payload = {"version": RADAR_CACHE_VERSION, "entries": snapshot}
+            if RADAR_CACHE_FILE != _DEFAULT_RADAR_CACHE_FILE:
+                os.makedirs(os.path.dirname(RADAR_CACHE_FILE) or ".", exist_ok=True)
+                with open(temporary_path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.chmod(temporary_path, 0o600)
+                except OSError:
+                    logger.debug("Could not restrict Cloudflare Radar cache permissions")
+                os.replace(temporary_path, RADAR_CACHE_FILE)
+            else:
+                write_cache_document("radar", payload)
         except OSError as exc:
             logger.warning("Failed to save Cloudflare Radar cache: %s", type(exc).__name__)
         finally:

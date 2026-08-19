@@ -15,7 +15,12 @@ from typing import Optional, List
 from filelock import FileLock, Timeout
 
 from core.config import AppConfig, CONFIG_FILE, BACKUP_DIR
-from core.database import load_config, invalidate_config_cache
+from core.database import load_config, invalidate_config_cache, replace_config_locked
+from core.storage import (
+    database_lock_path,
+    read_cache_document,
+    write_cache_document,
+)
 from logger_config import get_logger
 from services.configuration_validation import (
     remove_legacy_stale_references,
@@ -25,8 +30,12 @@ from services.configuration_validation import (
 
 logger = get_logger(__name__)
 
+_ORIGINAL_CONFIG_FILE = CONFIG_FILE
+
 _MIGRATION_ROOTS = ("uploads",)
 _MIGRATION_FILES = ("node_region_history.json", "geoip_cache.json", "myconfig.yaml")
+_DATABASE_CACHE_SIDECAR = "database_caches.json"
+_DATABASE_CACHE_NAMES = ("geoip", "radar", "translation", "region_history")
 
 
 def _apply_geoip_runtime_config(config: dict) -> None:
@@ -37,7 +46,12 @@ def _apply_geoip_runtime_config(config: dict) -> None:
 
 def _config_file_lock() -> FileLock:
     """Return the same config lock used by core.database writes."""
-    return FileLock(f"{CONFIG_FILE}.lock", timeout=AppConfig.FILE_LOCK_TIMEOUT)
+    lock_path = f"{CONFIG_FILE}.lock" if CONFIG_FILE != _ORIGINAL_CONFIG_FILE else database_lock_path()
+    return FileLock(lock_path, timeout=AppConfig.FILE_LOCK_TIMEOUT)
+
+
+def _legacy_json_override_active() -> bool:
+    return CONFIG_FILE != _ORIGINAL_CONFIG_FILE
 
 
 def _resolve_backup_path(filename: str) -> Path:
@@ -102,6 +116,15 @@ def _snapshot_migration_files(backup_path: str) -> None:
         target = temporary / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    database_cache_target = temporary / _DATABASE_CACHE_SIDECAR
+    database_cache_target.write_text(
+        json.dumps(_export_database_cache_documents(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(database_cache_target, 0o600)
+    except OSError:
+        pass
     if sidecar.exists():
         shutil.rmtree(sidecar)
     os.replace(temporary, sidecar)
@@ -112,6 +135,7 @@ def _restore_migration_files(sidecar: Path) -> None:
         return
     root = _data_root()
     restore_items: list[tuple[Path, Path]] = []
+    database_cache_payload: dict | None = None
     allowed_prefixes = tuple(Path(name) for name in _MIGRATION_ROOTS)
     allowed_files = set(_MIGRATION_FILES)
     for source in sidecar.rglob('*'):
@@ -119,6 +143,12 @@ def _restore_migration_files(sidecar: Path) -> None:
             continue
         relative = source.relative_to(sidecar)
         relative_text = relative.as_posix()
+        if relative_text == _DATABASE_CACHE_SIDECAR:
+            try:
+                database_cache_payload = json.loads(source.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                raise ValueError("Backup database cache snapshot is invalid") from exc
+            continue
         if relative_text not in allowed_files and not any(
             relative == prefix or prefix in relative.parents for prefix in allowed_prefixes
         ):
@@ -132,6 +162,8 @@ def _restore_migration_files(sidecar: Path) -> None:
         temporary = Path(f"{target}.restore.tmp")
         shutil.copy2(source, temporary)
         os.replace(temporary, target)
+    if database_cache_payload is not None:
+        _restore_database_cache_documents(database_cache_payload)
 
 
 def _clear_migration_targets() -> None:
@@ -159,6 +191,24 @@ def _export_migration_files() -> dict[str, str]:
         relative = source.relative_to(root).as_posix()
         exported[relative] = base64.b64encode(source.read_bytes()).decode('ascii')
     return exported
+
+
+def _export_database_cache_documents() -> dict[str, object]:
+    """Return cache documents for backup/export without credentials."""
+    documents: dict[str, object] = {}
+    for namespace in _DATABASE_CACHE_NAMES:
+        payload = read_cache_document(namespace, default=None)
+        if payload is not None:
+            documents[namespace] = payload
+    return documents
+
+
+def _restore_database_cache_documents(documents: object) -> None:
+    if not isinstance(documents, dict):
+        raise ValueError("Database cache snapshot must be an object")
+    for namespace, payload in documents.items():
+        if namespace in _DATABASE_CACHE_NAMES:
+            write_cache_document(namespace, payload)
 
 
 def _decode_migration_files(files: object) -> dict[str, bytes]:
@@ -230,7 +280,7 @@ def _merge_encoded_files(files: dict[str, bytes], added_subscription_ids: set[st
 
 def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
     """Create a backup while the caller holds the config file lock."""
-    if not os.path.exists(CONFIG_FILE):
+    if _legacy_json_override_active() and not os.path.exists(CONFIG_FILE):
         return None
 
     backup_filename = _backup_filename(reason)
@@ -247,7 +297,13 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
     os.close(temporary_fd)
     temporary = Path(temporary_name)
     try:
-        shutil.copyfile(CONFIG_FILE, temporary)
+        if _legacy_json_override_active():
+            shutil.copyfile(CONFIG_FILE, temporary)
+        else:
+            with open(temporary, 'w', encoding='utf-8') as handle:
+                json.dump(load_config(), handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
         os.replace(temporary, backup_path)
         _snapshot_migration_files(str(backup_path))
     finally:
@@ -262,7 +318,11 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
 
 
 def _atomic_restore_config_locked(config_data: dict):
-    """Atomically replace config.json while the caller holds the config lock."""
+    """Atomically replace config while the caller holds the storage lock."""
+    if not _legacy_json_override_active():
+        replace_config_locked(config_data)
+        invalidate_config_cache()
+        return
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     tmp_file = f"{CONFIG_FILE}.restore.tmp"
     try:
@@ -283,6 +343,19 @@ def _atomic_restore_config_locked(config_data: dict):
                 os.remove(tmp_file)
             except OSError:
                 logger.debug("Failed to remove restore temp file: %s", tmp_file, exc_info=True)
+
+
+def _load_current_config_locked() -> dict:
+    """Read the current config under the caller-owned storage lock."""
+    if not _legacy_json_override_active():
+        return load_config()
+    if not os.path.exists(CONFIG_FILE):
+        return {}
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as config_file:
+        value = json.load(config_file)
+    if not isinstance(value, dict):
+        raise ValueError("Existing configuration is invalid")
+    return value
 
 
 def create_backup(reason: str = 'manual') -> Optional[str]:
@@ -450,6 +523,7 @@ def export_config() -> dict:
         'exported_at': int(time.time()),
         'config': config,
         'files': _export_migration_files(),
+        'database_caches': _export_database_cache_documents(),
     }
 
 
@@ -472,6 +546,9 @@ def import_config(import_data: dict, merge: bool = False) -> str:
         raise ValueError("Invalid import data: config must be an object")
     new_config = validate_and_normalize_configuration(new_config)
     migration_files = _decode_migration_files(import_data.get('files'))
+    database_caches = import_data.get('database_caches')
+    if database_caches is not None and not isinstance(database_caches, dict):
+        raise ValueError("Imported database caches must be an object")
     files_field_present = 'files' in import_data
 
     try:
@@ -479,13 +556,7 @@ def import_config(import_data: dict, merge: bool = False) -> str:
             _create_backup_locked('pre_import')
             rollback_config: dict | None = None
             if merge:
-                if os.path.exists(CONFIG_FILE):
-                    with open(CONFIG_FILE, 'r', encoding='utf-8') as config_file:
-                        merged_config = json.load(config_file)
-                    if not isinstance(merged_config, dict):
-                        raise ValueError("Existing configuration is invalid")
-                else:
-                    merged_config = {}
+                merged_config = _load_current_config_locked()
                 rollback_config = deepcopy(merged_config)
                 remove_legacy_stale_references(merged_config)
 
@@ -599,16 +670,13 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                         )
                 mode = 'merge'
             else:
-                if os.path.exists(CONFIG_FILE):
-                    with open(CONFIG_FILE, 'r', encoding='utf-8') as config_file:
-                        rollback_config = json.load(config_file)
-                else:
-                    rollback_config = {}
+                rollback_config = _load_current_config_locked()
                 final_config = new_config
                 final_config.setdefault('auth', {}).pop('sessions', None)
                 mode = 'replace'
 
             previous_migration_files = _export_migration_files()
+            previous_database_caches = _export_database_cache_documents()
             restored_merge_files: list[Path] = []
             if migration_files and mode == 'merge':
                 restored_merge_files = _merge_encoded_files(migration_files, added_subscription_ids)
@@ -618,6 +686,8 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                     _restore_encoded_files(migration_files)
             try:
                 _atomic_restore_config_locked(final_config)
+                if database_caches and mode == 'replace':
+                    _restore_database_cache_documents(database_caches)
                 if files_field_present:
                     validate_configuration_node_references(
                         final_config,
@@ -631,6 +701,8 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                         logger.error("Failed to remove staged merge file %s", restored_path, exc_info=True)
                 if rollback_config is not None:
                     _atomic_restore_config_locked(rollback_config)
+                if mode == 'replace' and database_caches is not None:
+                    _restore_database_cache_documents(previous_database_caches)
                 if mode == 'replace' and files_field_present:
                     _clear_migration_targets()
                     _restore_encoded_files(previous_migration_files)

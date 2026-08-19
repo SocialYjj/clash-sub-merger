@@ -8,10 +8,10 @@ DDNS Sync for SubMerger
   - IPv4：轮询公网 checkip 接口
   - IPv6：读取指定网卡（如 ens5）的全局地址
 
-当 IP 发生变化时，通过文件锁与 SubMerger 进程互斥，原子地更新
-data/config.json 中"本机自建节点"的 server 与 link 两个字段。
+当 IP 发生变化时，通过与 SubMerger 共用的 SQLite 事务更新
+"本机自建节点"的 server 与 link 两个字段。
 
-前提：SubMerger 与自建节点部署在同一台机器（脚本需能本地读 config.json）。
+前提：SubMerger 与自建节点部署在同一台机器（脚本需能访问同一 DATA_DIR）。
 若不在同机，请改用 HTTP API 方式更新，本脚本不适用。
 
 设计要点：
@@ -19,10 +19,7 @@ data/config.json 中"本机自建节点"的 server 与 link 两个字段。
      config.json 中其他机器的节点（custom_nodes 里混了多台机器）。
   2. IP 同时出现在 server（明文）与 link（分享链接 @host:port）两处，必须同步。
      IPv6 在 link 中带方括号 [::1]，用正则按 host 位置精确替换。
-  3. 写入复刻 core/database.py 的原子写逻辑：临时文件 + fsync + os.replace
-     + 自动 .backup，并使用同一个 config.json.lock 与运行中的服务互斥。
-  4. SubMerger 的 load_config 依据 mtime 失效缓存，文件被外部替换后会自动
-     重新加载，无需主动通知。
+  3. 写入调用 core.database.update_config，与运行中的服务共用 SQLite 锁和事务。
 
 用法：
   python ddns_sync.py              # 检测并按需更新
@@ -41,7 +38,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -49,26 +45,20 @@ import time
 from pathlib import Path
 from typing import Optional
 
-try:
-    from filelock import FileLock, Timeout
-except ImportError:
-    print(
-        "ERROR: filelock 未安装。请在 SubMerger 的运行环境内执行本脚本，"
-        "或 pip install filelock>=3.13.0",
-        file=sys.stderr,
-    )
-    raise
+from core.config import DATA_DIR
+from core.database import load_config, update_config
+from fastapi import HTTPException
 
 # =============================================================================
 # 配置区（按需修改）
 # =============================================================================
 
-# 项目根目录（脚本所在目录），config.json 等均相对它定位
+# 项目根目录（脚本所在目录）；业务配置由 core.database 读取 SQLite。
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = BASE_DIR / "data" / "config.json"
-LOCK_FILE = BASE_DIR / "data" / "config.json.lock"
-STATE_FILE = BASE_DIR / "data" / "ddns_state.json"
-LOG_DIR = BASE_DIR / "data" / "logs"
+DATA_PATH = Path(DATA_DIR)
+CONFIG_FILE = DATA_PATH / "app.db"
+STATE_FILE = DATA_PATH / "ddns_state.json"
+LOG_DIR = DATA_PATH / "logs"
 
 # ---- 监控目标 ----
 # 本机自建节点的 id 列表。留空则启用"按基准 IP 自动匹配"模式（见下方 BASE_V4/BASE_V6）。
@@ -276,41 +266,23 @@ def replace_host_in_link(link: str, new_ip: str) -> str:
 
 
 # =============================================================================
-# config.json 原子写入（复刻 core/database.py 逻辑，与运行中的服务互斥）
+# SQLite 原子更新（与运行中的服务共用 core.database）
 # =============================================================================
 
 def atomic_update_config(mutator):
     """
-    在持有 config.json.lock 的前提下，读取-修改-写回 config.json。
+    在 SQLite 事务中读取-修改-写回配置。
     mutator(config) -> changed(bool) | 可对 config 原地修改。
     返回 (changed, mutator 返回值)。
     """
-    lock = FileLock(str(LOCK_FILE), timeout=30)
     try:
-        with lock:
-            if not CONFIG_FILE.exists():
-                log.error("config.json 不存在: %s", CONFIG_FILE)
-                return False, None
-            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            changed = mutator(config)
-            if not changed:
-                return False, None
-            # 原子写：tmp + fsync + 备份 + replace
-            tmp = CONFIG_FILE.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            backup = CONFIG_FILE.with_suffix(".backup")
-            if CONFIG_FILE.exists():
-                shutil.copy2(CONFIG_FILE, backup)
-            os.replace(tmp, CONFIG_FILE)
-            return True, None
-    except Timeout:
-        log.error("获取 config.json.lock 超时（SubMerger 可能正在写入），本次跳过")
+        changed = update_config(mutator)
+        return bool(changed), None
+    except HTTPException as exc:
+        log.error("更新 SQLite 配置失败（HTTP %s）: %s", exc.status_code, exc.detail)
         return False, None
     except Exception as e:
-        log.error("更新 config.json 失败: %s", e, exc_info=True)
+        log.error("更新 SQLite 配置失败: %s", e, exc_info=True)
         return False, None
 
 
@@ -375,10 +347,7 @@ def resolve_targets(config: dict) -> list[dict]:
 
 def cmd_list() -> None:
     """列出所有 custom_nodes，便于挑选监控 id。"""
-    if not CONFIG_FILE.exists():
-        log.error("config.json 不存在")
-        return
-    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    config = load_config()
     nodes = config.get("custom_nodes", [])
     print(f"共 {len(nodes)} 个自建节点：")
     print(f"{'id':<32} {'ipver':<5} {'server':<42} name")
@@ -458,7 +427,7 @@ def sync_once(check_only: bool = False, force: bool = False) -> int:
         state["last_v6"] = cur_v6
         state["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
         save_state(state)
-        log.info("config.json 已更新，state 已记录")
+        log.info("SQLite 配置已更新，state 已记录")
         notify_refresh()
         return 1
 

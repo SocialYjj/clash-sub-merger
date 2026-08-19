@@ -891,8 +891,10 @@ def refresh_subscription_job(sub_id: str):
 # xhttp compatibility normalization, deep-copy cache behavior, and file locking.
 
 def migrate_old_config():
-    """Migrate old config files to unified config"""
-    if os.path.exists(CONFIG_FILE):
+    """Migrate pre-unified legacy files into the SQLite configuration document."""
+    from core.storage import has_app_document
+
+    if has_app_document("config"):
         return  # Already migrated
 
     config = {'auth': {}, 'subscriptions': [], 'custom_nodes': [], 'source_order': []}
@@ -923,7 +925,7 @@ def migrate_old_config():
 
     save_config(config)
     logger.info("Config migration completed")
-    log_migration("migrate_old_config: legacy files merged into config.json")
+    log_migration("migrate_old_config: legacy files merged into SQLite")
 
 def log_migration(message: str):
     """Write migration message to a separate log file."""

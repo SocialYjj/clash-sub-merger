@@ -12,3 +12,5 @@ prometheus-client==0.24.1
 aiofiles==25.1.0
 pycountry==24.6.1
 python-dotenv==1.2.2
+psycopg[binary]==3.3.4
+PyMySQL==1.2.0

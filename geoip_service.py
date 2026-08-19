@@ -16,7 +16,8 @@ import threading
 from copy import deepcopy
 from typing import Optional, Dict
 from urllib.parse import urlsplit
-from core.config import env_int
+from core.config import DATA_DIR, env_int
+from core.storage import delete_cache_document, read_cache_document, write_cache_document
 from logger_config import get_logger
 from translation_service import get_cached_translation, translate_location_fields
 
@@ -24,7 +25,8 @@ from translation_service import get_cached_translation, translate_location_field
 logger = get_logger(__name__)
 
 # Persistent cache configuration
-GEOIP_CACHE_FILE = os.path.join(os.environ.get('DATA_DIR', 'data'), 'geoip_cache.json')
+GEOIP_CACHE_FILE = os.path.join(DATA_DIR, 'geoip_cache.json')
+_DEFAULT_GEOIP_CACHE_FILE = GEOIP_CACHE_FILE
 GEOIP_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
 # A temporary provider/network failure must not poison lookups for a week.
 GEOIP_NEGATIVE_CACHE_TTL = 5 * 60
@@ -58,85 +60,85 @@ def _geoip_cache_ttl(entry: dict) -> int:
     return GEOIP_NEGATIVE_CACHE_TTL if entry.get('_negative') else GEOIP_CACHE_TTL
 
 def load_geoip_cache_from_disk():
-    """Load GeoIP cache from disk on startup"""
+    """Load GeoIP cache from SQLite (or an explicitly overridden legacy file)."""
     global _online_geoip_cache
     try:
-        if os.path.exists(GEOIP_CACHE_FILE):
+        if GEOIP_CACHE_FILE != _DEFAULT_GEOIP_CACHE_FILE:
             with open(GEOIP_CACHE_FILE, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
+        else:
+            cache_data = read_cache_document('geoip', default=None)
+            if cache_data is None:
+                return
 
-            if not isinstance(cache_data, dict):
-                raise ValueError("GeoIP cache root must be an object")
+        if not isinstance(cache_data, dict):
+            raise ValueError("GeoIP cache root must be an object")
 
-            if 'version' in cache_data or 'entries' in cache_data:
-                if cache_data.get('version') != GEOIP_CACHE_VERSION:
-                    logger.info(
-                        "Ignoring GeoIP cache with unsupported version %s",
-                        cache_data.get('version')
-                    )
-                    with _online_geoip_cache_lock:
-                        _online_geoip_cache = {}
-                    return
-                entries = cache_data.get('entries', {})
-                if not isinstance(entries, dict):
-                    raise ValueError("GeoIP cache entries must be an object")
-            else:
-                # Legacy v0 cache format was a raw mapping of cache_key -> entry.
-                entries = cache_data
-            
-            # Filter out expired entries
-            current_time = time.time()
-            valid_cache = {}
-            expired_count = 0
-            
-            for key, entry in entries.items():
-                if not isinstance(entry, dict):
-                    expired_count += 1
-                    continue
-                if 'timestamp' in entry:
-                    age = current_time - entry['timestamp']
-                    if age < _geoip_cache_ttl(entry):
-                        valid_cache[key] = entry
-                    else:
-                        expired_count += 1
-                else:
-                    # Old format without timestamp, keep it
+        if 'version' in cache_data or 'entries' in cache_data:
+            if cache_data.get('version') != GEOIP_CACHE_VERSION:
+                logger.info(
+                    "Ignoring GeoIP cache with unsupported version %s",
+                    cache_data.get('version')
+                )
+                with _online_geoip_cache_lock:
+                    _online_geoip_cache = {}
+                return
+            entries = cache_data.get('entries', {})
+            if not isinstance(entries, dict):
+                raise ValueError("GeoIP cache entries must be an object")
+        else:
+            # Legacy v0 cache format was a raw mapping of cache_key -> entry.
+            entries = cache_data
+
+        # Filter out expired entries
+        current_time = time.time()
+        valid_cache = {}
+        expired_count = 0
+
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                expired_count += 1
+                continue
+            if 'timestamp' in entry:
+                age = current_time - entry['timestamp']
+                if age < _geoip_cache_ttl(entry):
                     valid_cache[key] = entry
-            
-            with _online_geoip_cache_lock:
-                _online_geoip_cache = valid_cache
-            logger.info(f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)")
+                else:
+                    expired_count += 1
+            else:
+                # Old format without timestamp, keep it
+                valid_cache[key] = entry
+
+        with _online_geoip_cache_lock:
+            _online_geoip_cache = valid_cache
+        logger.info(f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)")
     except Exception as e:
         logger.warning(f"Failed to load GeoIP cache from disk: {e}")
         with _online_geoip_cache_lock:
             _online_geoip_cache = {}
 
 async def save_geoip_cache_to_disk():
-    """Save GeoIP cache to disk with in-process serialization and atomic replace."""
+    """Persist GeoIP cache in SQLite with legacy-file compatibility for tests."""
     async with _online_geoip_save_lock:
         tmp_file = f"{GEOIP_CACHE_FILE}.{os.getpid()}.tmp"
         try:
             with _online_geoip_cache_lock:
                 cache_snapshot = dict(_online_geoip_cache)
 
-            os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(
-                    {
-                        "version": GEOIP_CACHE_VERSION,
-                        "entries": cache_snapshot,
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                f.flush()
-                os.fsync(f.fileno())
-            try:
-                os.chmod(tmp_file, 0o600)
-            except OSError:
-                logger.warning("Could not restrict GeoIP cache file permissions")
-            os.replace(tmp_file, GEOIP_CACHE_FILE)
+            payload = {"version": GEOIP_CACHE_VERSION, "entries": cache_snapshot}
+            if GEOIP_CACHE_FILE != _DEFAULT_GEOIP_CACHE_FILE:
+                os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
+                with open(tmp_file, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.chmod(tmp_file, 0o600)
+                except OSError:
+                    logger.warning("Could not restrict GeoIP cache file permissions")
+                os.replace(tmp_file, GEOIP_CACHE_FILE)
+            else:
+                write_cache_document('geoip', payload)
             logger.debug(f"Saved {len(cache_snapshot)} GeoIP cache entries to disk")
         except Exception as exc:
             logger.error("Failed to save GeoIP cache to disk: %s", type(exc).__name__)
@@ -1000,8 +1002,11 @@ async def clear_online_geoip_cache():
                 task.cancel()
         _online_geoip_inflight = {}
     try:
-        if os.path.exists(GEOIP_CACHE_FILE):
-            os.remove(GEOIP_CACHE_FILE)
+        if GEOIP_CACHE_FILE != _DEFAULT_GEOIP_CACHE_FILE:
+            if os.path.exists(GEOIP_CACHE_FILE):
+                os.remove(GEOIP_CACHE_FILE)
+        else:
+            delete_cache_document('geoip')
         logger.info("GeoIP cache cleared")
     except Exception as e:
         logger.error(f"Failed to clear GeoIP cache file: {e}")

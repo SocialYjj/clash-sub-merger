@@ -20,11 +20,13 @@ from typing import Any
 import httpx
 
 from core.config import DATA_DIR, env_bool, env_int
+from core.storage import read_cache_document, write_cache_document
 from logger_config import get_logger
 
 logger = get_logger(__name__)
 
 TRANSLATION_CACHE_FILE = os.path.join(DATA_DIR, "translation_cache.json")
+_DEFAULT_TRANSLATION_CACHE_FILE = TRANSLATION_CACHE_FILE
 TRANSLATION_CACHE_TTL_SECONDS = env_int(
     "TRANSLATION_CACHE_TTL_SECONDS", 30 * 24 * 3600, minimum=60
 )
@@ -165,8 +167,11 @@ def _parse_provider_order(value: Any) -> list[str]:
 def _load_translation_cache() -> None:
     global _translation_cache
     try:
-        with open(TRANSLATION_CACHE_FILE, "r", encoding="utf-8") as cache_file:
-            persisted_cache = json.load(cache_file)
+        if TRANSLATION_CACHE_FILE != _DEFAULT_TRANSLATION_CACHE_FILE:
+            with open(TRANSLATION_CACHE_FILE, "r", encoding="utf-8") as cache_file:
+                persisted_cache = json.load(cache_file)
+        else:
+            persisted_cache = read_cache_document("translation", default={})
         if not isinstance(persisted_cache, dict):
             raise ValueError("translation cache root must be an object")
         now = time.time()
@@ -191,16 +196,19 @@ def _save_translation_cache() -> None:
         try:
             with _translation_cache_lock:
                 cache_snapshot = deepcopy(_translation_cache)
-            os.makedirs(os.path.dirname(TRANSLATION_CACHE_FILE), exist_ok=True)
-            with open(temporary_file, "w", encoding="utf-8") as cache_file:
-                json.dump(cache_snapshot, cache_file, ensure_ascii=False, indent=2)
-                cache_file.flush()
-                os.fsync(cache_file.fileno())
-            try:
-                os.chmod(temporary_file, 0o600)
-            except OSError:
-                pass
-            os.replace(temporary_file, TRANSLATION_CACHE_FILE)
+            if TRANSLATION_CACHE_FILE != _DEFAULT_TRANSLATION_CACHE_FILE:
+                os.makedirs(os.path.dirname(TRANSLATION_CACHE_FILE), exist_ok=True)
+                with open(temporary_file, "w", encoding="utf-8") as cache_file:
+                    json.dump(cache_snapshot, cache_file, ensure_ascii=False, indent=2)
+                    cache_file.flush()
+                    os.fsync(cache_file.fileno())
+                try:
+                    os.chmod(temporary_file, 0o600)
+                except OSError:
+                    pass
+                os.replace(temporary_file, TRANSLATION_CACHE_FILE)
+            else:
+                write_cache_document("translation", cache_snapshot)
         except Exception as exc:
             logger.warning("Failed to save translation cache: %s", type(exc).__name__)
         finally:

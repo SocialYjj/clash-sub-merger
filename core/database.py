@@ -1,26 +1,33 @@
+"""Transactional application configuration storage.
+
+The public API intentionally remains dictionary-based so existing routers and
+services do not need to know which persistence backend is active. SQLite is
+the default; PostgreSQL and MySQL are selected through ``STORAGE_BACKEND``.
+A patched ``CONFIG_FILE`` still enables the legacy JSON path for compatibility
+with isolated tests and old recovery tooling.
 """
-Configuration database module
-Handles loading, saving, and caching of config.json
-"""
+
+from __future__ import annotations
+
+import copy
 import json
 import os
-import time
-import copy
-import shutil
 import threading
+import time
 from typing import Callable, Optional, TypeVar
-from filelock import FileLock, Timeout
+
 from fastapi import HTTPException
+from filelock import FileLock, Timeout
 
 from logger_config import get_logger
 from .config import AppConfig, CONFIG_FILE
 from .proxy_compat import normalize_config_nodes
+from . import storage
 
 logger = get_logger(__name__)
 
-# Config cache for performance
+_ORIGINAL_CONFIG_FILE = CONFIG_FILE
 _config_cache: Optional[dict] = None
-_config_mtime: Optional[float] = None
 _config_cached_at: Optional[float] = None
 _config_cache_lock = threading.RLock()
 T = TypeVar("T")
@@ -31,256 +38,227 @@ class ConfigLoadError(RuntimeError):
 
 
 def get_default_config() -> dict:
-    """Get default configuration structure"""
     return {
-        'auth': {},
-        'subscriptions': [],
-        'custom_nodes': [],
-        'source_order': [],
-        'users': [],
-        'templates': [],
-        'admin_tokens': [],
-        'proxy_chains': [],
+        "auth": {},
+        "subscriptions": [],
+        "custom_nodes": [],
+        "source_order": [],
+        "users": [],
+        "templates": [],
+        "admin_tokens": [],
+        "proxy_chains": [],
     }
 
 
-def _load_config_from_disk() -> dict:
-    """Load config directly from disk without using cache."""
+def _legacy_json_override_active() -> bool:
+    """Return true only when a caller deliberately replaces CONFIG_FILE."""
+    return str(CONFIG_FILE) != str(_ORIGINAL_CONFIG_FILE)
+
+
+def _lock_path() -> str:
+    if _legacy_json_override_active():
+        return f"{CONFIG_FILE}.lock"
+    return storage.database_lock_path()
+
+
+def _normalize_config(config: dict) -> dict:
     default = get_default_config()
-
-    if not os.path.exists(CONFIG_FILE):
-        return default
-
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-
-    for key in default:
-        if key not in config:
-            config[key] = default[key]
-
+    for key, value in default.items():
+        config.setdefault(key, copy.deepcopy(value))
     normalized_count = normalize_config_nodes(config)
     if normalized_count:
         logger.info("Normalized %s legacy xhttp node(s) from config", normalized_count)
-
     return config
 
 
-def _write_config_locked(config: dict):
-    """Write config to disk. Caller must already hold the file lock."""
-    global _config_cache, _config_mtime, _config_cached_at
-
-    temp_file = f"{CONFIG_FILE}.tmp"
-    backup_temp_file = f"{CONFIG_FILE}.backup.tmp"
+def _load_legacy_config() -> dict:
+    default = get_default_config()
+    if not os.path.exists(CONFIG_FILE):
+        return default
     try:
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
+        with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ConfigLoadError("Configuration file contains invalid JSON") from exc
+    except (OSError, TypeError, ValueError) as exc:
+        raise ConfigLoadError("Configuration file cannot be read safely") from exc
+    if not isinstance(config, dict):
+        raise ConfigLoadError("Configuration root must be an object")
+    return _normalize_config(config)
+
+
+def _load_config_from_disk() -> dict:
+    """Load the latest configuration without the in-process cache."""
+    if _legacy_json_override_active():
+        return _load_legacy_config()
+
+    storage.initialize_database()
+    config = storage.read_app_document("config", default=None)
+    if config is None:
+        config = get_default_config()
+    if not isinstance(config, dict):
+        raise ConfigLoadError("Stored configuration root must be an object")
+    return _normalize_config(config)
+
+
+def _write_legacy_config(config: dict) -> None:
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    temporary_file = f"{CONFIG_FILE}.tmp"
+    try:
+        with open(temporary_file, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
         try:
-            os.chmod(temp_file, 0o600)
+            os.chmod(temporary_file, 0o600)
         except OSError:
-            logger.warning("Could not restrict temporary configuration permissions")
-
-        if os.path.exists(CONFIG_FILE):
-            backup_file = f"{CONFIG_FILE}.backup"
-            # Build the fallback backup separately, then atomically publish it.
-            # copy()/copy2() are intentionally avoided because bind mounts can
-            # reject their metadata operations even when content writes work.
-            shutil.copyfile(CONFIG_FILE, backup_temp_file)
-            try:
-                os.chmod(backup_temp_file, 0o600)
-            except OSError:
-                logger.warning("Could not restrict configuration backup permissions")
-            os.replace(backup_temp_file, backup_file)
-
-        os.replace(temp_file, CONFIG_FILE)
+            pass
+        os.replace(temporary_file, CONFIG_FILE)
     finally:
-        for unpublished_file in (temp_file, backup_temp_file):
-            if os.path.exists(unpublished_file):
-                try:
-                    os.remove(unpublished_file)
-                except OSError:
-                    logger.debug("Failed to remove unpublished configuration file")
+        if os.path.exists(temporary_file):
+            try:
+                os.remove(temporary_file)
+            except OSError:
+                pass
+
+
+def _write_config_locked(config: dict) -> None:
+    """Persist config; caller must hold the storage lock."""
+    global _config_cache, _config_cached_at
+    normalized = _normalize_config(config)
+    if _legacy_json_override_active():
+        _write_legacy_config(normalized)
+    else:
+        storage.write_app_document("config", normalized)
 
     with _config_cache_lock:
         _config_cache = None
-        _config_mtime = None
         _config_cached_at = None
     try:
         from services.stats_cache import invalidate as invalidate_stats_cache
+
         invalidate_stats_cache()
     except Exception:
         logger.debug("Failed to invalidate statistics cache after config write", exc_info=True)
 
 
 def load_config() -> dict:
-    """Load unified config with caching"""
-    global _config_cache, _config_mtime, _config_cached_at
-    
-    default = get_default_config()
-    
-    if not os.path.exists(CONFIG_FILE):
-        logger.debug("Config file not found: %s, using default config", CONFIG_FILE)
-        return default
-    
+    """Load configuration with a short-lived deep-copy cache."""
+    global _config_cache, _config_cached_at
+    now = time.monotonic()
+    with _config_cache_lock:
+        if (
+            _config_cache is not None
+            and AppConfig.CONFIG_CACHE_DURATION > 0
+            and _config_cached_at is not None
+            and now - _config_cached_at < AppConfig.CONFIG_CACHE_DURATION
+        ):
+            return copy.deepcopy(_config_cache)
+
+    config = _load_config_from_disk()
+    with _config_cache_lock:
+        _config_cache = config
+        _config_cached_at = now
+    logger.debug(
+        "Config loaded from %s",
+        storage.database_path() if not _legacy_json_override_active() else CONFIG_FILE,
+    )
+    return copy.deepcopy(config)
+
+
+def save_config(config: dict) -> None:
+    """Save configuration atomically under the SQLite/legacy lock."""
     try:
-        current_mtime = os.path.getmtime(CONFIG_FILE)
-        current_time = time.monotonic()
-
-        with _config_cache_lock:
-            cache_is_fresh = (
-                AppConfig.CONFIG_CACHE_DURATION > 0
-                and _config_cached_at is not None
-                and current_time - _config_cached_at < AppConfig.CONFIG_CACHE_DURATION
-            )
-            if _config_cache is not None and _config_mtime == current_mtime and cache_is_fresh:
-                return copy.deepcopy(_config_cache)
-
-            config = _load_config_from_disk()
-
-            _config_cache = config
-            _config_mtime = current_mtime
-            _config_cached_at = current_time
-
-            logger.debug("Config loaded successfully from %s", CONFIG_FILE)
-            return copy.deepcopy(config)
-    except json.JSONDecodeError as e:
-        logger.critical("Configuration file contains invalid JSON", exc_info=True)
-        raise ConfigLoadError("Configuration file contains invalid JSON") from e
-    except (OSError, ValueError, TypeError) as e:
-        logger.critical("Configuration file cannot be read safely", exc_info=True)
-        raise ConfigLoadError("Configuration file cannot be read safely") from e
-
-
-def save_config(config: dict):
-    """Save unified config with file locking"""
-    global _config_cache, _config_mtime
-    
-    lock_file = f"{CONFIG_FILE}.lock"
-    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
-    
-    try:
-        with lock:
+        with FileLock(_lock_path(), timeout=AppConfig.FILE_LOCK_TIMEOUT):
             _write_config_locked(config)
-            
-            logger.debug("Config saved successfully to %s", CONFIG_FILE)
-    except Timeout:
-        logger.error("Timeout waiting for config file lock")
-        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
-    except Exception as e:
-        logger.error("Failed to save config: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to save configuration")
+    except Timeout as exc:
+        logger.error("Timeout waiting for configuration lock")
+        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to save config: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save configuration") from exc
 
 
-def invalidate_config_cache():
-    """Invalidate config cache"""
-    global _config_cache, _config_mtime, _config_cached_at
+def replace_config_locked(config: dict) -> None:
+    """Replace config while the caller already owns the storage lock."""
+    if not isinstance(config, dict):
+        raise ValueError("Configuration must be an object")
+    _write_config_locked(copy.deepcopy(config))
+
+
+def invalidate_config_cache() -> None:
+    global _config_cache, _config_cached_at
     with _config_cache_lock:
         _config_cache = None
-        _config_mtime = None
         _config_cached_at = None
 
 
 def update_config(mutator: Callable[[dict], T]) -> T:
-    """
-    Atomically update config.json.
-
-    The mutator is called while holding the file lock with the latest on-disk
-    config. It may mutate the config in place and return any response value.
-    This avoids read-modify-write races between concurrent API requests.
-    """
-    lock_file = f"{CONFIG_FILE}.lock"
-    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
-
+    """Atomically load, mutate and persist the latest configuration."""
     try:
-        with lock:
+        with FileLock(_lock_path(), timeout=AppConfig.FILE_LOCK_TIMEOUT):
             config = _load_config_from_disk()
             result = mutator(config)
             _write_config_locked(config)
-            logger.debug("Atomically updated config")
             return result
-    except Timeout:
-        logger.error("Timeout waiting for config file lock while updating config")
-        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
+    except Timeout as exc:
+        logger.error("Timeout waiting for configuration lock while updating config")
+        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again") from exc
     except HTTPException:
         raise
-    except json.JSONDecodeError as e:
-        logger.error("Config file is corrupted while updating config: %s", e)
-        raise HTTPException(status_code=500, detail="Configuration file is corrupted")
-    except Exception as e:
-        logger.error("Failed to atomically update config: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update configuration")
+    except ConfigLoadError as exc:
+        logger.error("Configuration is corrupted while updating: %s", exc)
+        raise HTTPException(status_code=500, detail="Configuration file is corrupted") from exc
+    except Exception as exc:
+        logger.error("Failed to atomically update configuration: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
 
 
 def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:
-    """
-    Atomically merge updates into one subscription record.
+    """Atomically merge updates into one subscription record."""
+    def apply(config: dict) -> Optional[dict]:
+        subscription = find_subscription_by_id(config, sub_id)
+        if not subscription:
+            logger.warning("Subscription %s not found while applying atomic update", sub_id)
+            return None
+        subscription.update(updates or {})
+        return dict(subscription)
 
-    This avoids concurrent refresh jobs overwriting each other's changes by
-    always reloading the latest config while holding the file lock.
-    """
-    lock_file = f"{CONFIG_FILE}.lock"
-    lock = FileLock(lock_file, timeout=AppConfig.FILE_LOCK_TIMEOUT)
-
-    try:
-        with lock:
-            config = _load_config_from_disk()
-            sub = find_subscription_by_id(config, sub_id)
-            if not sub:
-                logger.warning("Subscription %s not found while applying atomic update", sub_id)
-                return None
-
-            sub.update(updates or {})
-            _write_config_locked(config)
-            logger.debug("Atomically updated subscription %s", sub_id)
-            return dict(sub)
-    except Timeout:
-        logger.error("Timeout waiting for config file lock while updating subscription %s", sub_id)
-        raise HTTPException(status_code=503, detail="Configuration is being updated, please try again")
-    except json.JSONDecodeError as e:
-        logger.error("Config file is corrupted while updating subscription %s: %s", sub_id, e)
-        raise HTTPException(status_code=500, detail="Configuration file is corrupted")
-    except Exception as e:
-        logger.error("Failed to atomically update subscription %s: %s", sub_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update subscription")
+    return update_config(apply)
 
 
-# Helper functions for finding items
 def find_subscription_by_id(config: dict, sub_id: str) -> Optional[dict]:
-    """Fast subscription lookup by ID"""
-    for s in config.get('subscriptions', []):
-        if s['id'] == sub_id:
-            return s
+    for subscription in config.get("subscriptions", []):
+        if isinstance(subscription, dict) and subscription.get("id") == sub_id:
+            return subscription
     return None
 
 
 def find_custom_node_by_id(config: dict, node_id: str) -> Optional[dict]:
-    """Fast custom node lookup by ID"""
-    for node in config.get('custom_nodes', []):
-        if node['id'] == node_id:
+    for node in config.get("custom_nodes", []):
+        if isinstance(node, dict) and node.get("id") == node_id:
             return node
     return None
 
 
 def find_user_by_id(config: dict, user_id: str) -> Optional[dict]:
-    """Fast user lookup by ID"""
-    for user in config.get('users', []):
-        if user['id'] == user_id:
+    for user in config.get("users", []):
+        if isinstance(user, dict) and user.get("id") == user_id:
             return user
     return None
 
 
 def find_template_by_id(config: dict, template_id: str) -> Optional[dict]:
-    """Fast template lookup by ID"""
-    for template in config.get('templates', []):
-        if template['id'] == template_id:
+    for template in config.get("templates", []):
+        if isinstance(template, dict) and template.get("id") == template_id:
             return template
     return None
 
 
 def find_admin_token_by_id(config: dict, token_id: str) -> Optional[dict]:
-    """Fast admin token lookup by ID"""
-    for token in config.get('admin_tokens', []):
-        if token['id'] == token_id:
+    for token in config.get("admin_tokens", []):
+        if isinstance(token, dict) and token.get("id") == token_id:
             return token
     return None
