@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { getNodeIpProperty, getNodeIpSource, isInfoNode } from '../Nodes.jsx';
+import {
+  getNodeIpProperty,
+  getNodeIpSource,
+  isInfoNode,
+  isNodeIpPropertyUntested,
+  isNodeIpSourceUntested,
+} from '../Nodes.jsx';
 
 describe('节点管理信息节点过滤', () => {
   it.each([
@@ -31,5 +37,19 @@ describe('节点 IP 筛选字段', () => {
   it('兼容扁平化节点字段', () => {
     expect(getNodeIpSource({ ip_source: 'broadcast' })).toBe('broadcast');
     expect(getNodeIpProperty({ network_type: 'datacenter' })).toBe('datacenter');
+  });
+
+  it('将缺少 IP 来源或属性的节点归入未检测', () => {
+    expect(isNodeIpSourceUntested({})).toBe(true);
+    expect(isNodeIpSourceUntested({ ip_profile: { ip_source: null } })).toBe(true);
+    expect(isNodeIpPropertyUntested({})).toBe(true);
+    expect(isNodeIpPropertyUntested({ ip_profile: { network_type: '' } })).toBe(true);
+  });
+
+  it('已有检测结果的节点不归入未检测', () => {
+    expect(isNodeIpSourceUntested({ ip_source: 'native' })).toBe(false);
+    expect(isNodeIpSourceUntested({ ip_profile: { ip_source: 'broadcast' } })).toBe(false);
+    expect(isNodeIpPropertyUntested({ network_type: 'residential' })).toBe(false);
+    expect(isNodeIpPropertyUntested({ ip_profile: { network_type: 'datacenter' } })).toBe(false);
   });
 });

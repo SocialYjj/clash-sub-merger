@@ -163,6 +163,10 @@ export const getNodeIpProperty = (node) => (
   node?.ip_profile?.network_type || node?.network_type || ''
 );
 
+export const isNodeIpSourceUntested = (node) => !getNodeIpSource(node);
+
+export const isNodeIpPropertyUntested = (node) => !getNodeIpProperty(node);
+
 const getNodeCountryFilterValue = (node) => {
   const country = String(node?.country || '').trim();
   const normalizedCountry = country.toUpperCase();
@@ -719,6 +723,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const values = new Set(allNodes.map(getNodeIpSource).filter(Boolean));
     return [
       { id: '', name: 'IP来源' },
+      { id: 'untested', name: '未检测' },
       ...['native', 'broadcast']
         .map(value => ({ id: value, name: getIpSourceLabel(value) })),
       ...Array.from(values)
@@ -731,6 +736,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     const values = new Set(allNodes.map(getNodeIpProperty).filter(Boolean));
     return [
       { id: '', name: 'IP属性' },
+      { id: 'untested', name: '未检测' },
       ...['residential', 'datacenter']
         .map(value => ({ id: value, name: getNetworkTypeLabel(value) })),
       ...Array.from(values)
@@ -843,11 +849,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
 
     if (filterIpSource) {
-      result = result.filter(n => getNodeIpSource(n) === filterIpSource);
+      result = result.filter(n => filterIpSource === 'untested'
+        ? isNodeIpSourceUntested(n)
+        : getNodeIpSource(n) === filterIpSource);
     }
 
     if (filterIpProperty) {
-      result = result.filter(n => getNodeIpProperty(n) === filterIpProperty);
+      result = result.filter(n => filterIpProperty === 'untested'
+        ? isNodeIpPropertyUntested(n)
+        : getNodeIpProperty(n) === filterIpProperty);
     }
 
     if (filterType !== 'all') {
