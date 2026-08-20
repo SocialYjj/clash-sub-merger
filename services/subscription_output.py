@@ -21,7 +21,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from core.dependencies import verify_admin_or_user_token
-from helpers import load_subscription_yaml
+from helpers import load_subscription_yaml, subscription_content_exists
 from services.config_merger import ConfigMerger, ProxyGroupGenerator
 from services.link_exporter import export_proxy_link
 from services.name_transformer import NameTransformer
@@ -248,8 +248,7 @@ def create_subscription_output_router(
         # This prevents slow first-time access by ensuring files exist
         missing_subs = []
         for sub in enabled_subs:
-            filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
-            if not os.path.exists(filepath):
+            if not subscription_content_exists(sub['id'], YAML_SOURCE_DIR):
                 missing_subs.append(sub)
 
         # If there are missing subscription files, fetch them now
@@ -261,8 +260,7 @@ def create_subscription_output_router(
                 try:
                     lock_factory = subscription_refresh_lock or _noop_refresh_lock
                     async with lock_factory(sub['id']):
-                        filepath = os.path.join(YAML_SOURCE_DIR, f"{sub['id']}.yaml")
-                        if os.path.exists(filepath):
+                        if subscription_content_exists(sub['id'], YAML_SOURCE_DIR):
                             continue
                         latest_config = load_config()
                         latest_sub = next(

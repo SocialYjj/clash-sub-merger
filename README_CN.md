@@ -230,18 +230,17 @@ docker compose up -d
 多个订阅均设置为 `0 0 * * *` 时，任务会在错峰窗口内依次启动，不保证全部恰好在 00:00:00 开始。
 
 数据目录说明 (`/app/data`)：
-- `app.db`: 默认 SQLite 主数据库，保存核心配置、节点测试元数据、地区历史和 GeoIP/Radar/翻译缓存。
-- `config.json`: 迁移前的兼容/回滚副本；正常运行不再写入，升级验收完成前不要删除。
-- `uploads/`: 存放下载的订阅文件缓存。
+- 选定的数据库后端保存核心配置、订阅 YAML、配置备份、节点测试元数据、地区历史以及 GeoIP/Radar/翻译缓存。
+- `app.db`: `STORAGE_BACKEND=sqlite` 时使用的 SQLite 数据库；PostgreSQL/MySQL 模式不再使用它。
+- `uploads/`、`backups/`: 迁移完成后仅保留为空的兼容目录。
 - `logs/`: 脱敏后的轮转日志。
-- `backups/`: 配置备份。
 - `refresh_locks/`: 跨进程订阅刷新锁文件；锁文件存在不表示仍被锁定，不要手工删除。
 
 升级前应备份整个 `data/`。已保存的订阅获取代理和 IPv6 测试代理只返回“是否已配置”，管理界面不能读取明文；需要变更时应直接替换或清除。配置导出与备份属于完整迁移数据，包含密码哈希和订阅 Token，必须按敏感文件保管；登录会话不会导出或恢复。
 
-从旧版本迁移时，使用实际数据目录执行 `python scripts/migrate_data_to_sqlite.py --data-dir <data目录>`；`DATA_DIR` 必须与服务启动时使用的目录一致。
+从旧版本迁移时，使用实际数据目录执行 `python scripts/migrate_data_to_sqlite.py --data-dir <data目录>`；`DATA_DIR` 必须与服务启动时使用的目录一致。选择最终数据库后，再执行 `python scripts/migrate_files_to_database.py --delete-source`；脚本会逐个读回并校验订阅和备份，校验完成后才删除源文件。
 
-需要改用 PostgreSQL 或 MySQL 时，先备份 `data/`，再设置 `STORAGE_BACKEND` 和对应连接参数。使用 `python scripts/migrate_data_to_database.py --backend postgresql --source-sqlite <data目录>/app.db` 或 `--backend mysql` 将 SQLite 文档和缓存复制到目标数据库；脚本会用 SHA-256 校验源、目标 JSON 载荷。SQLite 仍可保留作本地回滚副本。
+需要改用 PostgreSQL 或 MySQL 时，先备份 `data/`，再设置 `STORAGE_BACKEND` 和对应连接参数。使用 `python scripts/migrate_data_to_database.py --backend postgresql --source-sqlite <data目录>/app.db`（或 `--backend mysql`）迁移 SQLite 文档和缓存，再执行 `python scripts/migrate_files_to_database.py --delete-source` 迁移订阅和备份文件。部署验收前应保留数据库导出备份。
 
 如果旧版本日志或反向代理访问日志曾记录过完整订阅 URL、Token 或代理凭据，应删除旧日志并轮换对应凭据；新版本的应用日志脱敏不能撤销历史泄露。非 root 方式运行自定义容器时，需确保绑定目录对 UID 1000 可写。
 

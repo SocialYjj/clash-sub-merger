@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _INITIALIZATION_LOCK = threading.RLock()
 _INITIALIZED_DATABASES: set[str] = set()
 
@@ -113,6 +113,15 @@ def initialize_database() -> None:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS stored_files (
+                        file_path VARCHAR(500) PRIMARY KEY,
+                        content_text LONGTEXT NOT NULL,
+                        updated_at DOUBLE NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     INSERT INTO schema_migrations(version, applied_at)
                     VALUES (%s, %s)
                     ON DUPLICATE KEY UPDATE version = VALUES(version)
@@ -172,6 +181,85 @@ def has_app_document(document_name: str) -> bool:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1 FROM app_documents WHERE document_name = %s", (document_name,))
             return cursor.fetchone() is not None
+    finally:
+        connection.close()
+
+
+def read_stored_file(file_path: str, default: str | None = None) -> str | None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT content_text FROM stored_files WHERE file_path = %s", (file_path,))
+            row = cursor.fetchone()
+        return default if row is None else str(row[0])
+    finally:
+        connection.close()
+
+
+def write_stored_file(file_path: str, content: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO stored_files(file_path, content_text, updated_at)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    content_text = VALUES(content_text),
+                    updated_at = VALUES(updated_at)
+                """,
+                (file_path, content, time.time()),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def delete_stored_file(file_path: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM stored_files WHERE file_path = %s", (file_path,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def delete_stored_files(prefix: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM stored_files WHERE file_path = %s OR file_path LIKE %s",
+                (prefix, f"{prefix}/%"),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            if prefix:
+                cursor.execute(
+                    "SELECT file_path, content_text, updated_at FROM stored_files "
+                    "WHERE file_path = %s OR file_path LIKE %s ORDER BY file_path",
+                    (prefix, f"{prefix}/%"),
+                )
+            else:
+                cursor.execute("SELECT file_path, content_text, updated_at FROM stored_files ORDER BY file_path")
+            rows = cursor.fetchall()
+        return [
+            {"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])}
+            for row in rows
+        ]
     finally:
         connection.close()
 

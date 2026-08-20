@@ -15,16 +15,25 @@ from fastapi import HTTPException
 from dotenv import load_dotenv
 from logger_config import get_logger
 from core.proxy_compat import normalize_subscription_data
-from core.config import AppConfig, env_int
+from core.config import AppConfig, YAML_SOURCE_DIR as DEFAULT_YAML_SOURCE_DIR, env_int
 from core import (
     cache_hits_total, cache_misses_total,
     file_operations_total, file_operation_duration_seconds
+)
+from core.storage import (
+    delete_stored_file,
+    has_stored_file,
+    read_stored_file,
+    list_stored_files,
+    write_stored_file,
 )
 
 # Load environment variables from .env file
 load_dotenv()
 
 logger = get_logger(__name__)
+
+_DEFAULT_YAML_SOURCE_PATH = Path(DEFAULT_YAML_SOURCE_DIR).resolve()
 
 # Use C-accelerated safe YAML loader if available for better performance.
 # Never use yaml.Loader/CLoader here: subscription YAML can come from remote
@@ -183,6 +192,81 @@ def _subscription_filepath(sub_id: str, yaml_source_dir: str) -> Path:
     return target
 
 
+def _uses_database_subscription_storage(yaml_source_dir: str) -> bool:
+    """Use logical database files only for the production data directory.
+
+    Tests and recovery tooling may deliberately pass an isolated directory;
+    those callers retain the legacy filesystem behavior.
+    """
+    return Path(yaml_source_dir).resolve() == _DEFAULT_YAML_SOURCE_PATH
+
+
+def _subscription_storage_key(sub_id: str) -> str:
+    # Validate the identifier through the normal path boundary before turning
+    # it into a logical database key.
+    _subscription_filepath(sub_id, str(_DEFAULT_YAML_SOURCE_PATH))
+    return f"uploads/{sub_id}{Constants.YAML_EXT}"
+
+
+def read_subscription_content(sub_id: str, yaml_source_dir: str) -> Optional[str]:
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
+    if _uses_database_subscription_storage(yaml_source_dir):
+        stored_content = read_stored_file(_subscription_storage_key(sub_id), default=None)
+        if stored_content is not None:
+            return stored_content
+        # A one-release compatibility window lets the service keep reading
+        # legacy uploads until the explicit migration command is run.
+        if filepath.is_file():
+            return filepath.read_text(encoding='utf-8')
+        return None
+    if not filepath.exists():
+        return None
+    return filepath.read_text(encoding='utf-8')
+
+
+def subscription_content_exists(sub_id: str, yaml_source_dir: str) -> bool:
+    if _uses_database_subscription_storage(yaml_source_dir):
+        return has_stored_file(_subscription_storage_key(sub_id)) or _subscription_filepath(
+            sub_id, yaml_source_dir
+        ).is_file()
+    return _subscription_filepath(sub_id, yaml_source_dir).is_file()
+
+
+def delete_subscription_content(sub_id: str, yaml_source_dir: str) -> None:
+    filepath = _subscription_filepath(sub_id, yaml_source_dir)
+    if _uses_database_subscription_storage(yaml_source_dir):
+        delete_stored_file(_subscription_storage_key(sub_id))
+        filepath.unlink(missing_ok=True)
+        return
+    filepath.unlink(missing_ok=True)
+
+
+def list_subscription_contents(yaml_source_dir: str) -> dict[str, str]:
+    """Return stored subscription files keyed by their logical filename."""
+    if _uses_database_subscription_storage(yaml_source_dir):
+        result: dict[str, str] = {}
+        for entry in list_stored_files("uploads"):
+            logical_path = str(entry.get("file_path") or "")
+            relative_name = logical_path.removeprefix("uploads/")
+            if "/" not in relative_name and relative_name.endswith((".yaml", ".yml")):
+                result[relative_name] = str(entry.get("content") or "")
+        directory = Path(yaml_source_dir)
+        if directory.is_dir():
+            for path in directory.iterdir():
+                if path.is_file() and path.suffix.lower() in {".yaml", ".yml"} and path.name not in result:
+                    result[path.name] = path.read_text(encoding="utf-8")
+        return result
+
+    directory = Path(yaml_source_dir)
+    if not directory.is_dir():
+        return {}
+    return {
+        path.name: path.read_text(encoding="utf-8")
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}
+    }
+
+
 def _get_yaml_file_lock(filepath: Path | str) -> threading.RLock:
     key = str(Path(filepath).resolve())
     with _yaml_file_locks_guard:
@@ -283,14 +367,18 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
             return cached
         cache_misses_total.labels(cache_type='yaml').inc()
     
-    if not os.path.exists(filepath):
+    content = read_subscription_content(sub_id, yaml_source_dir)
+    if content is None:
         file_operations_total.labels(operation='read', status='failed').inc()
         raise HTTPException(status_code=404, detail="Subscription not found")
     
     try:
         with _get_yaml_file_lock(filepath):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
+            content = read_subscription_content(sub_id, yaml_source_dir)
+            if content is None:
+                file_operations_total.labels(operation='read', status='failed').inc()
+                raise HTTPException(status_code=404, detail="Subscription not found")
+            content = content.strip()
         
         cfg = None
         direct_yaml_error = None
@@ -362,7 +450,10 @@ def save_subscription_yaml(sub_id: str, cfg: dict, yaml_source_dir: str):
     try:
         with _get_yaml_file_lock(filepath):
             content = yaml.dump(cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
-            atomic_write_text(filepath, content)
+            if _uses_database_subscription_storage(yaml_source_dir):
+                write_stored_file(_subscription_storage_key(sub_id), content)
+            else:
+                atomic_write_text(filepath, content)
         
         # Invalidate cache
         yaml_cache.invalidate(sub_id)
@@ -397,7 +488,10 @@ def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
     
     try:
         with _get_yaml_file_lock(filepath):
-            atomic_write_text(filepath, content)
+            if _uses_database_subscription_storage(yaml_source_dir):
+                write_stored_file(_subscription_storage_key(sub_id), content)
+            else:
+                atomic_write_text(filepath, content)
         
         # Invalidate cache
         yaml_cache.invalidate(sub_id)

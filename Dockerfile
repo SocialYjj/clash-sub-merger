@@ -59,6 +59,7 @@ COPY server.py helpers.py helpers_ua.py logger_config.py scheduler_service.py sp
 COPY api/ ./api/
 COPY services/ ./services/
 COPY core/ ./core/
+COPY scripts/migrate_files_to_database.py ./scripts/migrate_files_to_database.py
 
 # Copy Go speedtest binary (into speedtest/ dir so server.py finds it at /app/speedtest/speedtest)
 RUN mkdir -p /app/speedtest

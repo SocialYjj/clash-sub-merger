@@ -14,7 +14,12 @@ from core.dependencies import verify_session
 from core.database import load_config, update_config
 from core.config import AppConfig
 from core.rate_limit import limiter
-from helpers import handle_api_errors, generate_timestamp_id, load_subscription_yaml
+from helpers import (
+    delete_subscription_content,
+    handle_api_errors,
+    generate_timestamp_id,
+    load_subscription_yaml,
+)
 from services.node_visibility import apply_node_visibility_to_yaml_content
 from services.region_history import (
     apply_node_test_metadata_to_yaml_content,
@@ -40,7 +45,6 @@ from services.subscription_storage import (
     persist_subscription_content_and_record,
     restore_subscription_content,
     snapshot_subscription_content,
-    subscription_file_path,
 )
 from services.stats_cache import invalidate as invalidate_stats_cache
 from logger_config import get_logger
@@ -655,9 +659,8 @@ async def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
             raise HTTPException(status_code=404, detail="Subscription not found")
         current_nodes = _load_existing_subscription_nodes(sub_id)
         previous_content = snapshot_subscription_content(sub_id, AppConfig.YAML_SOURCE_DIR)
-        yaml_file = subscription_file_path(sub_id, AppConfig.YAML_SOURCE_DIR)
         try:
-            yaml_file.unlink(missing_ok=True)
+            delete_subscription_content(sub_id, AppConfig.YAML_SOURCE_DIR)
             from helpers import yaml_cache
             yaml_cache.invalidate(sub_id)
 

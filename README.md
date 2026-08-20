@@ -239,21 +239,20 @@ Scheduled jobs configured for the same time, such as `0 0 * * *`, run within the
 
 ### Data Persistence
 
-By default, application state is stored in `/app/data/app.db` (SQLite), including configuration,
-node test metadata, region history, and GeoIP/Radar/translation caches:
+Application state is stored in the selected database backend, including configuration,
+subscription YAML, configuration backups, node test metadata, region history, and
+GeoIP/Radar/translation caches:
 
-- `app.db` - Main SQLite database
-- `config.json` - Legacy compatibility/rollback copy; normal runtime writes go to SQLite
-- `uploads/` - Subscription cache files
+- `app.db` - SQLite database when `STORAGE_BACKEND=sqlite`; not used by PostgreSQL/MySQL
+- `uploads/` and `backups/` - Empty compatibility directories after database migration
 - `logs/` - Rotating, credential-redacted application logs
-- `backups/` - Configuration backups
 - `refresh_locks/` - OS-backed refresh lock files; file presence alone does not mean a lock is held
 
 Back up the complete `data/` directory before upgrades. Saved subscription-fetch and IPv6-test proxy credentials are write-only: the API reports only whether a value exists, so replace or clear them instead of reading them back. Configuration exports and backups are full migration data containing password hashes and subscription tokens and must be protected as sensitive files; login sessions are neither exported nor restored.
 
-For an existing installation, run `python scripts/migrate_data_to_sqlite.py --data-dir <data-directory>` with the same `DATA_DIR` used by the service.
+For an existing file-based installation, run `python scripts/migrate_data_to_sqlite.py --data-dir <data-directory>` with the same `DATA_DIR` used by the service, then run `python scripts/migrate_files_to_database.py --delete-source` after selecting the final backend. The latter command verifies every subscription and backup by reading it back from the database before deleting its source file.
 
-To use PostgreSQL or MySQL, back up `data/`, set `STORAGE_BACKEND` and the matching connection variables, then run `python scripts/migrate_data_to_database.py --backend postgresql --source-sqlite <data-directory>/app.db` or `--backend mysql`. The migration script verifies that source and target JSON payloads have the same SHA-256 digest. Keep `app.db` as a local rollback copy.
+To use PostgreSQL or MySQL, back up `data/`, set `STORAGE_BACKEND` and the matching connection variables, migrate the SQLite documents with `python scripts/migrate_data_to_database.py --backend postgresql --source-sqlite <data-directory>/app.db` (or `--backend mysql`), and then run `python scripts/migrate_files_to_database.py --delete-source`. Keep an external database dump until the deployment has been verified.
 
 Delete historical application or reverse-proxy logs and rotate credentials if an older release logged full subscription URLs, tokens, or proxy credentials. For a custom non-root container, make the bind mount writable by UID 1000.
 

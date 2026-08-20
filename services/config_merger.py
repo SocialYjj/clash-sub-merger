@@ -7,7 +7,7 @@ import json
 import yaml
 from typing import List, Dict, Optional
 from logger_config import get_logger
-from helpers import atomic_write_text
+from helpers import atomic_write_text, list_subscription_contents
 from services.proxy_filter import ProxyFilter
 from services.name_transformer import NameTransformer
 from services.country_grouper import CountryGrouper
@@ -271,11 +271,12 @@ rule-providers:
         all_proxies = []
         used_names = set()
         
-        if not os.path.exists(self.yaml_dir):
+        stored_sources = list_subscription_contents(self.yaml_dir)
+        if not stored_sources and not os.path.isdir(self.yaml_dir):
             logger.error(f"Directory {self.yaml_dir} does not exist")
             return []
-            
-        files = [f for f in os.listdir(self.yaml_dir) if f.endswith('.yaml') or f.endswith('.yml')]
+
+        files = sorted(stored_sources)
         excludes = ['myconfig.yaml', 'myconfig_template.yaml']
         
         def sort_key(filename):
@@ -297,15 +298,17 @@ rule-providers:
             if self.file_aliases and file_name not in self.file_aliases:
                 continue
 
-            file_path = os.path.join(self.yaml_dir, file_name)
             default_name = os.path.splitext(file_name)[0]
             source_name = self.file_aliases.get(file_name, default_name)
             
             logger.info(f"Processing: {file_name}...")
             
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                content = stored_sources.get(file_name)
+                if content is None:
+                    file_path = os.path.join(self.yaml_dir, file_name)
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
                 config = SubscriptionParser.parse_content(content)
             except Exception as e:
                 logger.warning(f"Cannot parse file {file_name}: {e}")

@@ -59,6 +59,46 @@ def has_app_document(document_name: str) -> bool:
     return _backend_module().has_app_document(document_name)
 
 
+def _validate_stored_file_path(file_path: str) -> str:
+    """Validate a logical stored-file key before it reaches a database backend."""
+    if not isinstance(file_path, str):
+        raise TypeError("Stored file path must be a string")
+    normalized = file_path.replace("\\", "/").strip("/")
+    if not normalized or normalized in {".", ".."} or any(part in {"", ".", ".."} for part in normalized.split("/")):
+        raise ValueError("Invalid stored file path")
+    if len(normalized) > 500:
+        raise ValueError("Stored file path is too long")
+    return normalized
+
+
+def read_stored_file(file_path: str, default: str | None = None) -> str | None:
+    return _backend_module().read_stored_file(_validate_stored_file_path(file_path), default)
+
+
+def write_stored_file(file_path: str, content: str) -> None:
+    if not isinstance(content, str):
+        raise TypeError("Stored file content must be text")
+    _backend_module().write_stored_file(_validate_stored_file_path(file_path), content)
+
+
+def delete_stored_file(file_path: str) -> None:
+    _backend_module().delete_stored_file(_validate_stored_file_path(file_path))
+
+
+def delete_stored_files(prefix: str) -> None:
+    normalized_prefix = _validate_stored_file_path(prefix).rstrip("/")
+    _backend_module().delete_stored_files(normalized_prefix)
+
+
+def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
+    normalized_prefix = None if prefix is None else _validate_stored_file_path(prefix).rstrip("/")
+    return _backend_module().list_stored_files(normalized_prefix)
+
+
+def has_stored_file(file_path: str) -> bool:
+    return read_stored_file(file_path, default=None) is not None
+
+
 def read_cache_document(namespace: str, default: Any = None) -> Any:
     return _backend_module().read_cache_document(namespace, default)
 

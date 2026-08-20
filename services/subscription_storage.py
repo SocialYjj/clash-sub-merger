@@ -12,6 +12,8 @@ from logger_config import get_logger
 
 from helpers import (
     atomic_write_text,
+    delete_subscription_content,
+    read_subscription_content,
     save_subscription_content,
     subscription_yaml_lock,
     yaml_cache,
@@ -137,10 +139,8 @@ def subscription_file_path(subscription_id: str, yaml_source_dir: str) -> Path:
 
 
 def snapshot_subscription_content(subscription_id: str, yaml_source_dir: str) -> Optional[str]:
-    path = subscription_file_path(subscription_id, yaml_source_dir)
-    if not path.exists():
-        return None
-    return path.read_text(encoding="utf-8")
+    subscription_file_path(subscription_id, yaml_source_dir)
+    return read_subscription_content(subscription_id, yaml_source_dir)
 
 
 def restore_subscription_content(
@@ -148,11 +148,10 @@ def restore_subscription_content(
     yaml_source_dir: str,
     previous_content: Optional[str],
 ) -> None:
-    path = subscription_file_path(subscription_id, yaml_source_dir)
     if previous_content is None:
-        path.unlink(missing_ok=True)
+        delete_subscription_content(subscription_id, yaml_source_dir)
     else:
-        atomic_write_text(path, previous_content)
+        save_subscription_content(subscription_id, previous_content, yaml_source_dir)
     yaml_cache.invalidate(subscription_id)
 
 

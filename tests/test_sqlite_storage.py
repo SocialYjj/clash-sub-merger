@@ -69,6 +69,33 @@ class SQLiteStorageTests(unittest.TestCase):
                 sqlite_storage.delete_cache_document("translation")
                 self.assertIsNone(sqlite_storage.read_cache_document("translation", None))
 
+    def test_stored_file_round_trip_and_prefix_cleanup(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            database_path = root / "app.db"
+            with (
+                patch("core.config.DATA_DIR", str(root)),
+                patch("core.config.CONFIG_FILE", str(root / "config.json")),
+                patch("core.config.DATABASE_FILE", str(database_path)),
+            ):
+                sqlite_storage._initialized_paths.clear()
+                sqlite_storage.write_stored_file("uploads/source.yaml", "proxies: []\n")
+                sqlite_storage.write_stored_file("backups/config.json", "{}")
+                self.assertEqual(
+                    sqlite_storage.read_stored_file("uploads/source.yaml"),
+                    "proxies: []\n",
+                )
+                self.assertEqual(
+                    [row["file_path"] for row in sqlite_storage.list_stored_files("uploads")],
+                    ["uploads/source.yaml"],
+                )
+                sqlite_storage.delete_stored_files("uploads")
+                self.assertIsNone(sqlite_storage.read_stored_file("uploads/source.yaml"))
+                self.assertEqual(
+                    sqlite_storage.read_stored_file("backups/config.json"),
+                    "{}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

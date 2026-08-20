@@ -17,11 +17,18 @@ from filelock import FileLock, Timeout
 from core.config import AppConfig, CONFIG_FILE, BACKUP_DIR
 from core.database import load_config, invalidate_config_cache, replace_config_locked
 from core.storage import (
+    delete_stored_file,
+    delete_stored_files,
     database_lock_path,
+    has_stored_file,
+    list_stored_files,
     read_cache_document,
+    read_stored_file,
     write_cache_document,
+    write_stored_file,
 )
 from logger_config import get_logger
+from helpers import subscription_content_exists
 from services.configuration_validation import (
     remove_legacy_stale_references,
     validate_configuration_node_references,
@@ -31,11 +38,36 @@ from services.configuration_validation import (
 logger = get_logger(__name__)
 
 _ORIGINAL_CONFIG_FILE = CONFIG_FILE
+_ORIGINAL_BACKUP_DIR = BACKUP_DIR
 
 _MIGRATION_ROOTS = ("uploads",)
 _MIGRATION_FILES = ("node_region_history.json", "geoip_cache.json", "myconfig.yaml")
 _DATABASE_CACHE_SIDECAR = "database_caches.json"
 _DATABASE_CACHE_NAMES = ("geoip", "radar", "translation", "region_history")
+
+
+def _database_file_storage_active() -> bool:
+    """Use database-backed uploads/backups only for the production data root."""
+    return (
+        CONFIG_FILE == _ORIGINAL_CONFIG_FILE
+        and BACKUP_DIR == _ORIGINAL_BACKUP_DIR
+    )
+
+
+def _stored_backup_key(filename: str) -> str:
+    return f"backups/{filename}"
+
+
+def _stored_backup_sidecar_prefix(filename: str) -> str:
+    return f"backups/{filename}.files"
+
+
+def _stored_backup_exists(filename: str) -> bool:
+    return has_stored_file(_stored_backup_key(filename))
+
+
+def _stored_backup_sidecar_exists(filename: str) -> bool:
+    return bool(list_stored_files(_stored_backup_sidecar_prefix(filename)))
 
 
 def _apply_geoip_runtime_config(config: dict) -> None:
@@ -103,6 +135,22 @@ def _backup_sidecar_path(backup_path: str | Path) -> Path:
 
 
 def _snapshot_migration_files(backup_path: str) -> None:
+    if _database_file_storage_active():
+        backup_filename = Path(backup_path).name
+        prefix = _stored_backup_sidecar_prefix(backup_filename)
+        delete_stored_files(prefix)
+        for relative_name, encoded_content in _export_migration_files().items():
+            try:
+                content = base64.b64decode(encoded_content.encode('ascii'), validate=True).decode('utf-8')
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError(f"Migration file {relative_name} is not UTF-8 text") from exc
+            write_stored_file(f"{prefix}/{relative_name}", content)
+        write_stored_file(
+            f"{prefix}/{_DATABASE_CACHE_SIDECAR}",
+            json.dumps(_export_database_cache_documents(), ensure_ascii=False, indent=2),
+        )
+        return
+
     sidecar = _backup_sidecar_path(backup_path)
     temporary = Path(f"{sidecar}.tmp")
     if temporary.is_dir():
@@ -166,8 +214,44 @@ def _restore_migration_files(sidecar: Path) -> None:
         _restore_database_cache_documents(database_cache_payload)
 
 
+def _restore_stored_migration_files(backup_filename: str) -> None:
+    prefix = _stored_backup_sidecar_prefix(backup_filename)
+    entries = list_stored_files(prefix)
+    if not entries:
+        return
+    database_cache_payload: dict | None = None
+    restored_files: dict[str, str] = {}
+    for entry in entries:
+        logical_path = str(entry.get("file_path") or "")
+        relative_name = logical_path.removeprefix(f"{prefix}/")
+        content = str(entry.get("content") or "")
+        if relative_name == _DATABASE_CACHE_SIDECAR:
+            try:
+                database_cache_payload = json.loads(content)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("Backup database cache snapshot is invalid") from exc
+            continue
+        relative = Path(relative_name)
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError("Backup contains an unsupported migration file")
+        if relative_name not in _MIGRATION_FILES and not (
+            relative.parts and relative.parts[0] in _MIGRATION_ROOTS
+        ):
+            raise ValueError("Backup contains an unsupported migration file")
+        restored_files[relative_name] = content
+
+    _clear_migration_targets()
+    for relative_name, content in restored_files.items():
+        write_stored_file(relative_name, content)
+    if database_cache_payload is not None:
+        _restore_database_cache_documents(database_cache_payload)
+
+
 def _clear_migration_targets() -> None:
     """Remove only files owned by the migration boundary before replacement."""
+    if _database_file_storage_active():
+        delete_stored_files("uploads")
+        return
     root = _data_root()
     for relative_name in _MIGRATION_FILES:
         target = root / relative_name
@@ -185,6 +269,35 @@ def _clear_migration_targets() -> None:
 
 
 def _export_migration_files() -> dict[str, str]:
+    if _database_file_storage_active():
+        exported: dict[str, str] = {}
+        for entry in list_stored_files("uploads"):
+            logical_path = str(entry.get("file_path") or "")
+            relative_name = logical_path.removeprefix("uploads/")
+            if "/" in relative_name:
+                continue
+            content = str(entry.get("content") or "")
+            exported[f"uploads/{relative_name}"] = base64.b64encode(content.encode('utf-8')).decode('ascii')
+        # During the migration window, include legacy upload files that have
+        # not been copied yet so a pre-restore backup remains complete.
+        legacy_uploads = _data_root() / "uploads"
+        if legacy_uploads.is_dir():
+            for source in legacy_uploads.rglob("*"):
+                if not source.is_file():
+                    continue
+                relative_name = source.relative_to(legacy_uploads).as_posix()
+                logical_name = f"uploads/{relative_name}"
+                if logical_name not in exported:
+                    exported[logical_name] = base64.b64encode(source.read_bytes()).decode('ascii')
+        # Keep any explicitly maintained root migration files available for
+        # old imports, even though normal runtime caches live in the database.
+        root = _data_root()
+        for relative_name in _MIGRATION_FILES:
+            source = root / relative_name
+            if source.is_file():
+                exported[relative_name] = base64.b64encode(source.read_bytes()).decode('ascii')
+        return exported
+
     root = _data_root()
     exported: dict[str, str] = {}
     for source in _iter_migration_files():
@@ -237,6 +350,16 @@ def _decode_migration_files(files: object) -> dict[str, bytes]:
 
 
 def _restore_encoded_files(files: dict[str, bytes]) -> list[Path]:
+    if _database_file_storage_active():
+        restored: list[Path] = []
+        for relative_text, content in files.items():
+            try:
+                write_stored_file(relative_text, content.decode('utf-8'))
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"Imported migration file {relative_text} is not UTF-8 text") from exc
+            restored.append(_data_root() / Path(relative_text))
+        return restored
+
     root = _data_root()
     restored: list[Path] = []
     for relative_text, content in files.items():
@@ -272,7 +395,12 @@ def _merge_encoded_files(files: dict[str, bytes], added_subscription_ids: set[st
 
         # Root migration files are copied only when the destination does not
         # have one yet. This preserves the active instance's output and caches.
-        if relative_text in _MIGRATION_FILES and not (root / relative).exists():
+        destination_exists = (
+            has_stored_file(relative_text)
+            if _database_file_storage_active()
+            else (root / relative).exists()
+        )
+        if relative_text in _MIGRATION_FILES and not destination_exists:
             selected[relative_text] = content
 
     return _restore_encoded_files(selected)
@@ -284,6 +412,15 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
         return None
 
     backup_filename = _backup_filename(reason)
+    if _database_file_storage_active():
+        write_stored_file(
+            _stored_backup_key(backup_filename),
+            json.dumps(load_config(), ensure_ascii=False, indent=2),
+        )
+        _snapshot_migration_files(backup_filename)
+        logger.info(f"Backup created: {backup_filename}")
+        return backup_filename
+
     backup_path = Path(BACKUP_DIR) / backup_filename
     os.makedirs(BACKUP_DIR, exist_ok=True)
     # Write to a hidden same-directory temporary file first. A backup must
@@ -386,6 +523,28 @@ def create_backup(reason: str = 'manual') -> Optional[str]:
 def cleanup_old_backups():
     """Keep only the most recent backups"""
     try:
+        if _database_file_storage_active():
+            stored_entries = list_stored_files('backups')
+            backups = sorted(
+                {
+                    Path(str(entry.get('file_path') or '')).name
+                    for entry in stored_entries
+                    if '.files/' not in str(entry.get('file_path') or '')
+                    and Path(str(entry.get('file_path') or '')).name.startswith('config_')
+                    and Path(str(entry.get('file_path') or '')).name.endswith('.json')
+                },
+                reverse=True,
+            )
+            for old_backup in backups[AppConfig.AUTO_BACKUP_KEEP_COUNT:]:
+                try:
+                    delete_stored_file(_stored_backup_key(old_backup))
+                    delete_stored_files(_stored_backup_sidecar_prefix(old_backup))
+                    logger.info(f"Deleted old backup: {old_backup}")
+                except Exception as exc:
+                    logger.error(f"Failed to cleanup old backup {old_backup}: {exc}")
+            if backups:
+                return
+
         backups = sorted(
             [f for f in os.listdir(BACKUP_DIR) if f.startswith('config_') and f.endswith('.json')],
             reverse=True
@@ -409,6 +568,24 @@ def list_backups() -> List[dict]:
     backups = []
     
     try:
+        if _database_file_storage_active():
+            stored_entries = list_stored_files('backups')
+            for entry in stored_entries:
+                logical_path = str(entry.get('file_path') or '')
+                filename = Path(logical_path).name
+                if '.files/' in logical_path or not filename.startswith('config_') or not filename.endswith('.json'):
+                    continue
+                content = str(entry.get('content') or '')
+                backups.append({
+                    'filename': filename,
+                    'size': len(content.encode('utf-8')),
+                    'created_at': int(float(entry.get('updated_at') or 0)),
+                    'complete': _stored_backup_sidecar_exists(filename),
+                })
+            backups.sort(key=lambda x: x['created_at'], reverse=True)
+            if backups:
+                return backups
+
         with _config_file_lock():
             filenames = list(os.listdir(BACKUP_DIR))
         for f in filenames:
@@ -440,16 +617,25 @@ def restore_backup(filename: str) -> bool:
         True if successful
     """
     backup_path = _resolve_backup_path(filename)
-    
-    if not backup_path.exists():
-        raise FileNotFoundError(f"Backup not found: {filename}")
-    
-    # Validate and load backup file before taking the config write lock.
-    try:
-        with open(backup_path, 'r', encoding='utf-8') as f:
-            backup_config = json.load(f)
-    except json.JSONDecodeError:
-        raise ValueError("Invalid backup file")
+    using_stored_backup = _database_file_storage_active() and _stored_backup_exists(filename)
+
+    if using_stored_backup:
+        backup_content = read_stored_file(_stored_backup_key(filename), default=None)
+        if backup_content is None:
+            raise FileNotFoundError(f"Backup not found: {filename}")
+        try:
+            backup_config = json.loads(backup_content)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid backup file") from None
+    else:
+        if not backup_path.exists():
+            raise FileNotFoundError(f"Backup not found: {filename}")
+        # Validate and load backup file before taking the config write lock.
+        try:
+            with open(backup_path, 'r', encoding='utf-8') as f:
+                backup_config = json.load(f)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid backup file")
     if not isinstance(backup_config, dict):
         raise ValueError("Invalid backup file")
     remove_legacy_stale_references(backup_config)
@@ -463,9 +649,12 @@ def restore_backup(filename: str) -> bool:
             # partially copied config file.
             _create_backup_locked('pre_restore')
             _atomic_restore_config_locked(backup_config)
-            sidecar = _backup_sidecar_path(backup_path)
-            if sidecar.is_dir():
-                _restore_migration_files(sidecar)
+            if using_stored_backup:
+                _restore_stored_migration_files(filename)
+            else:
+                sidecar = _backup_sidecar_path(backup_path)
+                if sidecar.is_dir():
+                    _restore_migration_files(sidecar)
     except Timeout:
         raise TimeoutError("Configuration is being updated, please try again")
 
@@ -477,7 +666,14 @@ def restore_backup(filename: str) -> bool:
 def delete_backup(filename: str) -> bool:
     """Delete a backup file"""
     backup_path = _resolve_backup_path(filename)
-    
+
+    if _database_file_storage_active() and _stored_backup_exists(filename):
+        with _config_file_lock():
+            delete_stored_file(_stored_backup_key(filename))
+            delete_stored_files(_stored_backup_sidecar_prefix(filename))
+        logger.info(f"Backup deleted: {filename}")
+        return True
+
     if not backup_path.exists():
         raise FileNotFoundError(f"Backup not found: {filename}")
     
@@ -660,7 +856,7 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                             ),
                             True,
                         )
-                        if not (Path(_data_root()) / 'uploads' / f'{subscription_id}.yaml').exists()
+                        if not subscription_content_exists(subscription_id, str(_data_root() / 'uploads'))
                         and f'uploads/{subscription_id}.yaml' not in migration_files
                     }
                     if missing_subscription_files:

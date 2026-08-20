@@ -1,9 +1,9 @@
-"""SQLite persistence for configuration and application JSON documents.
+"""SQLite persistence for configuration, caches, and logical application files.
 
-The application historically persisted its state in several JSON files.  This
-module keeps the runtime payloads as JSON documents while making SQLite the
-single transactional persistence boundary.  Files that are operational
-artifacts (uploads, backups and logs) remain on the filesystem.
+The application historically persisted its state in several JSON files and
+directories.  JSON documents and logical application files now share one
+transactional persistence boundary.  Operational artifacts such as logs and
+runtime locks remain on the filesystem.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _init_lock = threading.RLock()
 _initialized_paths: set[str] = set()
 
@@ -78,6 +78,11 @@ def initialize_database() -> None:
                     payload_json TEXT NOT NULL,
                     updated_at REAL NOT NULL,
                     expires_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS stored_files (
+                    file_path TEXT PRIMARY KEY,
+                    content_text TEXT NOT NULL,
+                    updated_at REAL NOT NULL
                 );
                 """
             )
@@ -253,5 +258,76 @@ def has_app_document(document_name: str) -> bool:
         return connection.execute(
             "SELECT 1 FROM app_documents WHERE document_name = ?", (document_name,)
         ).fetchone() is not None
+    finally:
+        connection.close()
+
+
+def read_stored_file(file_path: str, default: str | None = None) -> str | None:
+    initialize_database()
+    connection = _connect()
+    try:
+        row = connection.execute(
+            "SELECT content_text FROM stored_files WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        return default if row is None else str(row[0])
+    finally:
+        connection.close()
+
+
+def write_stored_file(file_path: str, content: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO stored_files(file_path, content_text, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(file_path) DO UPDATE SET content_text=excluded.content_text, updated_at=excluded.updated_at",
+                (file_path, content, time.time()),
+            )
+    finally:
+        connection.close()
+
+
+def delete_stored_file(file_path: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection:
+            connection.execute("DELETE FROM stored_files WHERE file_path = ?", (file_path,))
+    finally:
+        connection.close()
+
+
+def delete_stored_files(prefix: str) -> None:
+    initialize_database()
+    connection = _connect()
+    try:
+        with connection:
+            connection.execute(
+                "DELETE FROM stored_files WHERE file_path = ? OR file_path LIKE ?",
+                (prefix, f"{prefix}/%"),
+            )
+    finally:
+        connection.close()
+
+
+def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
+    initialize_database()
+    connection = _connect()
+    try:
+        if prefix:
+            rows = connection.execute(
+                "SELECT file_path, content_text, updated_at FROM stored_files "
+                "WHERE file_path = ? OR file_path LIKE ? ORDER BY file_path",
+                (prefix, f"{prefix}/%"),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT file_path, content_text, updated_at FROM stored_files ORDER BY file_path"
+            ).fetchall()
+        return [
+            {"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])}
+            for row in rows
+        ]
     finally:
         connection.close()
