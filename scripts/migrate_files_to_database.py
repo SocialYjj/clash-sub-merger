@@ -44,6 +44,28 @@ def _write_and_verify(logical_path: str, content: str) -> None:
         raise RuntimeError(f"Stored file verification failed: {logical_path}")
 
 
+def _legacy_config_matches_database(legacy_value: object, database_value: object) -> bool:
+    """Check that legacy persistent values are still present in the database.
+
+    The database may contain fields introduced after the legacy JSON copy was
+    written; those database-only dictionary keys are intentionally preserved.
+    Lists remain exact because silently accepting a changed subscription/user
+    list could hide real data divergence.
+    """
+    if isinstance(legacy_value, dict) and isinstance(database_value, dict):
+        return all(
+            key in database_value and _legacy_config_matches_database(value, database_value[key])
+            for key, value in legacy_value.items()
+            if key != "sessions"
+        )
+    if isinstance(legacy_value, list) and isinstance(database_value, list):
+        return len(legacy_value) == len(database_value) and all(
+            _legacy_config_matches_database(left, right)
+            for left, right in zip(legacy_value, database_value)
+        )
+    return legacy_value == database_value
+
+
 def _migrate_tree(source_root: Path, logical_prefix: str) -> list[Path]:
     migrated: list[Path] = []
     if not source_root.is_dir():
@@ -69,7 +91,7 @@ def _migrate_root_files(data_root: Path) -> list[Path]:
             comparable_file_config.get("auth", {}).pop("sessions", None)
         if isinstance(comparable_db_config, dict):
             comparable_db_config.get("auth", {}).pop("sessions", None)
-        if comparable_db_config != comparable_file_config:
+        if not _legacy_config_matches_database(comparable_file_config, comparable_db_config):
             raise RuntimeError("Database config does not match data/config.json")
         migrated.append(config_path)
 
