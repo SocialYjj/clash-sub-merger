@@ -45,7 +45,7 @@ const SubscriptionProxySection = ({ showToast }) => {
       const res = await request.get(`${API_BASE}/settings/subscription-proxy`, { signal });
       if (signal?.aborted) return;
       setHasStoredProxy(Boolean(res.data.has_proxy_url));
-      setProxyUrl('');
+      setProxyUrl(res.data.proxy_url || '');
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
     } finally {
@@ -62,7 +62,6 @@ const SubscriptionProxySection = ({ showToast }) => {
     try {
       await request.put(`${API_BASE}/settings/subscription-proxy`, { proxy_url: proxyUrl.trim() });
       setHasStoredProxy(true);
-      setProxyUrl('');
       showToast?.('代理设置已保存');
     } catch (err) {
       showToast?.('保存失败', 'error');
@@ -110,10 +109,6 @@ const SubscriptionProxySection = ({ showToast }) => {
         订阅获取代理
       </h2>
 
-      <p className="text-xs text-gray-400 mb-4">
-        获取订阅链接时，先直连，失败后自动通过此代理重试。用于 VPS 无法直接访问订阅源的情况。
-      </p>
-
       {loading ? (
         <div className="text-center py-4 text-gray-500">加载中...</div>
       ) : (
@@ -121,14 +116,14 @@ const SubscriptionProxySection = ({ showToast }) => {
           <div>
             <label className="block text-sm text-gray-400 mb-2">代理地址</label>
             <input
-              type="password"
+              type="text"
               value={proxyUrl}
               onChange={(e) => setProxyUrl(e.target.value)}
-              placeholder={hasStoredProxy ? '已配置；输入新地址可替换' : 'socks5://warp:1080 或 http://proxy:8080'}
+              placeholder="socks5://warp:1080 或 http://proxy:8080"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
             />
             <p className="text-xs text-gray-500 mt-1">
-              {hasStoredProxy ? '已有代理凭据已隐藏；支持 socks5://、http:// 和 https://' : '支持 socks5://、http:// 和 https://'}
+              支持 socks5://、http:// 和 https://
             </p>
           </div>
 

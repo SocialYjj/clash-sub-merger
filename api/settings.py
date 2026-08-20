@@ -395,8 +395,10 @@ def get_subscription_proxy_setting(_: bool = Depends(verify_session)):
     """Get subscription proxy URL"""
     config = load_config()
     settings = config.get('settings', {})
+    proxy_url = settings.get('subscription_proxy_url')
     return {
-        "has_proxy_url": bool(settings.get('subscription_proxy_url')),
+        "proxy_url": proxy_url,
+        "has_proxy_url": bool(proxy_url),
     }
 
 

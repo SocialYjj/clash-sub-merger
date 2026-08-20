@@ -58,7 +58,7 @@ export default function SubscriptionCard({
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        onToggle(sub.id);
+                                        onToggle(sub.id, sub.enabled !== false);
                                     }}
                                     className={`px-2 py-0.5 text-xs rounded font-medium transition-colors ${sub.enabled !== false
                                         ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'

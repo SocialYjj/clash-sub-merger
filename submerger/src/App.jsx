@@ -361,12 +361,26 @@ export default function App() {
     }
   };
 
-  const toggleSubscription = async (id) => {
+  const toggleSubscription = async (id, currentEnabled) => {
+    const optimisticEnabled = currentEnabled !== true;
+    setSubscriptions(prev => prev.map(subscription => (
+      subscription.id === id
+        ? { ...subscription, enabled: optimisticEnabled }
+        : subscription
+    )));
     try {
-      await request.put(`${API_BASE}/subscriptions/${id}/toggle`);
-      await fetchSubscriptions();
+      const response = await request.put(`${API_BASE}/subscriptions/${id}/toggle`);
+      const enabled = response.data?.enabled;
+      if (typeof enabled === 'boolean') {
+        setSubscriptions(prev => prev.map(subscription => (
+          subscription.id === id
+            ? { ...subscription, enabled }
+            : subscription
+        )));
+      }
     } catch (err) {
-      showToast('操作失败', 'error');
+      await fetchSubscriptions();
+      showToast(getErrorMessage(err, '操作失败'), 'error');
     }
   };
 

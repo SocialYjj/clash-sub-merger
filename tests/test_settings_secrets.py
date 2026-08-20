@@ -12,7 +12,7 @@ import api.settings as settings_api
 
 
 class ProxyCredentialBoundaryTests(unittest.TestCase):
-    def test_proxy_setting_reads_never_return_saved_credentials(self):
+    def test_proxy_setting_reads_return_saved_subscription_proxy_url(self):
         secret_ipv6_proxy = "socks5://private-user:private-password@proxy.example:1080"
         secret_subscription_proxy = "http://fetch-user:fetch-password@proxy.example:8080"
         config = {
@@ -30,16 +30,14 @@ class ProxyCredentialBoundaryTests(unittest.TestCase):
             ipv6_response = inspect.unwrap(settings_api.get_ipv6_proxy_setting)(_=True)
             subscription_response = inspect.unwrap(settings_api.get_subscription_proxy_setting)(_=True)
 
-        serialized = repr((ipv6_response, subscription_response))
         self.assertEqual(
             ipv6_response,
             {"enabled": True, "has_proxy_url": True, "ipv6_only": False},
         )
-        self.assertEqual(subscription_response, {"has_proxy_url": True})
-        self.assertNotIn("private-user", serialized)
-        self.assertNotIn("private-password", serialized)
-        self.assertNotIn("fetch-user", serialized)
-        self.assertNotIn("fetch-password", serialized)
+        self.assertEqual(
+            subscription_response,
+            {"proxy_url": secret_subscription_proxy, "has_proxy_url": True},
+        )
 
     def test_subscription_proxy_can_only_be_replaced_or_explicitly_cleared(self):
         config = {"settings": {"subscription_proxy_url": "socks5://old.example:1080"}}

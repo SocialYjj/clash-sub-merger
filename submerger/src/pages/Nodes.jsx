@@ -155,6 +155,32 @@ const getNetworkTypeLabel = (networkType) => ({
   datacenter: '机房 IP',
 }[networkType] || '-');
 
+export const getNodeIpSource = (node) => (
+  node?.ip_profile?.ip_source || node?.ip_source || ''
+);
+
+export const getNodeIpProperty = (node) => (
+  node?.ip_profile?.network_type || node?.network_type || ''
+);
+
+const getNodeCountryFilterValue = (node) => {
+  const country = String(node?.country || '').trim();
+  const normalizedCountry = country.toUpperCase();
+  if (/^[A-Z]{2,3}$/.test(normalizedCountry)) return normalizedCountry;
+  return String(node?.region || country).trim();
+};
+
+const getNodeCountryFilterLabel = (node) => {
+  const country = String(node?.country || '').trim();
+  const normalizedCountry = country.toUpperCase();
+  return String(
+    node?.region
+      || COUNTRY_CHINESE_NAMES[normalizedCountry]
+      || country
+      || '未知地区'
+  ).trim();
+};
+
 const formatRadarRatio = (value) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : '-';
@@ -212,6 +238,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   const [filterSource, setFilterSource] = useState('all');
   const [filterCountry, setFilterCountry] = useState('');
+  const [filterIpSource, setFilterIpSource] = useState('');
+  const [filterIpProperty, setFilterIpProperty] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterLatencyStatus, setFilterLatencyStatus] = useState('all');
   const [sortBy, setSortBy] = useState('name');
@@ -672,6 +700,45 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return options;
   }, [subscriptions, customNodes, proxyChains]);
 
+  const countryOptions = useMemo(() => {
+    const options = new Map();
+    allNodes.forEach(node => {
+      const value = getNodeCountryFilterValue(node);
+      if (!value) return;
+      options.set(value, getNodeCountryFilterLabel(node));
+    });
+    return [
+      { id: '', name: '地区' },
+      ...Array.from(options.entries())
+        .sort(([, labelA], [, labelB]) => labelA.localeCompare(labelB, 'zh-CN'))
+        .map(([id, name]) => ({ id, name })),
+    ];
+  }, [allNodes]);
+
+  const ipSourceOptions = useMemo(() => {
+    const values = new Set(allNodes.map(getNodeIpSource).filter(Boolean));
+    return [
+      { id: '', name: 'IP来源' },
+      ...['native', 'broadcast']
+        .map(value => ({ id: value, name: getIpSourceLabel(value) })),
+      ...Array.from(values)
+        .filter(value => !['native', 'broadcast'].includes(value))
+        .map(value => ({ id: value, name: String(value) })),
+    ];
+  }, [allNodes]);
+
+  const ipPropertyOptions = useMemo(() => {
+    const values = new Set(allNodes.map(getNodeIpProperty).filter(Boolean));
+    return [
+      { id: '', name: 'IP属性' },
+      ...['residential', 'datacenter']
+        .map(value => ({ id: value, name: getNetworkTypeLabel(value) })),
+      ...Array.from(values)
+        .filter(value => !['residential', 'datacenter'].includes(value))
+        .map(value => ({ id: value, name: String(value) })),
+    ];
+  }, [allNodes]);
+
   const compareNodes = useCallback((a, b) => {
     // Custom nodes first
     if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
@@ -763,14 +830,24 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (filterCountry) {
       const countryName = COUNTRY_CHINESE_NAMES[filterCountry] || '';
       result = result.filter(n => {
+        const countryFilterValue = getNodeCountryFilterValue(n);
         const country = String(n.country || '').toUpperCase();
         const region = String(n.region || '');
         const countryDisplay = String(n.country || '');
-        return country === filterCountry
+        return countryFilterValue === filterCountry
+          || country === filterCountry
           || countryDisplay === countryName
           || region === countryName
           || region.toUpperCase() === filterCountry;
       });
+    }
+
+    if (filterIpSource) {
+      result = result.filter(n => getNodeIpSource(n) === filterIpSource);
+    }
+
+    if (filterIpProperty) {
+      result = result.filter(n => getNodeIpProperty(n) === filterIpProperty);
     }
 
     if (filterType !== 'all') {
@@ -793,7 +870,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     result.sort(compareNodes);
 
     return result;
-  }, [allNodes, search, filterSource, filterCountry, filterType, filterLatencyStatus, sortBy, sortOrder]);
+  }, [allNodes, search, filterSource, filterCountry, filterIpSource, filterIpProperty, filterType, filterLatencyStatus, sortBy, sortOrder]);
 
   // 分页节点
   const paginatedNodes = useMemo(() => {
@@ -814,7 +891,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   useEffect(() => {
     setCurrentPage(1);
     setSelectedNodes(new Set());
-  }, [search, filterSource, filterCountry, filterType, filterLatencyStatus, sortBy, sortOrder]);
+  }, [search, filterSource, filterCountry, filterIpSource, filterIpProperty, filterType, filterLatencyStatus, sortBy, sortOrder]);
 
   useEffect(() => {
     const lastPage = Math.max(1, totalPages);
@@ -1621,6 +1698,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setSearch('');
     setFilterSource('all');
     setFilterCountry('');
+    setFilterIpSource('');
+    setFilterIpProperty('');
     setFilterType('all');
     setFilterLatencyStatus('all');
     setSortBy('name');
@@ -2425,6 +2504,36 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         </select>
 
         <select
+          value={filterIpSource}
+          onChange={(e) => setFilterIpSource(e.target.value)}
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+        >
+          {ipSourceOptions.map(option => (
+            <option key={option.id || 'all-ip-source'} value={option.id}>{option.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterIpProperty}
+          onChange={(e) => setFilterIpProperty(e.target.value)}
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+        >
+          {ipPropertyOptions.map(option => (
+            <option key={option.id || 'all-ip-property'} value={option.id}>{option.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterCountry}
+          onChange={(e) => setFilterCountry(e.target.value)}
+          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+        >
+          {countryOptions.map(option => (
+            <option key={option.id || 'all-country'} value={option.id}>{option.name}</option>
+          ))}
+        </select>
+
+        <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
           className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
@@ -2484,7 +2593,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       <div className="flex flex-wrap gap-3 text-sm flex-shrink-0">
         <span className="text-gray-400">
           共 <span className="text-white font-medium">{filteredNodes.length}</span> 个节点
-          {(search || filterSource !== 'all' || filterType !== 'all' || filterLatencyStatus !== 'all') &&
+          {(search || filterSource !== 'all' || filterCountry || filterIpSource || filterIpProperty || filterType !== 'all' || filterLatencyStatus !== 'all') &&
             <span className="text-gray-500"> (筛选自 {allNodes.length} 个)</span>
           }
         </span>

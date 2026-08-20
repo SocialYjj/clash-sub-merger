@@ -248,7 +248,7 @@ GeoIP/Radar/translation caches:
 - `logs/` - Rotating, credential-redacted application logs
 - `refresh_locks/` - OS-backed refresh lock files; file presence alone does not mean a lock is held
 
-Back up the complete `data/` directory before upgrades. Saved subscription-fetch and IPv6-test proxy credentials are write-only: the API reports only whether a value exists, so replace or clear them instead of reading them back. Configuration exports and backups are full migration data containing password hashes and subscription tokens and must be protected as sensitive files; login sessions are neither exported nor restored.
+Back up the complete `data/` directory before upgrades. The subscription-fetch proxy URL is stored as configuration data and shown in the administrator settings; IPv6-test proxy credentials remain write-only and the API reports only whether a value exists. Configuration exports and backups are full migration data containing password hashes and subscription tokens and must be protected as sensitive files; login sessions are neither exported nor restored.
 
 For an existing file-based installation, run `python scripts/migrate_data_to_sqlite.py --data-dir <data-directory>` with the same `DATA_DIR` used by the service, then run `python scripts/migrate_files_to_database.py --delete-source` after selecting the final backend. The latter command verifies every subscription and backup by reading it back from the database before deleting its source file.
 
