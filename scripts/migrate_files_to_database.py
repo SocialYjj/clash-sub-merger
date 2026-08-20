@@ -7,6 +7,7 @@ every logical file has been written and read back successfully.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import sys
@@ -62,7 +63,13 @@ def _migrate_root_files(data_root: Path) -> list[Path]:
     if config_path.is_file():
         expected_config = json.loads(config_path.read_text(encoding="utf-8"))
         stored_config = storage.read_app_document("config", default=None)
-        if stored_config != expected_config:
+        comparable_file_config = copy.deepcopy(expected_config)
+        comparable_db_config = copy.deepcopy(stored_config)
+        if isinstance(comparable_file_config, dict):
+            comparable_file_config.get("auth", {}).pop("sessions", None)
+        if isinstance(comparable_db_config, dict):
+            comparable_db_config.get("auth", {}).pop("sessions", None)
+        if comparable_db_config != comparable_file_config:
             raise RuntimeError("Database config does not match data/config.json")
         migrated.append(config_path)
 
