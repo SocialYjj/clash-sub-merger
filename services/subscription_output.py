@@ -1465,6 +1465,32 @@ def create_subscription_output_router(
                 )
 
             # Clash YAML format output (default)
+            # Traffic summary entries are UI-only pseudo-nodes. They are
+            # intentionally retained in the subscription metadata headers,
+            # but must not be emitted as selectable proxies in a Clash config.
+            traffic_info_name_set = {
+                str(name).strip()
+                for name in traffic_info_names
+                if str(name).strip()
+            }
+            if traffic_info_name_set:
+                proxies = [
+                    proxy
+                    for proxy in proxies
+                    if str(proxy.get('name') or '').strip() not in traffic_info_name_set
+                ]
+                proxy_groups = [
+                    {
+                        **group,
+                        'proxies': [
+                            proxy_name
+                            for proxy_name in group.get('proxies', [])
+                            if str(proxy_name).strip() not in traffic_info_name_set
+                        ],
+                    }
+                    for group in proxy_groups
+                ]
+
             serialized_name = yaml.dump(
                 {'name': sub_name},
                 allow_unicode=True,

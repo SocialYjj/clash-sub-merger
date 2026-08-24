@@ -1137,6 +1137,59 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         )
         self.assertEqual(manual_group["proxies"], [selected_name])
 
+    def test_clash_export_omits_traffic_summary_pseudo_nodes(self):
+        node = {
+            "name": "Real Node",
+            "type": "http",
+            "server": "127.0.0.1",
+            "port": 8080,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            Path(tempdir, "sub_demo.yaml").write_text(
+                yaml.safe_dump({"proxies": [node]}, sort_keys=False),
+                encoding="utf-8",
+            )
+            config = {
+                "auth": {"sub_name": "Aggregated"},
+                "subscriptions": [{
+                    "id": "sub_demo",
+                    "name": "Demo",
+                    "enabled": True,
+                    "upload": 1024,
+                    "download": 2048,
+                    "total": 10240,
+                    "expire": 0,
+                }],
+                "custom_nodes": [],
+                "users": [],
+                "admin_tokens": [{
+                    "id": "admin_1",
+                    "name": "Admin",
+                    "token": "admin-token",
+                    "enabled": True,
+                }],
+                "templates": [],
+                "source_order": ["sub_demo"],
+                "proxy_chains": [],
+            }
+            response = self.make_client(config, yaml_source_dir=tempdir).get(
+                "/sub?token=admin-token&format=clash"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        rendered = yaml.safe_load(response.text)
+        proxy_names = [proxy["name"] for proxy in rendered["proxies"]]
+        self.assertEqual(len(proxy_names), 1)
+        self.assertIn("Demo Real Node", proxy_names[0])
+        self.assertTrue(all(not name.startswith("📊") for name in proxy_names))
+        for group in rendered["proxy-groups"]:
+            self.assertTrue(all(
+                not str(name).startswith("📊")
+                for name in group.get("proxies", [])
+            ))
+        self.assertIn("upload=1024; download=2048; total=10240; expire=0", response.headers["subscription-userinfo"])
+
     def test_stable_chain_pool_reference_survives_template_name_collision(self):
         node_a = {
             "id": "custom_a",
