@@ -775,16 +775,11 @@ def create_subscription_output_router(
                         'proxies': member_names,
                     }
                     group_cfg.update(pool_strategy_config(pool))
-                    proxy_groups[:] = [
-                        group for group in proxy_groups
-                        if group.get('name') != reference.name
-                    ]
-                    proxy_groups.append(group_cfg)
                     if reference.name not in node_pool_group_names:
                         node_pool_group_names.append(reference.name)
+                    insert_pool_group(group_cfg)
                     emitted_chain_reference_names[reference.stable_id] = reference.name
 
-            add_node_pool_groups()
             resolved_chain_references = list_proxy_chain_virtual_references(
                 config,
                 base_node_names=existing_names,
@@ -812,9 +807,12 @@ def create_subscription_output_router(
                     insert_idx = next((i for i, g in enumerate(proxy_groups) if g.get('name') in country_names), len(proxy_groups))
                 else:
                     insert_idx += 1
-                    while insert_idx < len(proxy_groups) and proxy_groups[insert_idx].get('name') in pool_group_names:
+                    generated_pool_names = {*pool_group_names, *node_pool_group_names}
+                    while insert_idx < len(proxy_groups) and proxy_groups[insert_idx].get('name') in generated_pool_names:
                         insert_idx += 1
                 proxy_groups.insert(insert_idx, group_cfg)
+
+            add_node_pool_groups()
 
             def build_chain_entry(
                 chain_display_name: str,
@@ -1301,7 +1299,7 @@ def create_subscription_output_router(
             # Add generated pool groups to GLOBAL after fallback.  Both
             # configured node pools and legacy chain pools are selectable
             # groups; they should not be hidden from the built-in GLOBAL group.
-            all_pool_group_names = [*pool_group_names, *node_pool_group_names]
+            all_pool_group_names = list(dict.fromkeys([*pool_group_names, *node_pool_group_names]))
             if all_pool_group_names:
                 for group in proxy_groups:
                     if group.get('name') == 'GLOBAL':

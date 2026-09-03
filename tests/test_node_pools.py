@@ -99,7 +99,7 @@ class NodePoolOutputTests(unittest.TestCase):
         return TestClient(app)
 
     def test_clash_output_emits_one_pool_group_and_one_listener(self):
-        nodes = [_http_node("Node A", "a.example", 8080), _http_node("Node B", "b.example", 8081)]
+        nodes = [_http_node("🇺🇸 Node A", "a.example", 8080), _http_node("🇺🇸 Node B", "b.example", 8081)]
         node_ids = subscription_node_ids("sub_1", nodes)
 
         with tempfile.TemporaryDirectory() as tempdir:
@@ -147,6 +147,18 @@ class NodePoolOutputTests(unittest.TestCase):
         self.assertEqual(len([listener for listener in rendered["listeners"] if listener["proxy"] == pool_name]), 1)
         self.assertIn(pool_name, groups["GLOBAL"]["proxies"])
         self.assertIn(pool_name, groups["🚀 手动选择"]["proxies"])
+
+        group_names = [group["name"] for group in rendered["proxy-groups"]]
+        pool_position = group_names.index(pool_name)
+        fallback_position = group_names.index("🔯 故障转移")
+        country_positions = [
+            position
+            for position, name in enumerate(group_names)
+            if name in {"🇺🇸 美国", "🔰 其他"}
+        ]
+        self.assertEqual(pool_position, fallback_position + 1)
+        self.assertTrue(country_positions)
+        self.assertLess(pool_position, min(country_positions))
 
     def test_user_pool_allocation_emits_only_pool_members(self):
         nodes = [_http_node("Node A", "a.example", 8080), _http_node("Node B", "b.example", 8081)]
