@@ -35,6 +35,11 @@ from services.proxy_chain_references import (
     CHAIN_NODE_SOURCE,
     list_proxy_chain_virtual_references,
 )
+from services.node_pool_references import (
+    NODE_POOL_SOURCE,
+    list_node_pool_virtual_references,
+    pool_strategy_config,
+)
 from services.region_history import (
     apply_node_test_metadata_to_yaml_content,
     apply_region_history_to_yaml_content,
@@ -213,6 +218,17 @@ def create_subscription_output_router(
         subs = config.get('subscriptions', [])
         enabled_subs = [s for s in subs if s.get('enabled', True)]
         custom_nodes = [node for node in config.get('custom_nodes', []) if is_node_enabled(node)]
+        node_pools = [
+            pool for pool in config.get('node_pools', [])
+            if isinstance(pool, dict) and pool.get('enabled', True)
+        ]
+        node_pool_references = list_node_pool_virtual_references(config)
+        node_pool_reference_by_id = {
+            reference.pool_id: reference
+            for reference in node_pool_references
+        }
+        selected_node_pool_ids: set[str] = set()
+        node_pool_member_keys: set[tuple[str, str]] = set()
 
         # Filter subscriptions based on user allocations
         has_chain_allocations = False
@@ -220,6 +236,27 @@ def create_subscription_output_router(
             # User mode: only show allocated subscriptions
             all_sub_ids = {s['id'] for s in subs}
             allocated_sub_ids = {sid for sid in user_allocations.keys() if sid in all_sub_ids}
+
+            pool_allocations = user_allocations.get(NODE_POOL_SOURCE, [])
+            for pool in node_pools:
+                pool_id = str(pool.get('id') or '')
+                reference = node_pool_reference_by_id.get(pool_id)
+                if reference is None:
+                    continue
+                if is_name_allocated(reference.name, pool_allocations, reference.stable_id):
+                    selected_node_pool_ids.add(pool_id)
+                    for member in pool.get('nodes', []) or []:
+                        if not isinstance(member, dict):
+                            continue
+                        member_source = str(member.get('sub_id') or '')
+                        if member_source in {'custom', 'custom_nodes'}:
+                            member_source = 'custom_nodes'
+                        member_id = str(member.get('node_id') or '')
+                        if member_source and member_id:
+                            node_pool_member_keys.add((member_source, member_id))
+                        if member_source in all_sub_ids:
+                            allocated_sub_ids.add(member_source)
+
             enabled_subs = [s for s in enabled_subs if s['id'] in allocated_sub_ids]
 
             # Filter custom nodes if allocated
@@ -232,14 +269,31 @@ def create_subscription_output_router(
                             continue
                         transformed = NameTransformer.transform_name(node, 'Custom')
                         node_name = transformed.get('name', node.get('name', ''))
-                        if is_name_allocated(node_name, allocated_custom, custom_node_id(node)):
+                        if (
+                            is_name_allocated(node_name, allocated_custom, custom_node_id(node))
+                            or ('custom_nodes', custom_node_id(node)) in node_pool_member_keys
+                        ):
                             filtered.append(node)
                     custom_nodes = filtered
             else:
-                custom_nodes = []  # No custom nodes allocated
+                custom_nodes = [
+                    node for node in custom_nodes
+                    if ('custom_nodes', custom_node_id(node)) in node_pool_member_keys
+                ]
 
-            # Chain allocations allow chain-only subscriptions even without sub/custom allocations
-            has_chain_allocations = bool(user_allocations.get('chain_nodes') or user_allocations.get('chain_pools'))
+            # Virtual allocations allow chain/pool-only subscriptions even
+            # when no source was selected directly.
+            has_chain_allocations = bool(
+                user_allocations.get('chain_nodes')
+                or user_allocations.get('chain_pools')
+                or selected_node_pool_ids
+            )
+        else:
+            selected_node_pool_ids = {
+                str(pool.get('id'))
+                for pool in node_pools
+                if pool.get('id')
+            }
 
         if not enabled_subs and not custom_nodes and not has_chain_allocations:
             raise HTTPException(status_code=404, detail="No enabled subscriptions or custom nodes")
@@ -518,15 +572,19 @@ def create_subscription_output_router(
                 def is_allocated_proxy(proxy: dict) -> bool:
                     source_id = proxy.get('_source_id')
                     allocated_nodes = source_allocations.get(source_id)
-                    if not allocated_nodes:
-                        return False
-                    if allocated_nodes == ['*']:
-                        return True
-                    return is_name_allocated(
-                        proxy.get('name', ''),
-                        allocated_nodes,
+                    if allocated_nodes:
+                        if allocated_nodes == ['*']:
+                            return True
+                        if is_name_allocated(
+                            proxy.get('name', ''),
+                            allocated_nodes,
+                            proxy.get('_allocation_id'),
+                        ):
+                            return True
+                    return (
+                        source_id,
                         proxy.get('_allocation_id'),
-                    )
+                    ) in node_pool_member_keys
 
                 proxies = [p for p in proxies if is_allocated_proxy(p)]
 
@@ -667,6 +725,66 @@ def create_subscription_output_router(
 
             existing_group_names = {g.get('name') for g in proxy_groups if isinstance(g, dict) and g.get('name')}
             existing_names.update(existing_group_names)
+            resolved_node_pool_references = list_node_pool_virtual_references(
+                config,
+                base_node_names=existing_names,
+                reserved_group_names=existing_group_names,
+            )
+            node_pool_group_names: list[str] = []
+            # Pool names are proxy-group names. Reserve them before resolving
+            # chain references so a chain cannot silently shadow a pool.
+            existing_names.update(reference.name for reference in resolved_node_pool_references)
+            existing_group_names.update(reference.name for reference in resolved_node_pool_references)
+
+            def add_node_pool_groups() -> None:
+                """Emit one group per enabled pool and its selected leaf nodes."""
+                for pool in node_pools:
+                    pool_id = str(pool.get('id') or '')
+                    reference = next(
+                        (
+                            item for item in resolved_node_pool_references
+                            if item.pool_id == pool_id
+                        ),
+                        None,
+                    )
+                    if reference is None or not reference.enabled or pool_id not in selected_node_pool_ids:
+                        continue
+                    member_names: list[str] = []
+                    for member in pool.get('nodes', []) or []:
+                        if not isinstance(member, dict):
+                            continue
+                        member_source = str(member.get('sub_id') or '')
+                        if member_source in {'custom', 'custom_nodes'}:
+                            member_source = 'custom_nodes'
+                        member_id = str(member.get('node_id') or '')
+                        for proxy in proxies:
+                            if not isinstance(proxy, dict):
+                                continue
+                            if (
+                                proxy.get('_source_id') == member_source
+                                and proxy.get('_allocation_id') == member_id
+                            ):
+                                name = proxy.get('name')
+                                if name and name not in member_names:
+                                    member_names.append(name)
+                                break
+                    if not member_names:
+                        continue
+                    group_cfg = {
+                        'name': reference.name,
+                        'proxies': member_names,
+                    }
+                    group_cfg.update(pool_strategy_config(pool))
+                    proxy_groups[:] = [
+                        group for group in proxy_groups
+                        if group.get('name') != reference.name
+                    ]
+                    proxy_groups.append(group_cfg)
+                    if reference.name not in node_pool_group_names:
+                        node_pool_group_names.append(reference.name)
+                    emitted_chain_reference_names[reference.stable_id] = reference.name
+
+            add_node_pool_groups()
             resolved_chain_references = list_proxy_chain_virtual_references(
                 config,
                 base_node_names=existing_names,
@@ -1180,8 +1298,11 @@ def create_subscription_output_router(
                     # expand back to every allocated node.
                     group['proxies'] = merged_names or ['DIRECT']
 
-            # Add pool groups to GLOBAL after fallback
-            if pool_group_names:
+            # Add generated pool groups to GLOBAL after fallback.  Both
+            # configured node pools and legacy chain pools are selectable
+            # groups; they should not be hidden from the built-in GLOBAL group.
+            all_pool_group_names = [*pool_group_names, *node_pool_group_names]
+            if all_pool_group_names:
                 for group in proxy_groups:
                     if group.get('name') == 'GLOBAL':
                         proxies_list = list(group.get('proxies', []))
@@ -1189,12 +1310,32 @@ def create_subscription_output_router(
                             insert_idx = proxies_list.index('🔯 故障转移') + 1
                         else:
                             insert_idx = len(proxies_list)
-                        for name in pool_group_names:
+                        for name in all_pool_group_names:
                             if name not in proxies_list:
                                 proxies_list.insert(insert_idx, name)
                                 insert_idx += 1
                         group['proxies'] = proxies_list
                         break
+
+            # The built-in manual group is the normal entry point for direct
+            # node selection.  Include each node pool exactly once while
+            # retaining DIRECT/REJECT and existing chain entries.
+            if node_pool_group_names:
+                for group in proxy_groups:
+                    if group.get('name') != '🚀 手动选择':
+                        continue
+                    current = list(group.get('proxies', []))
+                    insert_idx = 0
+                    if 'REJECT' in current:
+                        insert_idx = current.index('REJECT') + 1
+                    elif 'DIRECT' in current:
+                        insert_idx = current.index('DIRECT') + 1
+                    for name in node_pool_group_names:
+                        if name not in current:
+                            current.insert(insert_idx, name)
+                            insert_idx += 1
+                    group['proxies'] = current
+                    break
 
             # Add chain proxies to the proxies list
             # Position: after custom nodes, before subscription nodes

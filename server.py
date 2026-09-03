@@ -335,6 +335,7 @@ async def startup_event() -> None:
     migrate_subscription_fields()
     migrate_subscription_node_counts()
     migrate_proxy_chain_group_ids()
+    migrate_node_pool_ids()
     migrate_stable_node_references()
     initialize_administrator()
     init_geoip_config()
@@ -897,7 +898,7 @@ def migrate_old_config():
     if has_app_document("config"):
         return  # Already migrated
 
-    config = {'auth': {}, 'subscriptions': [], 'custom_nodes': [], 'source_order': []}
+    config = {'auth': {}, 'subscriptions': [], 'custom_nodes': [], 'source_order': [], 'node_pools': []}
 
     # Migrate auth.json
     auth_file = os.path.join(DATA_DIR, 'auth.json')
@@ -1181,6 +1182,17 @@ def migrate_proxy_chain_group_ids():
         logger.info("Proxy chain group_id migration completed")
         log_migration(f"migrate_proxy_chain_group_ids: added {added} group_id")
 
+
+def migrate_node_pool_ids():
+    """Assign stable IDs to node pools created by an older release."""
+    from services.node_pool_references import ensure_node_pool_ids
+
+    config = load_config()
+    if ensure_node_pool_ids(config):
+        save_config(config)
+        logger.info("Node-pool identity migration completed")
+        log_migration("migrate_node_pool_ids: assigned stable pool IDs")
+
 # Initialize GeoIP config from saved config
 def init_geoip_config():
     """Load GeoIP configuration from saved config on startup"""
@@ -1198,6 +1210,7 @@ def reload_runtime_configuration() -> None:
     """Rebuild derived runtime state after a backup restore or config import."""
     migrate_subscription_fields()
     migrate_proxy_chain_group_ids()
+    migrate_node_pool_ids()
     migrate_stable_node_references()
     init_geoip_config()
     update_custom_nodes_yaml()

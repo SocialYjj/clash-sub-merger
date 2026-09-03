@@ -47,6 +47,7 @@ def get_default_config() -> dict:
         "templates": [],
         "admin_tokens": [],
         "proxy_chains": [],
+        "node_pools": [],
     }
 
 

@@ -13,6 +13,7 @@ from services.group_config_builder import build_group_config_view
 from services.name_transformer import NameTransformer
 from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.node_pool_references import NODE_POOL_SOURCE, list_node_pool_virtual_references
 
 
 logger = get_logger(__name__)
@@ -91,6 +92,12 @@ def _allocation_aliases(config: dict) -> tuple[set[str], dict[str, dict[str, set
         _add_alias(aliases, reference.source_id, reference.stable_id, reference.stable_id)
         _add_alias(aliases, reference.source_id, reference.legacy_id, reference.stable_id)
         _add_alias(aliases, reference.source_id, reference.name, reference.stable_id)
+
+    for reference in list_node_pool_virtual_references(config):
+        known_sources.add(NODE_POOL_SOURCE)
+        _add_alias(aliases, NODE_POOL_SOURCE, reference.stable_id, reference.stable_id)
+        _add_alias(aliases, NODE_POOL_SOURCE, reference.legacy_id, reference.stable_id)
+        _add_alias(aliases, NODE_POOL_SOURCE, reference.name, reference.stable_id)
 
     return known_sources, aliases, unavailable_sources
 

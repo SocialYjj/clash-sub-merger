@@ -10,6 +10,7 @@ from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.node_identity import custom_node_id, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.node_pool_references import NODE_POOL_SOURCE, list_node_pool_virtual_references
 from services.proxy_filter import ProxyFilter
 
 
@@ -109,6 +110,25 @@ def create_user_allocation_router(
                 'nodes': [
                     {'id': reference.stable_id, 'name': reference.name}
                     for reference in chain_pools
+                ]
+            }
+
+        node_pool_references = [
+            reference
+            for reference in list_node_pool_virtual_references(config)
+            if reference.enabled
+        ]
+        if node_pool_references:
+            sources[NODE_POOL_SOURCE] = {
+                'name': '节点池',
+                'nodes': [
+                    {
+                        'id': reference.stable_id,
+                        'name': reference.name,
+                        'member_count': reference.member_count,
+                        'group_strategy': reference.group_strategy,
+                    }
+                    for reference in node_pool_references
                 ]
             }
 

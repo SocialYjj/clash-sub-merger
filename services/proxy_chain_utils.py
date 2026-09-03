@@ -4,7 +4,7 @@ import re
 from collections.abc import MutableSet
 
 
-VALID_GROUP_STRATEGIES = {"url-test", "fallback", "load-balance"}
+VALID_GROUP_STRATEGIES = {"select", "url-test", "fallback", "load-balance"}
 VALID_LOAD_BALANCE_STRATEGIES = {"round-robin", "consistent-hashing", "sticky-sessions"}
 DEFAULT_GROUP_URL = "https://cp.cloudflare.com/generate_204"
 DEFAULT_GROUP_INTERVAL = 300

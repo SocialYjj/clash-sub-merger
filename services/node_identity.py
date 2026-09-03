@@ -142,6 +142,12 @@ def proxy_chain_virtual_node_id(source_id: str, chain_id: str, component_id: str
     return f"virtual_{hashlib.sha256(canonical).hexdigest()}"
 
 
+def node_pool_virtual_node_id(pool_id: str) -> str:
+    """Return a stable allocation identity for a configured node pool."""
+    canonical = f"node_pools\0{pool_id}".encode("utf-8")
+    return f"virtual_{hashlib.sha256(canonical).hexdigest()}"
+
+
 def normalized_node_name(name: str) -> str:
     return NameTransformer.remove_flags(str(name or "")).strip()
 

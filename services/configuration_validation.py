@@ -14,6 +14,13 @@ from services.proxy_chain_references import (
     ensure_proxy_chain_component_ids,
     list_proxy_chain_virtual_references,
 )
+from services.node_pool_references import (
+    NODE_POOL_SOURCE,
+    VALID_NODE_POOL_LOAD_BALANCE_STRATEGIES,
+    VALID_NODE_POOL_STRATEGIES,
+    ensure_node_pool_ids,
+    list_node_pool_virtual_references,
+)
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
@@ -24,6 +31,7 @@ _COLLECTIONS = (
     "templates",
     "admin_tokens",
     "proxy_chains",
+    "node_pools",
     "source_order",
 )
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{8,200}$")
@@ -304,6 +312,71 @@ def _validate_proxy_chains(
                 )
 
 
+def _validate_node_pool_member(
+    reference: dict,
+    *,
+    subscription_ids: set[str],
+    custom_node_ids: set[str],
+) -> None:
+    if not isinstance(reference, dict):
+        raise ValueError("Imported node pool contains an invalid node reference")
+    source_id = str(reference.get("sub_id") or "").strip()
+    if source_id in {"custom", "custom_nodes"}:
+        source_id = "custom_nodes"
+    if source_id != "custom_nodes" and source_id not in subscription_ids:
+        raise ValueError("Imported node pool references an unknown subscription")
+    node_id = str(reference.get("node_id") or "").strip()
+    node_name = str(reference.get("node_name") or "").strip()
+    node_index = reference.get("node_index")
+    if len(source_id) > 200 or len(node_id) > 500 or len(node_name) > 500:
+        raise ValueError("Imported node pool node reference is too long")
+    if not node_id and not node_name and not isinstance(node_index, int):
+        raise ValueError("Imported node pool node reference is incomplete")
+    if source_id == "custom_nodes" and node_id and node_id not in custom_node_ids:
+        # Legacy name/index references are resolved against the restored node
+        # list at the second validation boundary.
+        if not node_name and not isinstance(node_index, int):
+            raise ValueError("Imported node pool references an unknown custom node")
+
+
+def _validate_node_pools(
+    node_pools: list,
+    *,
+    subscription_ids: set[str],
+    custom_node_ids: set[str],
+) -> None:
+    ensure_node_pool_ids({"node_pools": node_pools})
+    _validate_unique_ids(node_pools, "node pools")
+    names: set[str] = set()
+    for pool in node_pools:
+        name = str(pool.get("name") or "").strip()
+        if not name or len(name) > 100:
+            raise ValueError("Imported node pool name is invalid")
+        key = name.casefold()
+        if key in names:
+            raise ValueError("Imported node pools contain duplicate names")
+        names.add(key)
+        if "enabled" in pool and not isinstance(pool.get("enabled"), bool):
+            raise ValueError("Imported node pool enabled flag is invalid")
+        strategy = str(pool.get("group_strategy") or "select").strip()
+        if strategy not in VALID_NODE_POOL_STRATEGIES:
+            raise ValueError("Imported node pool strategy is invalid")
+        pool["group_strategy"] = strategy
+        lb_strategy = str(pool.get("lb_strategy") or "round-robin").strip()
+        if lb_strategy not in VALID_NODE_POOL_LOAD_BALANCE_STRATEGIES:
+            raise ValueError("Imported node pool load-balance strategy is invalid")
+        pool["lb_strategy"] = lb_strategy
+        nodes = pool.get("nodes")
+        if not isinstance(nodes, list) or not 1 <= len(nodes) <= 500:
+            raise ValueError("Imported node pool must contain 1 to 500 nodes")
+        for member in nodes:
+            _validate_node_pool_member(
+                member,
+                subscription_ids=subscription_ids,
+                custom_node_ids=custom_node_ids,
+            )
+
+
 def _chain_allocation_aliases(config: dict) -> dict[str, set[str]]:
     """Return stable and legacy aliases for generated chain components."""
     aliases = {
@@ -321,12 +394,29 @@ def _chain_allocation_aliases(config: dict) -> dict[str, set[str]]:
     return aliases
 
 
+def _node_pool_allocation_aliases(config: dict) -> dict[str, set[str]]:
+    aliases = {NODE_POOL_SOURCE: set()}
+    if "node_pools" not in config:
+        return aliases
+    for reference in list_node_pool_virtual_references(
+        config,
+        base_node_names=set(),
+        reserved_group_names=set(),
+    ):
+        aliases[NODE_POOL_SOURCE].update(
+            {reference.stable_id, reference.legacy_id, reference.name}
+        )
+    return aliases
+
+
 def _validate_allocations(
     users: list,
     known_sources: set[str],
     chain_aliases: dict[str, set[str]],
+    node_pool_aliases: dict[str, set[str]],
 ) -> None:
-    known_sources = known_sources | {"custom_nodes", "chain_nodes", "chain_pools"}
+    known_sources = known_sources | {"custom_nodes", "chain_nodes", "chain_pools", NODE_POOL_SOURCE}
+    all_virtual_aliases = {**chain_aliases, **node_pool_aliases}
     for user in users:
         allocations = user.get("allocations", {})
         if not isinstance(allocations, dict) or len(allocations) > 500:
@@ -340,15 +430,19 @@ def _validate_allocations(
                 raise ValueError("Imported wildcard allocation cannot be mixed with node IDs")
             if any(not isinstance(reference, str) or not reference or len(reference) > 500 for reference in references):
                 raise ValueError("Imported user allocation contains an invalid node reference")
-            if source_id in chain_aliases and references != ["*"]:
+            if source_id in all_virtual_aliases and references != ["*"]:
                 unknown_references = [
                     reference
                     for reference in references
-                    if reference not in chain_aliases[source_id]
+                    if reference not in all_virtual_aliases[source_id]
                 ]
                 if unknown_references:
+                    if source_id in chain_aliases:
+                        raise ValueError(
+                            f"Imported {source_id} allocation references an unknown chain component"
+                        )
                     raise ValueError(
-                        f"Imported {source_id} allocation references an unknown chain component"
+                        f"Imported {source_id} allocation references an unknown node pool component"
                     )
 
 
@@ -387,6 +481,7 @@ def remove_legacy_stale_references(config: dict) -> int:
         "custom_nodes",
         "chain_nodes",
         "chain_pools",
+        NODE_POOL_SOURCE,
     }
     for user in config.get("users", []):
         if not isinstance(user, dict) or not isinstance(user.get("allocations"), dict):
@@ -480,9 +575,19 @@ def validate_and_normalize_configuration(config: dict) -> dict:
         subscription_ids=subscription_ids,
         custom_node_ids=custom_node_ids,
     )
+    _validate_node_pools(
+        normalized.get("node_pools", []),
+        subscription_ids=subscription_ids,
+        custom_node_ids=custom_node_ids,
+    )
     _validate_tokens(normalized, users, admin_tokens)
     _validate_subject_templates(normalized, users, admin_tokens)
-    _validate_allocations(users, subscription_ids, _chain_allocation_aliases(normalized))
+    _validate_allocations(
+        users,
+        subscription_ids,
+        _chain_allocation_aliases(normalized),
+        _node_pool_allocation_aliases(normalized),
+    )
     _validate_source_order(normalized, subscription_ids)
     _validate_group_config([*users, *admin_tokens])
     _validate_port_mappings(normalized)
@@ -561,6 +666,12 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         )
         all_aliases.update({virtual_reference.stable_id, virtual_reference.legacy_id, virtual_reference.name})
 
+    for pool_reference in list_node_pool_virtual_references(config):
+        source_aliases.setdefault(NODE_POOL_SOURCE, set()).update(
+            {pool_reference.stable_id, pool_reference.legacy_id, pool_reference.name}
+        )
+        all_aliases.update({pool_reference.stable_id, pool_reference.legacy_id, pool_reference.name})
+
     def validate_node_reference(reference: object) -> None:
         if not isinstance(reference, dict):
             raise ValueError("Imported node reference is invalid")
@@ -591,6 +702,12 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
                 else:
                     validate_node_reference(reference)
 
+    for pool in config.get("node_pools", []):
+        if not isinstance(pool, dict):
+            continue
+        for member in pool.get("nodes", []) or []:
+            validate_node_reference(member)
+
     for user in [*config.get("users", []), *config.get("admin_tokens", [])]:
         allocations = user.get("allocations", {}) if isinstance(user, dict) else {}
         if isinstance(allocations, dict):
@@ -598,7 +715,7 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
                 if values == ["*"]:
                     continue
                 aliases = source_aliases.get("custom_nodes" if source_id == "custom" else source_id, set())
-                if source_id in {"chain_nodes", "chain_pools"}:
+                if source_id in {"chain_nodes", "chain_pools", NODE_POOL_SOURCE}:
                     if any(value not in aliases for value in values):
                         raise ValueError("Imported allocation references a missing chain component")
                 elif aliases and any(value not in aliases for value in values):

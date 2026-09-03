@@ -526,6 +526,16 @@ def _apply_transition_plan(config: dict, plan: _ReferenceTransitionPlan) -> None
     )
     reconcile_proxy_chain_references(config, previous_chain_config)
 
+    from services.node_pool_references import update_node_pool_members_for_transition
+
+    update_node_pool_members_for_transition(
+        config,
+        source_aliases=set(plan.source_aliases),
+        id_targets=plan.id_targets,
+        name_targets=plan.name_targets,
+        new_id_display_names=plan.new_id_display_names,
+    )
+
     combined_name_targets = dict(plan.name_targets)
     combined_name_targets.update({name: None for name in invalidated_chain_names})
     for user in config.get("users", []):
@@ -650,6 +660,10 @@ def remove_explicit_source_references(
         new_id_display_names={},
     )
     _apply_transition_plan(config, removal_plan)
+
+    from services.node_pool_references import remove_node_pool_members_for_source
+
+    remove_node_pool_members_for_source(config, source_aliases)
 
 
 def subscription_nodes_from_yaml_content(yaml_content: str) -> list[dict]:

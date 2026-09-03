@@ -20,6 +20,7 @@ from .scheduler import router as scheduler_router
 from .geoip import router as geoip_router
 from .translation import router as translation_router
 from .proxy_chains import router as proxy_chains_router
+from .node_pools import router as node_pools_router
 
 # Create main API router
 api_router = APIRouter()
@@ -71,5 +72,8 @@ api_router.include_router(translation_router, prefix="/api/translation", tags=["
 
 # Proxy chains endpoints (/api/proxy-chains/*)
 api_router.include_router(proxy_chains_router, prefix="/api/proxy-chains", tags=["proxy-chains"])
+
+# Configured node-pool endpoints (/api/node-pools/*)
+api_router.include_router(node_pools_router, prefix="/api/node-pools", tags=["node-pools"])
 
 __all__ = ['api_router']

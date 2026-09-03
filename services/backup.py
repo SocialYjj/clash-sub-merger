@@ -768,6 +768,7 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                     'templates',
                     'admin_tokens',
                     'proxy_chains',
+                    'node_pools',
                 )
                 added_subscription_ids: set[str] = set()
                 for collection_name in merge_specs:

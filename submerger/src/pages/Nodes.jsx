@@ -4,6 +4,7 @@ import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square,
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
+import NodePoolModal from '../components/NodePoolModal';
 import { COUNTRY_CHINESE_NAMES } from './countryData';
 
 const API_BASE = '/api';
@@ -294,6 +295,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // Proxy chain state
   const [proxyChains, setProxyChains] = useState([]);
   const [availableChainNodes, setAvailableChainNodes] = useState([]);
+  const [nodePools, setNodePools] = useState([]);
+  const [availableNodePoolNodes, setAvailableNodePoolNodes] = useState([]);
+  const [showNodePoolModal, setShowNodePoolModal] = useState(false);
+  const [editingNodePool, setEditingNodePool] = useState(null);
+  const [savingNodePool, setSavingNodePool] = useState(false);
+  const [deleteNodePoolConfirm, setDeleteNodePoolConfirm] = useState({ open: false, poolId: null });
   const [showChainModal, setShowChainModal] = useState(false);
   const [editingChain, setEditingChain] = useState(null);
   const [chainName, setChainName] = useState('');
@@ -307,6 +314,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const geoipRequestSeq = useRef(0);
   const proxyChainsRequestSeq = useRef(0);
   const chainNodesRequestSeq = useRef(0);
+  const nodePoolsRequestSeq = useRef(0);
 
 
   // Fetch nodes from subscription files
@@ -326,6 +334,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setAvailableChainNodes([]);
     fetchProxyChains(controller.signal);
     fetchAvailableChainNodes(controller.signal);
+    fetchNodePools(controller.signal);
+    fetchAvailableNodePoolNodes(controller.signal);
     fetchGeoipApis(controller.signal);
     return () => controller.abort();
   }, [subscriptions, customNodes]);
@@ -612,6 +622,34 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
     });
 
+    // Configured node pools are virtual proxy-group entries.  They are shown
+    // in the same table for management and port binding, but are not leaf
+    // nodes and therefore do not participate in single-node diagnostics.
+    nodePools?.forEach((pool, poolIdx) => {
+      if (!pool || !pool.id) return;
+      const displayName = pool.display_name || pool.name || `节点池 ${poolIdx + 1}`;
+      nodes.push({
+        name: displayName,
+        display_name: displayName,
+        final_name: displayName,
+        type: pool.group_strategy || 'select',
+        source: '节点池',
+        sourceId: 'node_pools',
+        sourceType: 'node_pool',
+        poolId: pool.id,
+        stable_id: pool.stable_id,
+        nodeKey: `node_pool|${pool.id}`,
+        idx: poolIdx,
+        enabled: pool.enabled !== false,
+        member_count: pool.member_count ?? (Array.isArray(pool.nodes) ? pool.nodes.length : 0),
+        region: `成员 ${pool.member_count ?? (Array.isArray(pool.nodes) ? pool.nodes.length : 0)} 个`,
+        country: '',
+        city: '',
+        server: '',
+        flag: '',
+      });
+    });
+
     // Add proxy chain nodes
     proxyChains?.forEach((chain, chainIdx) => {
       const nodeKey = `chain-${chain.id}`;
@@ -680,7 +718,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     });
 
     return nodes;
-  }, [subNodes, customNodes, proxyChains, geoipData, nodeTestResults]);
+  }, [subNodes, customNodes, nodePools, proxyChains, geoipData, nodeTestResults]);
 
   // Get unique types and sources
   const nodeTypes = useMemo(() => {
@@ -701,8 +739,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (proxyChains && proxyChains.length > 0) {
       options.push({ id: 'chain', name: '链式代理' });
     }
+    if (nodePools && nodePools.length > 0) {
+      options.push({ id: 'node_pools', name: '节点池' });
+    }
     return options;
-  }, [subscriptions, customNodes, proxyChains]);
+  }, [subscriptions, customNodes, proxyChains, nodePools]);
 
   const countryOptions = useMemo(() => {
     const options = new Map();
@@ -750,9 +791,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
     if (a.sourceType !== 'custom' && b.sourceType === 'custom') return 1;
 
-    // Chain nodes second
-    if (a.sourceType === 'chain' && b.sourceType !== 'chain' && b.sourceType !== 'custom') return -1;
-    if (a.sourceType !== 'chain' && a.sourceType !== 'custom' && b.sourceType === 'chain') return 1;
+    // Chain and pool entries are virtual nodes and stay before subscription
+    // nodes, while preserving their configured order within each source.
+    if (a.sourceType === 'chain' && !['chain', 'custom'].includes(b.sourceType)) return -1;
+    if (b.sourceType === 'chain' && !['chain', 'custom'].includes(a.sourceType)) return 1;
+    if (a.sourceType === 'node_pool' && b.sourceType === 'subscription') return -1;
+    if (a.sourceType === 'subscription' && b.sourceType === 'node_pool') return 1;
 
     // If both are custom, keep original order (by idx)
     if (a.sourceType === 'custom' && b.sourceType === 'custom') {
@@ -761,6 +805,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     // If both are chain, keep original order (by idx)
     if (a.sourceType === 'chain' && b.sourceType === 'chain') {
+      return a.idx - b.idx;
+    }
+
+    if (a.sourceType === 'node_pool' && b.sourceType === 'node_pool') {
       return a.idx - b.idx;
     }
 
@@ -929,8 +977,126 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return colors[type?.toLowerCase()] || 'bg-gray-500/20 text-gray-400';
   };
 
+  const fetchNodePools = async (signal) => {
+    const requestId = ++nodePoolsRequestSeq.current;
+    try {
+      const res = await request.get(`${API_BASE}/node-pools`, { signal });
+      if (signal?.aborted || requestId !== nodePoolsRequestSeq.current) return;
+      setNodePools(res.data.pools || []);
+      return true;
+    } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
+      console.error('Failed to fetch node pools', err);
+      return false;
+    }
+  };
+
+  const fetchAvailableNodePoolNodes = async (signal) => {
+    try {
+      const res = await request.get(`${API_BASE}/node-pools/available-nodes`, { signal });
+      if (signal?.aborted) return;
+      setAvailableNodePoolNodes(res.data.nodes || []);
+      return true;
+    } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
+      console.error('Failed to fetch node pool nodes', err);
+      return false;
+    }
+  };
+
+  const openNodePoolModal = (pool = null) => {
+    setEditingNodePool(pool);
+    setShowNodePoolModal(true);
+  };
+
+  const closeNodePoolModal = () => {
+    if (savingNodePool) return;
+    setShowNodePoolModal(false);
+    setEditingNodePool(null);
+  };
+
+  const saveNodePool = async (payload) => {
+    setSavingNodePool(true);
+    try {
+      if (editingNodePool?.id) {
+        const response = await request.put(`${API_BASE}/node-pools/${editingNodePool.id}`, payload);
+        setNodePools((current) => current.map((pool) => (
+          pool.id === editingNodePool.id ? { ...pool, ...(response.data?.pool || payload) } : pool
+        )));
+        showToast?.('节点池已更新', 'success');
+      } else {
+        const response = await request.post(`${API_BASE}/node-pools`, payload);
+        if (response.data?.pool) setNodePools((current) => [...current, response.data.pool]);
+        showToast?.('节点池已创建', 'success');
+      }
+      setShowNodePoolModal(false);
+      setEditingNodePool(null);
+      await fetchNodePools();
+      await fetchAvailableNodePoolNodes();
+      await fetchAllPortMappings();
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '节点池保存失败', 'error');
+    } finally {
+      setSavingNodePool(false);
+    }
+  };
+
+  const toggleNodePool = async (poolId) => {
+    try {
+      const response = await request.put(`${API_BASE}/node-pools/${poolId}/toggle`);
+      setNodePools((current) => current.map((pool) => (
+        pool.id === poolId ? { ...pool, enabled: response.data?.enabled !== false } : pool
+      )));
+      await fetchAllPortMappings();
+      showToast?.(response.data?.enabled ? '节点池已启用' : '节点池已禁用', 'success');
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '节点池开关失败', 'error');
+    }
+  };
+
+  const deleteNodePool = async (poolId) => {
+    try {
+      await request.delete(`${API_BASE}/node-pools/${poolId}`);
+      setNodePools((current) => current.filter((pool) => pool.id !== poolId));
+      setSelectedNodes((current) => {
+        const next = new Set(current);
+        next.delete(`node_pool|${poolId}`);
+        return next;
+      });
+      await fetchAllPortMappings();
+      showToast?.('节点池已删除', 'success');
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '节点池删除失败', 'error');
+    } finally {
+      setDeleteNodePoolConfirm({ open: false, poolId: null });
+    }
+  };
+
+  const moveNodePool = async (poolId, direction) => {
+    const currentIndex = nodePools.findIndex((pool) => pool.id === poolId);
+    if (currentIndex < 0) return;
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= nodePools.length) return;
+    const order = nodePools.map((pool) => pool.id);
+    [order[currentIndex], order[targetIndex]] = [order[targetIndex], order[currentIndex]];
+    try {
+      await request.put(`${API_BASE}/node-pools/reorder`, { order });
+      await fetchNodePools();
+      showToast?.('节点池顺序已调整', 'success');
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || '节点池排序失败', 'error');
+    }
+  };
+
   const getProtocolDisplayLabel = (type) => {
     const normalizedType = String(type || '').toLowerCase();
+    const poolStrategyLabels = {
+      select: '手动',
+      'url-test': '测速',
+      fallback: '故障转移',
+      'load-balance': '负载均衡',
+    };
+    if (poolStrategyLabels[normalizedType]) return poolStrategyLabels[normalizedType];
     return normalizedType === 'hysteria2' ? 'HY2' : normalizedType.toUpperCase() || '-';
   };
 
@@ -1451,8 +1617,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Selection handlers
   const toggleSelectAll = () => {
-    const visibleKeys = new Set(filteredNodes.map(n => n.nodeKey));
-    const allVisibleSelected = filteredNodes.length > 0 && filteredNodes.every(n => selectedNodes.has(n.nodeKey));
+    const selectableNodes = filteredNodes.filter(n => n.sourceType !== 'node_pool');
+    const visibleKeys = new Set(selectableNodes.map(n => n.nodeKey));
+    const allVisibleSelected = selectableNodes.length > 0 && selectableNodes.every(n => selectedNodes.has(n.nodeKey));
     setSelectedNodes(prev => {
       const next = new Set(prev);
       if (allVisibleSelected) {
@@ -1465,6 +1632,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   };
 
   const toggleSelectNode = (nodeKey) => {
+    const node = allNodes.find(item => item.nodeKey === nodeKey);
+    if (node?.sourceType === 'node_pool') return;
     const newSelected = new Set(selectedNodes);
     if (newSelected.has(nodeKey)) {
       newSelected.delete(nodeKey);
@@ -1690,8 +1859,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const subRefreshOk = await fetchAllSubNodes();
       const chainsRefreshOk = await fetchProxyChains();
       const chainNodesRefreshOk = await fetchAvailableChainNodes();
+      const poolsRefreshOk = await fetchNodePools();
+      const poolNodesRefreshOk = await fetchAvailableNodePoolNodes();
       const customRefreshOk = await onRefreshCustomNodes?.();
-      if (!subRefreshOk || chainsRefreshOk === false || chainNodesRefreshOk === false || customRefreshOk === false) {
+      if (
+        !subRefreshOk
+        || chainsRefreshOk === false
+        || chainNodesRefreshOk === false
+        || poolsRefreshOk === false
+        || poolNodesRefreshOk === false
+        || customRefreshOk === false
+      ) {
         throw new Error('部分节点来源刷新失败');
       }
       showToast?.('节点列表已刷新');
@@ -2384,10 +2562,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 </button>
                 <button
                   onClick={() => { setShowAddDropdown(false); openChainModal(); }}
-                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-b-lg transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 transition-colors flex items-center gap-2"
                 >
                   <Link2 size={16} />
                   链式代理
+                </button>
+                <button
+                  onClick={() => { setShowAddDropdown(false); openNodePoolModal(); }}
+                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-b-lg transition-colors flex items-center gap-2"
+                >
+                  <Settings size={16} />
+                  节点池
                 </button>
               </div>
             )}
@@ -2658,7 +2843,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                       className="flex items-center hover:text-white transition-colors"
                       title="全选/取消全选"
                     >
-                      {selectedNodes.size === filteredNodes.length && filteredNodes.length > 0 ? (
+                      {selectedNodes.size === filteredNodes.filter((node) => node.sourceType !== 'node_pool').length
+                        && filteredNodes.some((node) => node.sourceType !== 'node_pool') ? (
                         <CheckSquare size={16} className="text-blue-400" />
                       ) : (
                         <Square size={16} />
@@ -2685,6 +2871,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     const activeTestType = testingByNode[node.nodeKey];
                     const isTesting = Boolean(activeTestType);
                     const isSelected = selectedNodes.has(node.nodeKey);
+	                    const isNodePool = node.sourceType === 'node_pool';
 	                    const testResult = nodeTestResults[node.nodeKey];
 	                    const displayedLatency = testResult?.latency !== undefined ? testResult.latency : node.latency;
 	                    const displayedError = testResult?.error !== undefined ? testResult.error : node.testError;
@@ -2714,7 +2901,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         <td className="px-1 py-1.5">
                           <button
                             onClick={() => toggleSelectNode(node.nodeKey)}
-                            className="text-gray-400 hover:text-white transition-colors"
+                            disabled={isNodePool}
+                            className={`text-gray-400 transition-colors ${isNodePool ? 'opacity-30 cursor-not-allowed' : 'hover:text-white'}`}
+                            title={isNodePool ? '节点池不参与单节点检测' : '选择节点'}
                           >
                             {isSelected ? (
                               <CheckSquare size={18} className="text-blue-400" />
@@ -2747,7 +2936,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            {node.sourceType === 'chain' && (
+                            {(node.sourceType === 'chain' || isNodePool) && (
                               <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-blue-500/20 text-blue-400 text-xs font-bold">
                                 {node.idx + 1}
                               </span>
@@ -2768,7 +2957,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 配置不兼容
                               </span>
                             )}
-                            {node.sourceType !== 'chain' && (
+                            {node.sourceType === 'subscription' || node.sourceType === 'custom' ? (
                               <button
                                 onClick={() => toggleNodeEnabled(node)}
                                 className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
@@ -2780,12 +2969,25 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                   <ToggleRight size={16} className="text-green-400" />
                                 )}
                               </button>
-                            )}
+                            ) : null}
                             {node.sourceType === 'chain' && (
                               <button
                                 onClick={() => toggleChain(node.chainId)}
                                 className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
                                 title={node.enabled ? '点击禁用' : '点击启用'}
+                              >
+                                {node.enabled ? (
+                                  <ToggleRight size={16} className="text-green-400" />
+                                ) : (
+                                  <ToggleLeft size={16} />
+                                )}
+                              </button>
+                            )}
+                            {isNodePool && (
+                              <button
+                                onClick={() => toggleNodePool(node.poolId)}
+                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
+                                title={node.enabled ? '点击禁用节点池' : '点击启用节点池'}
                               >
                                 {node.enabled ? (
                                   <ToggleRight size={16} className="text-green-400" />
@@ -2807,7 +3009,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </div>
                         </td>
                         <td className="px-2 py-1.5">
-                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : 'text-gray-400'}`}>
+                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : node.sourceType === 'node_pool' ? 'text-emerald-400' : 'text-gray-400'}`}>
                             {node.source}
                           </span>
                         </td>
@@ -2818,7 +3020,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-2 py-1.5 text-gray-400 text-sm">
                           <span className="block w-full max-w-[180px] truncate" title={node.city ? `${node.region} ${node.city}` : node.region}>
-                            {node.region || getMetadataStatusLabel(ipStatus)}{node.city ? ` ${node.city}` : ''}
+                            {isNodePool ? node.region : `${node.region || getMetadataStatusLabel(ipStatus)}${node.city ? ` ${node.city}` : ''}`}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-gray-400 text-sm">
@@ -2826,26 +3028,28 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             className={`truncate inline-block max-w-[130px] font-mono text-xs ${displayedExitIp ? '' : getMetadataStatusClass(ipStatus)}`}
                             title={displayedExitIp || ''}
                           >
-                            {displayedExitIp || getMetadataStatusLabel(ipStatus)}
+                            {isNodePool ? '-' : (displayedExitIp || getMetadataStatusLabel(ipStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={hasIpSource ? 'text-cyan-300' : getMetadataStatusClass(ippureStatus)}>
-                            {hasIpSource ? getIpSourceLabel(ipProfile.ip_source) : getMetadataStatusLabel(ippureStatus)}
+                          <span className={isNodePool ? 'text-gray-500' : hasIpSource ? 'text-cyan-300' : getMetadataStatusClass(ippureStatus)}>
+                            {isNodePool ? '-' : (hasIpSource ? getIpSourceLabel(ipProfile.ip_source) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={hasNetworkType ? 'text-purple-300' : getMetadataStatusClass(ippureStatus)}>
-                            {hasNetworkType ? getNetworkTypeLabel(ipProfile.network_type) : getMetadataStatusLabel(ippureStatus)}
+                          <span className={isNodePool ? 'text-gray-500' : hasNetworkType ? 'text-purple-300' : getMetadataStatusClass(ippureStatus)}>
+                            {isNodePool ? '-' : (hasNetworkType ? getNetworkTypeLabel(ipProfile.network_type) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={hasFraudScore ? 'text-amber-300 font-mono' : getMetadataStatusClass(ippureStatus)}>
-                            {hasFraudScore ? formatIppureScore(ipProfile.fraud_score) : getMetadataStatusLabel(ippureStatus)}
+                          <span className={isNodePool ? 'text-gray-500' : hasFraudScore ? 'text-amber-300 font-mono' : getMetadataStatusClass(ippureStatus)}>
+                            {isNodePool ? '-' : (hasFraudScore ? formatIppureScore(ipProfile.fraud_score) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs">
-                          {hasRadarRatio ? (
+                          {isNodePool ? (
+                            <span className="text-gray-500">-</span>
+                          ) : hasRadarRatio ? (
                             <div className="flex flex-col gap-0.5 whitespace-nowrap">
                               {ipProfile?.radar_human_ratio !== undefined && (
                                 <span className="text-green-400">
@@ -2866,7 +3070,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-2 whitespace-nowrap">
-                            {displayedLatency !== undefined && displayedLatency !== null && displayedLatency > 0 && !displayedError ? (
+                            {isNodePool ? (
+                              <span className="text-gray-500">-</span>
+                            ) : displayedLatency !== undefined && displayedLatency !== null && displayedLatency > 0 && !displayedError ? (
                               <span className={`font-mono text-sm ${getLatencyColor(displayedLatency)}`}>
                                 {displayedLatency}ms
                               </span>
@@ -2879,7 +3085,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-2 whitespace-nowrap">
-	                            {displayedSpeedError ? (
+	                            {isNodePool ? (
+	                              <span className="text-gray-500">-</span>
+	                            ) : displayedSpeedError ? (
 	                              <span className="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">
 	                                失败
 	                              </span>
@@ -2897,7 +3105,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-0">
                             <button
-                              onClick={() => node.sourceType === 'chain' ? openChainModal(proxyChains.find(c => c.id === node.chainId)) : setEditingNode(node)}
+                              onClick={() => {
+                                if (node.sourceType === 'chain') {
+                                  openChainModal(proxyChains.find(c => c.id === node.chainId));
+                                } else if (isNodePool) {
+                                  openNodePoolModal(nodePools.find(pool => pool.id === node.poolId));
+                                } else {
+                                  setEditingNode(node);
+                                }
+                              }}
                               className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
                               title="查看/编辑"
                             >
@@ -2906,7 +3122,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* IP/region test button */}
                             <button
                               onClick={() => testNode(node, true)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
                               className="p-0.5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测 IP/地区'}
                             >
@@ -2919,7 +3135,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* IPPure attribute test button */}
                             <button
                               onClick={() => testNodeIppure(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
                               className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测 IP 来源/属性/IPPure'}
                             >
@@ -2932,7 +3148,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Radar human/bot ratio test button */}
                             <button
                               onClick={() => testNodeRadar(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
                               className="p-0.5 text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测人机流量比'}
                             >
@@ -2945,7 +3161,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Latency test button */}
                             <button
                               onClick={() => testNode(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
                               className="p-0.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '测试延迟'}
                             >
@@ -2958,7 +3174,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {/* Speed test button */}
                             <button
                               onClick={() => testNodeSpeed(node)}
-                              disabled={isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
+                              disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
                               className="p-0.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '测试速度'}
                             >
@@ -3021,6 +3237,31 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 </button>
                                 <button
                                   onClick={() => setDeleteChainConfirm({ open: true, chainId: node.chainId })}
+                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  title="删除"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                            {isNodePool && (
+                              <>
+                                <button
+                                  onClick={() => moveNodePool(node.poolId, 'up')}
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  title="上移"
+                                >
+                                  <ChevronUp size={14} />
+                                </button>
+                                <button
+                                  onClick={() => moveNodePool(node.poolId, 'down')}
+                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  title="下移"
+                                >
+                                  <ChevronDown size={14} />
+                                </button>
+                                <button
+                                  onClick={() => setDeleteNodePoolConfirm({ open: true, poolId: node.poolId })}
                                   className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
@@ -3250,6 +3491,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             await onRefreshCustomNodes?.();
           }}
           showToast={showToast}
+        />
+      )}
+
+      {showNodePoolModal && (
+        <NodePoolModal
+          pool={editingNodePool}
+          availableNodes={availableNodePoolNodes}
+          saving={savingNodePool}
+          onClose={closeNodePoolModal}
+          onSave={saveNodePool}
         />
       )}
 
@@ -3673,6 +3924,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         onConfirm={() => deleteChain(deleteChainConfirm.chainId)}
         title="删除链式代理"
         message="确定要删除这个链式代理吗？此操作不可撤销。"
+        type="danger"
+      />
+      <ConfirmModal
+        isOpen={deleteNodePoolConfirm.open}
+        onClose={() => setDeleteNodePoolConfirm({ open: false, poolId: null })}
+        onConfirm={() => deleteNodePool(deleteNodePoolConfirm.poolId)}
+        title="删除节点池"
+        message="确定要删除这个节点池吗？已绑定的端口映射也会失效。"
         type="danger"
       />
     </div>

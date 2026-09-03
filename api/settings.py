@@ -18,6 +18,7 @@ from helpers import load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.node_pool_references import list_node_pool_virtual_references
 from logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -139,14 +140,35 @@ def get_port_mappings(_: bool = Depends(verify_session)):
         if reference.enabled
     }
     available_nodes.update(chain_reference_names.values())
+    node_pool_references = list_node_pool_virtual_references(
+        config,
+        base_node_names=available_nodes,
+    )
+    node_pool_names = {
+        reference.stable_id: reference.name
+        for reference in node_pool_references
+    }
+    node_pool_active_names = {
+        reference.name
+        for reference in node_pool_references
+        if reference.enabled
+    }
+    available_nodes.update(node_pool_active_names)
     # Convert to list format for frontend with active status
     result = []
     for stored_reference, port in mappings.items():
-        node_name = chain_reference_names.get(stored_reference, stored_reference)
+        node_name = chain_reference_names.get(
+            stored_reference,
+            node_pool_names.get(stored_reference, stored_reference),
+        )
         result.append({
             "final_name": node_name,
             "port": port,
-            "active": stored_reference in chain_reference_names or node_name in available_nodes,
+            "active": (
+                stored_reference in chain_reference_names
+                or stored_reference in node_pool_names and node_name in node_pool_active_names
+                or node_name in available_nodes
+            ),
         })
     
     return {"mappings": result, "count": len(result)}
@@ -166,9 +188,19 @@ def create_port_mapping(data: PortMappingCreate, _: bool = Depends(verify_sessio
             ),
             None,
         )
+        node_pool_reference = next(
+            (
+                reference
+                for reference in list_node_pool_virtual_references(config)
+                if reference.name == data.final_name
+            ),
+            None,
+        )
         stored_reference = (
             chain_reference.stable_id
             if chain_reference is not None
+            else node_pool_reference.stable_id
+            if node_pool_reference is not None
             else data.final_name
         )
 

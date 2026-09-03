@@ -13,6 +13,7 @@ from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
 from services.node_identity import custom_node_id, is_node_allocated, subscription_node_ids
 from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.node_pool_references import list_node_pool_virtual_references
 
 
 logger = get_logger(__name__)
@@ -109,6 +110,18 @@ def _collect_available_nodes(
                 _append_unique(node_names, seen_names, final_name)
 
     for reference in list_proxy_chain_virtual_references(
+        config,
+        base_node_names=seen_names,
+        reserved_group_names=reserved_group_names,
+    ):
+        if not reference.enabled:
+            continue
+        allocation = ["*"] if allocations is None else allocations.get(reference.source_id, [])
+        if is_node_allocated(reference.name, allocation, reference.stable_id):
+            _append_unique(node_names, seen_names, reference.name)
+            chain_reference_ids[reference.name] = reference.stable_id
+
+    for reference in list_node_pool_virtual_references(
         config,
         base_node_names=seen_names,
         reserved_group_names=reserved_group_names,
