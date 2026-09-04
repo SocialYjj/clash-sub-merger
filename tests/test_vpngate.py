@@ -239,6 +239,92 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         self.assertIn("dialer-proxy", landing_proxy)
         self.assertTrue(landing_proxy["dialer-proxy"])
 
+    def test_clash_output_expands_dynamic_vpngate_landing_pool(self):
+        front = {
+            "id": "front-1",
+            "name": "Front",
+            "type": "http",
+            "server": "front.example",
+            "port": 8080,
+        }
+        landing = parse_vpngate_record(_record())
+        resolved_nodes = {
+            ("custom", front["id"]): front,
+            ("vpngate", landing["id"]): landing,
+        }
+
+        def resolve_node(sub_id, _node_index, _node_name, *, node_id=None):
+            node = resolved_nodes.get((sub_id, node_id))
+            return copy.deepcopy(node) if node else None
+
+        config = {
+            "auth": {"sub_token": "admin-token"},
+            "subscriptions": [],
+            "custom_nodes": [front],
+            "users": [],
+            "admin_tokens": [],
+            "templates": [],
+            "source_order": ["custom_nodes"],
+            "proxy_chains": [{
+                "id": "chain-vpngate-pool",
+                "name": "VPN Gate pool chain",
+                "enabled": True,
+                "rows": [{
+                    "row_id": "row-1",
+                    "nodes": [
+                        {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+                        {
+                            "type": "group",
+                            "group_id": "pool-1",
+                            "group_name": "VPN Gate 动态池",
+                            "group_source": "vpngate",
+                            "group_strategy": "url-test",
+                        },
+                    ],
+                }],
+            }],
+        }
+
+        app = FastAPI()
+
+        def load_config():
+            return copy.deepcopy(config)
+
+        def update_config(mutator):
+            return mutator(config)
+
+        app.include_router(create_subscription_output_router(
+            yaml_source_dir="/tmp/vpngate-pool-chain-tests",
+            output_file="/tmp/vpngate-pool-chain-tests/config.yaml",
+            load_config=load_config,
+            update_config=update_config,
+            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
+            find_node_by_reference=resolve_node,
+            is_name_allocated=lambda *args, **kwargs: False,
+            filter_underscore_fields=strip_node_metadata,
+            extract_country_from_name=lambda *args, **kwargs: None,
+            split_template=lambda content: (content, ""),
+            logger=logging.getLogger("test.vpngate.dynamic-pool"),
+        ))
+
+        with patch("services.subscription_output.list_vpngate_nodes", return_value=[landing]):
+            with tempfile.TemporaryDirectory():
+                response = TestClient(app).get("/sub?token=admin-token&format=clash")
+
+        self.assertEqual(response.status_code, 200)
+        rendered = yaml.safe_load(response.text)
+        pool = next(
+            group for group in rendered["proxy-groups"]
+            if group.get("name", "").startswith("🔀 VPN Gate 动态池")
+        )
+        self.assertTrue(pool["proxies"])
+        generated_proxy = next(
+            proxy for proxy in rendered["proxies"]
+            if proxy.get("type") == "openvpn"
+        )
+        self.assertEqual(generated_proxy["server"], "198.51.100.10")
+        self.assertTrue(generated_proxy.get("dialer-proxy"))
+
 
 if __name__ == "__main__":
     unittest.main()

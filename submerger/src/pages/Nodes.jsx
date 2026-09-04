@@ -295,6 +295,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   // Proxy chain state
   const [proxyChains, setProxyChains] = useState([]);
   const [availableChainNodes, setAvailableChainNodes] = useState([]);
+  const [vpngatePool, setVpngatePool] = useState({
+    pool_name: 'VPN Gate 动态池',
+    active_node_count: 0,
+    stale_node_count: 0,
+    available: false,
+  });
   const [nodePools, setNodePools] = useState([]);
   const [availableNodePoolNodes, setAvailableNodePoolNodes] = useState([]);
   const [showNodePoolModal, setShowNodePoolModal] = useState(false);
@@ -392,6 +398,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         };
       });
       setAvailableChainNodes(nodes);
+      setVpngatePool(res.data.vpngate_pool || {
+        pool_name: 'VPN Gate 动态池',
+        active_node_count: 0,
+        stale_node_count: 0,
+        available: false,
+      });
       return true;
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
@@ -1936,6 +1948,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const resolveGroupId = (groupId, rowIndex, colIndex) => groupId || `${chain.id || 'chain'}_${rowIndex}_${colIndex}`;
       const rows = chain.rows.map((row, rowIndex) =>
         row.nodes.map((node, colIndex) => {
+          if (node?.type !== 'group' && node?.sub_id === 'vpngate') {
+            return {
+              type: 'group',
+              group_id: resolveGroupId(null, rowIndex, colIndex),
+              group_name: 'VPN Gate 动态池',
+              group_source: 'vpngate',
+              group_strategy: 'url-test',
+              lb_strategy: 'round-robin',
+              group_nodes: [],
+            };
+          }
           if (node?.type === 'group') {
             const isLast = colIndex === row.nodes.length - 1;
             const defaultLabel = isLast ? '落地池' : '中转池';
@@ -1943,9 +1966,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               type: 'group',
               group_id: resolveGroupId(node.group_id, rowIndex, colIndex),
               group_name: node.group_name || defaultLabel,
+              group_source: node.group_source || 'nodes',
               group_strategy: node.group_strategy || 'load-balance',
               lb_strategy: node.lb_strategy || 'round-robin',
-              group_nodes: (node.group_nodes || []).map(n => {
+              group_nodes: (node.group_source === 'vpngate' ? [] : (node.group_nodes || [])).map(n => {
                 const resolved = resolveStoredNode(n.sub_id, n.node_id, n.node_name, n.node_index);
                 return {
                   type: 'node',
@@ -2093,16 +2117,19 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const updateChainCellType = (rowIndex, colIndex, cellType) => {
     setChainRows(prev => {
       const newRows = [...prev];
-      if (cellType === 'group') {
+      if (cellType === 'group' || cellType === 'vpngate') {
         const isLast = colIndex === newRows[rowIndex].length - 1;
-        const defaultName = chainName.trim()
-          ? `${chainName.trim()} ${isLast ? '落地池' : '中转池'}`
-          : (isLast ? '落地池' : '中转池');
+        const defaultName = cellType === 'vpngate'
+          ? 'VPN Gate 动态池'
+          : (chainName.trim()
+            ? `${chainName.trim()} ${isLast ? '落地池' : '中转池'}`
+            : (isLast ? '落地池' : '中转池'));
         newRows[rowIndex][colIndex] = {
           type: 'group',
           group_id: generateGroupId(),
           group_name: defaultName,
-          group_strategy: 'load-balance',
+          group_source: cellType === 'vpngate' ? 'vpngate' : 'nodes',
+          group_strategy: cellType === 'vpngate' ? 'url-test' : 'load-balance',
           lb_strategy: 'round-robin',
           group_nodes: []
         };
@@ -2229,13 +2256,20 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             showToast?.('请填写组名称', 'error');
             return;
           }
-          if (!node.group_nodes || node.group_nodes.length === 0) {
-            showToast?.('组内至少选择一个节点', 'error');
-            return;
-          }
-          if (node.group_nodes.some(member => !member?.sub_id || !member?.node_id)) {
-            showToast?.('组内存在已失效节点，请重新选择', 'error');
-            return;
+          if (node.group_source === 'vpngate') {
+            if (!vpngatePool.available) {
+              showToast?.('VPN Gate 动态池当前没有可用节点，请先在系统设置中更新节点源', 'error');
+              return;
+            }
+          } else {
+            if (!node.group_nodes || node.group_nodes.length === 0) {
+              showToast?.('组内至少选择一个节点', 'error');
+              return;
+            }
+            if (node.group_nodes.some(member => !member?.sub_id || !member?.node_id)) {
+              showToast?.('组内存在已失效节点，请重新选择', 'error');
+              return;
+            }
           }
         } else if (!node?.sub_id || !node?.node_id) {
           showToast?.('链路中存在已失效节点，请重新选择', 'error');
@@ -2255,11 +2289,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               group_name: node.group_name,
               group_strategy: node.group_strategy,
               lb_strategy: node.lb_strategy,
-              group_nodes: (node.group_nodes || []).map(n => ({
-                sub_id: n.sub_id,
-                node_id: n.node_id,
-                node_name: n.node_name
-              }))
+              group_source: node.group_source || 'nodes',
+              ...(node.group_source === 'vpngate' ? {} : {
+                group_nodes: (node.group_nodes || []).map(n => ({
+                  sub_id: n.sub_id,
+                  node_id: n.node_id,
+                  node_name: n.node_name
+                }))
+              })
             };
           }
           return {
@@ -3686,7 +3723,10 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         
                         {row.map((node, colIndex) => {
                           const isLast = colIndex === row.length - 1;
-                          const cellType = node?.type || 'node';
+                          const cellType = node?.type === 'group' && node?.group_source === 'vpngate'
+                            ? 'vpngate'
+                            : (node?.type || 'node');
+                          const isVpnGatePool = cellType === 'vpngate';
                           const groupLabel = isLast ? '组(落地池)' : '组(中转池)';
                           const selectedKeys = (node?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
                           return (
@@ -3704,10 +3744,15 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                   >
                                     <option value="node">节点</option>
                                     <option value="group">{groupLabel}</option>
+                                    {isLast && (
+                                      <option value="vpngate">
+                                        VPN Gate 动态池（{vpngatePool.active_node_count ?? 0} 个）
+                                      </option>
+                                    )}
                                   </select>
                                 </div>
 
-                                {cellType === 'group' ? (
+                                {cellType === 'group' || isVpnGatePool ? (
                                   <div className="space-y-2">
                                     <input
                                       type="text"
@@ -3721,6 +3766,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                       onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_strategy: e.target.value })}
                                       className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
                                     >
+                                      <option value="select">手动选择</option>
                                       <option value="load-balance">负载均衡(随机/轮询)</option>
                                       <option value="url-test">自动测速</option>
                                       <option value="fallback">故障切换</option>
@@ -3738,7 +3784,11 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                       </select>
                                     )}
 
-                                    {(() => {
+                                    {isVpnGatePool ? (
+                                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                                        自动使用当前有效的 VPN Gate 节点，刷新节点源后池成员会同步更新；当前有效节点：{vpngatePool.active_node_count ?? 0}
+                                      </div>
+                                    ) : (() => {
                                       const cellKey = getGroupCellKey(rowIndex, colIndex);
                                       const isEditing = groupEditing[cellKey];
                                       const draftKeys = groupDrafts[cellKey] || [];

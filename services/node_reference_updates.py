@@ -25,6 +25,7 @@ from services.proxy_filter import ProxyFilter
 from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_refresh_lock import subscription_write_slot
 from services.subscription_storage import persist_subscription_content_and_record
+from services.vpngate import VPNGATE_SOURCE_ID
 
 
 @dataclass(frozen=True)
@@ -474,6 +475,9 @@ def _replace_proxy_chain_references(
                     row_invalid = True
                     break
                 if reference.get("type") == "group":
+                    if str(reference.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID:
+                        retained_references.append(dict(reference))
+                        continue
                     retained_members = []
                     for member in reference.get("group_nodes", []) or []:
                         if not isinstance(member, dict):
@@ -634,6 +638,11 @@ def remove_explicit_source_references(
                 continue
             for reference in row.get("nodes", []):
                 if not isinstance(reference, dict):
+                    continue
+                if (
+                    reference.get("type") == "group"
+                    and str(reference.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID
+                ):
                     continue
                 candidates = (
                     reference.get("group_nodes", []) or []

@@ -26,6 +26,8 @@ logger = get_logger(__name__)
 
 VPNGATE_SOURCE_ID = "vpngate"
 VPNGATE_SOURCE_NAME = "VPN Gate"
+VPNGATE_GROUP_SOURCE = "vpngate"
+VPNGATE_POOL_NAME = "VPN Gate 动态池"
 VPNGATE_API_URL = "https://www.vpngate.net/api/iphone/"
 VPNGATE_CACHE_NAMESPACE = "vpngate"
 VPNGATE_DEFAULT_INTERVAL_MINUTES = 60
@@ -475,4 +477,18 @@ def public_vpngate_node(node: dict[str, Any]) -> dict[str, Any]:
         "official_mbps": node.get("_vpngate_official_mbps", 0),
         "sessions": node.get("_vpngate_sessions", 0),
         "stale": bool(node.get("stale")),
+    }
+
+
+def public_vpngate_pool() -> dict[str, Any]:
+    """Return the aggregate VPN Gate pool metadata used by the UI."""
+
+    status = get_vpngate_status()
+    return {
+        "sub_id": VPNGATE_SOURCE_ID,
+        "source_name": VPNGATE_SOURCE_NAME,
+        "pool_name": VPNGATE_POOL_NAME,
+        "active_node_count": status["active_node_count"],
+        "stale_node_count": status["stale_node_count"],
+        "available": status["active_node_count"] > 0,
     }

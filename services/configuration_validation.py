@@ -278,7 +278,14 @@ def _validate_proxy_chain_reference(
         if group_id in group_ids:
             raise ValueError("Imported proxy chains contain duplicate group IDs")
         group_ids.add(group_id)
+        group_source = str(reference.get("group_source") or "nodes").strip()
+        if group_source not in {"nodes", VPNGATE_SOURCE_ID}:
+            raise ValueError("Imported proxy group source is invalid")
         members = reference.get("group_nodes")
+        if group_source == VPNGATE_SOURCE_ID:
+            if members not in (None, []):
+                raise ValueError("Imported VPN Gate dynamic pool cannot contain manual nodes")
+            return
         if not isinstance(members, list) or not 1 <= len(members) <= 500:
             raise ValueError("Imported proxy group must contain 1 to 500 nodes")
         for member in members:
@@ -744,6 +751,8 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
                 if not isinstance(reference, dict):
                     raise ValueError("Imported proxy chain contains an invalid reference")
                 if reference.get("type") == "group":
+                    if str(reference.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID:
+                        continue
                     for member in reference.get("group_nodes", []) or []:
                         validate_node_reference(member)
                 else:

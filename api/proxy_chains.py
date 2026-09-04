@@ -20,11 +20,11 @@ from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
 from services.node_identity import custom_node_id, subscription_node_ids
 from services.vpngate import (
-    VPNGATE_SOURCE_ID,
-    VPNGATE_SOURCE_NAME,
+    VPNGATE_GROUP_SOURCE,
     get_vpngate_settings,
+    get_vpngate_node,
     list_vpngate_nodes,
-    public_vpngate_node,
+    public_vpngate_pool,
     refresh_vpngate_cache,
 )
 from services.proxy_chain_references import (
@@ -54,11 +54,12 @@ class ProxyChainNode(BaseModel):
     # group fields (used when type == 'group')
     group_id: str | None = Field(None, max_length=100)
     group_name: str | None = Field(None, max_length=200)
-    group_strategy: Literal['load-balance', 'url-test', 'fallback'] | None = None
+    group_strategy: Literal['select', 'load-balance', 'url-test', 'fallback'] | None = None
     lb_strategy: Literal['round-robin', 'consistent-hashing', 'sticky-sessions'] | None = None
     group_url: str | None = Field(None, max_length=2048)
     group_interval: int | None = Field(None, ge=10, le=86400)
     group_tolerance: int | None = Field(None, ge=0, le=10000)
+    group_source: Literal['nodes', 'vpngate'] | None = None
     group_nodes: list[ProxyChainNode] | None = Field(None, max_length=500)
 
     @field_validator('sub_id', 'node_id', 'node_name', 'group_name', 'group_id')
@@ -75,10 +76,15 @@ class ProxyChainNode(BaseModel):
                 raise ValueError('Proxy group cannot contain a direct node reference')
             if not (self.group_name or '').strip():
                 raise ValueError('Proxy group name cannot be empty')
-            if not self.group_nodes:
-                raise ValueError('Proxy group must contain at least one node')
-            if any(member.type != 'node' for member in self.group_nodes):
-                raise ValueError('Nested proxy groups are not supported')
+            group_source = self.group_source or 'nodes'
+            if group_source == VPNGATE_GROUP_SOURCE:
+                if self.group_nodes:
+                    raise ValueError('VPN Gate 动态池不能包含手动节点成员')
+            else:
+                if not self.group_nodes:
+                    raise ValueError('Proxy group must contain at least one node')
+                if any(member.type != 'node' for member in self.group_nodes):
+                    raise ValueError('Nested proxy groups are not supported')
             if self.group_url:
                 from urllib.parse import urlsplit
 
@@ -98,6 +104,7 @@ class ProxyChainNode(BaseModel):
                 self.group_url,
                 self.group_interval,
                 self.group_tolerance,
+                self.group_source,
                 self.group_nodes,
             )
         ):
@@ -216,25 +223,15 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
             'server': node.get('server', '')
         })
 
-    # VPN Gate nodes are a dynamic source.  Keep the complete OpenVPN
-    # material in the backend cache and expose only picker metadata here.
-    vpngate_nodes = list_vpngate_nodes()
-    if not vpngate_nodes and get_vpngate_settings(config).get('enabled'):
+    # VPN Gate is represented as one aggregate pool in the chain editor.  Its
+    # individual OpenVPN profiles remain in the backend cache and are expanded
+    # only when a subscription configuration is generated.
+    if not list_vpngate_nodes() and get_vpngate_settings(config).get('enabled'):
         try:
             refresh_vpngate_cache()
-            vpngate_nodes = list_vpngate_nodes()
         except Exception as exc:
             logger.warning("Failed to refresh VPN Gate nodes for chain picker: %s", type(exc).__name__)
-    for node in vpngate_nodes:
-        public_node = public_vpngate_node(node)
-        nodes.append({
-            **public_node,
-            'sub_id': VPNGATE_SOURCE_ID,
-            'sub_name': VPNGATE_SOURCE_NAME,
-            'type': 'openvpn',
-            'server': node.get('server', ''),
-        })
-    
+
     return nodes
 
 
@@ -245,6 +242,17 @@ def _validate_proxy_chain_references(rows: List[ProxyChainRow], config: Optional
     )
     for row in rows:
         for chain_node in row.nodes:
+            if chain_node.type == 'group' and chain_node.group_source == VPNGATE_GROUP_SOURCE:
+                if not list_vpngate_nodes():
+                    raise HTTPException(status_code=400, detail="VPN Gate 动态池当前没有可用节点，请先更新节点源")
+                continue
+            if chain_node.type == 'node' and chain_node.sub_id == VPNGATE_GROUP_SOURCE:
+                if not get_vpngate_node(
+                    chain_node.node_id,
+                    include_stale=False,
+                ):
+                    raise HTTPException(status_code=400, detail="Proxy chain contains a missing or disabled VPN Gate node")
+                continue
             node_references = chain_node.group_nodes if chain_node.type == 'group' else [chain_node]
             for node_reference in node_references or []:
                 count = reference_counts[(node_reference.sub_id, node_reference.node_id)]
@@ -264,10 +272,11 @@ def _serialize_chain_node(node: ProxyChainNode, existing_node: dict | None = Non
             stored_node['group_id'] = existing_node.get('group_id')
         if not stored_node.get('group_id'):
             stored_node['group_id'] = generate_timestamp_id('grp_')
-        stored_node['group_nodes'] = [
-            _serialize_chain_node(member)
-            for member in node.group_nodes or []
-        ]
+        if node.group_source != VPNGATE_GROUP_SOURCE:
+            stored_node['group_nodes'] = [
+                _serialize_chain_node(member)
+                for member in node.group_nodes or []
+            ]
     return stored_node
 
 
@@ -364,7 +373,11 @@ def list_proxy_chains(_: bool = Depends(verify_session)):
 def get_available_nodes_for_chain(_: bool = Depends(verify_session)):
     """Get all available nodes for proxy chain"""
     nodes = _get_all_nodes_for_chain()
-    return {"nodes": nodes, "count": len(nodes)}
+    return {
+        "nodes": nodes,
+        "count": len(nodes),
+        "vpngate_pool": public_vpngate_pool(),
+    }
 
 
 @router.post("")

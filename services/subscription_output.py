@@ -50,6 +50,7 @@ from services.node_identity import (
     virtual_node_id,
 )
 from services.node_manager import normalize_alloc_name
+from services.vpngate import VPNGATE_SOURCE_ID, list_vpngate_nodes
 from services.subscription_state import (
     describe_refresh_error,
     refresh_attempt_fields,
@@ -935,6 +936,34 @@ def create_subscription_output_router(
                         return True
                 return False
 
+            def resolve_proxy_group_members(group_spec: dict) -> list[dict]:
+                """Resolve a static group or expand the dynamic VPN Gate pool."""
+
+                if str(group_spec.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID:
+                    member_proxies = []
+                    for vpngate_node in list_vpngate_nodes():
+                        node_proxy = find_node_by_reference(
+                            VPNGATE_SOURCE_ID,
+                            None,
+                            None,
+                            node_id=vpngate_node.get("id"),
+                        )
+                        if node_proxy:
+                            member_proxies.append(dict(node_proxy))
+                    return member_proxies
+
+                member_proxies = []
+                for member_ref in group_spec.get("group_nodes", []) or []:
+                    node_proxy = find_node_by_reference(
+                        member_ref.get('sub_id'),
+                        member_ref.get('node_index'),
+                        member_ref.get('node_name'),
+                        node_id=member_ref.get('node_id'),
+                    )
+                    if node_proxy:
+                        member_proxies.append(dict(node_proxy))
+                return member_proxies
+
 
             for chain_idx, chain in enumerate(proxy_chains):
                 if not chain.get('enabled', True):
@@ -1074,16 +1103,7 @@ def create_subscription_output_router(
                             })
                             continue
 
-                        member_proxies = []
-                        for member_ref in hop['spec'].get('group_nodes', []) or []:
-                            node_proxy = find_node_by_reference(
-                                member_ref.get('sub_id'),
-                                member_ref.get('node_index'),
-                                member_ref.get('node_name'),
-                                node_id=member_ref.get('node_id'),
-                            )
-                            if node_proxy:
-                                member_proxies.append(dict(node_proxy))
+                        member_proxies = resolve_proxy_group_members(hop['spec'])
                         if not member_proxies:
                             unresolved_hop = True
                             break
@@ -1098,15 +1118,7 @@ def create_subscription_output_router(
 
                     resolved_final_members = []
                     if group_spec:
-                        for member_ref in group_spec.get('group_nodes', []) or []:
-                            node_proxy = find_node_by_reference(
-                                member_ref.get('sub_id'),
-                                member_ref.get('node_index'),
-                                member_ref.get('node_name'),
-                                node_id=member_ref.get('node_id'),
-                            )
-                            if node_proxy:
-                                resolved_final_members.append(dict(node_proxy))
+                        resolved_final_members = resolve_proxy_group_members(group_spec)
                         if not resolved_final_members:
                             continue
 
