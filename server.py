@@ -90,6 +90,11 @@ from services.subscription_storage import (
     persist_subscription_content_and_record,
     recover_pending_subscription_transactions,
 )
+from services.vpngate import (
+    get_vpngate_settings,
+    list_vpngate_nodes,
+    run_scheduled_vpngate_refresh,
+)
 
 # Import API routers
 from api import api_router
@@ -321,6 +326,39 @@ def _schedule_automatic_backup() -> None:
         logger.error("Failed to schedule automatic config backup", exc_info=True)
 
 
+def reschedule_vpngate_refresh() -> None:
+    """Synchronize the global VPN Gate refresh job with persisted settings."""
+
+    scheduler = get_scheduler().scheduler
+    job_id = "vpngate_refresh"
+    try:
+        existing_job = scheduler.get_job(job_id)
+        if existing_job:
+            scheduler.remove_job(job_id)
+
+        settings = get_vpngate_settings(load_config())
+        if not settings.get("enabled"):
+            logger.info("VPN Gate automatic refresh disabled")
+            return
+
+        from apscheduler.triggers.interval import IntervalTrigger
+        from datetime import datetime
+
+        scheduler.add_job(
+            run_scheduled_vpngate_refresh,
+            trigger=IntervalTrigger(minutes=settings["interval_minutes"]),
+            id=job_id,
+            replace_existing=True,
+            next_run_time=datetime.now(),
+        )
+        logger.info(
+            "VPN Gate automatic refresh scheduled every %s minute(s)",
+            settings["interval_minutes"],
+        )
+    except Exception:
+        logger.error("Failed to schedule VPN Gate refresh", exc_info=True)
+
+
 async def startup_event() -> None:
     """Initialize services on startup"""
     global http_client, GO_SPEEDTEST_MONITOR_TASK, SERVER_SHUTTING_DOWN
@@ -377,6 +415,7 @@ async def startup_event() -> None:
         _restore_scheduled_jobs()
         _schedule_flclash_version_check()
         _schedule_automatic_backup()
+        reschedule_vpngate_refresh()
 
 
 async def shutdown_event() -> None:
@@ -1215,6 +1254,7 @@ def reload_runtime_configuration() -> None:
     init_geoip_config()
     update_custom_nodes_yaml()
     _restore_scheduled_jobs()
+    reschedule_vpngate_refresh()
     invalidate_stats_cache()
 
 # ==================== Country Detection (imported from services) ====================
@@ -1580,6 +1620,10 @@ def get_all_final_node_names() -> set:
         if not is_node_enabled(node):
             continue
         transformed = NameTransformer.transform_name(node, 'Custom')
+        names.add(transformed.get('name', ''))
+
+    for node in list_vpngate_nodes():
+        transformed = NameTransformer.transform_name(node, 'VPN Gate')
         names.add(transformed.get('name', ''))
 
     return names

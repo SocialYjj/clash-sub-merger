@@ -21,6 +21,13 @@ from services.node_pool_references import (
     ensure_node_pool_ids,
     list_node_pool_virtual_references,
 )
+from services.vpngate import (
+    VPNGATE_MAX_INTERVAL_MINUTES,
+    VPNGATE_MAX_MAX_NODES,
+    VPNGATE_MIN_INTERVAL_MINUTES,
+    VPNGATE_MIN_MAX_NODES,
+    VPNGATE_SOURCE_ID,
+)
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
@@ -193,6 +200,37 @@ def _validate_settings(config: dict) -> None:
             if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
                 raise ValueError("Imported IPv6 proxy URL is invalid")
 
+    vpngate = settings.get(VPNGATE_SOURCE_ID)
+    if vpngate is not None:
+        if not isinstance(vpngate, dict):
+            raise ValueError("Imported VPN Gate settings are invalid")
+        if "enabled" in vpngate and not isinstance(vpngate.get("enabled"), bool):
+            raise ValueError("Imported VPN Gate enabled flag is invalid")
+        interval = vpngate.get("interval_minutes")
+        if interval is not None and (
+            isinstance(interval, bool)
+            or not isinstance(interval, int)
+            or not VPNGATE_MIN_INTERVAL_MINUTES <= interval <= VPNGATE_MAX_INTERVAL_MINUTES
+        ):
+            raise ValueError("Imported VPN Gate refresh interval is invalid")
+        max_nodes = vpngate.get("max_nodes")
+        if max_nodes is not None and (
+            isinstance(max_nodes, bool)
+            or not isinstance(max_nodes, int)
+            or not VPNGATE_MIN_MAX_NODES <= max_nodes <= VPNGATE_MAX_MAX_NODES
+        ):
+            raise ValueError("Imported VPN Gate maximum node count is invalid")
+        countries = vpngate.get("countries")
+        if countries is not None and (
+            not isinstance(countries, list)
+            or any(
+                not isinstance(country, str)
+                or not re.fullmatch(r"[A-Za-z]{2}", country.strip())
+                for country in countries
+            )
+        ):
+            raise ValueError("Imported VPN Gate country filter is invalid")
+
 
 def _validate_speedtest_profiles(config: dict) -> None:
     profiles = config.get("speedtest_profiles", [])
@@ -265,6 +303,10 @@ def _validate_proxy_chain_reference(
             raise ValueError("Imported proxy chain references an unknown custom node")
         if not node_id and not legacy_reference:
             raise ValueError("Imported proxy chain custom-node reference is incomplete")
+        return
+    if source_id == VPNGATE_SOURCE_ID:
+        if not node_id and not isinstance(reference.get("node_index"), int) and not node_name:
+            raise ValueError("Imported proxy chain VPN Gate reference is incomplete")
         return
     if source_id not in subscription_ids:
         raise ValueError("Imported proxy chain references an unknown subscription")
@@ -678,6 +720,11 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         source_id = str(reference.get("sub_id") or "")
         if source_id in {"custom", "custom_nodes"}:
             source_id = "custom_nodes"
+        if source_id == VPNGATE_SOURCE_ID:
+            # VPN Gate nodes live in a refreshable backend cache rather than
+            # the imported configuration document.  The runtime resolver will
+            # mark a missing/stale node unavailable after the cache is loaded.
+            return
         aliases = source_aliases.get(source_id)
         if aliases is None:
             raise ValueError("Imported node reference points to an unknown source")

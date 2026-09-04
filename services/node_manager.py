@@ -18,6 +18,7 @@ from services.node_identity import (
     subscription_node_id_for_index,
     subscription_node_id,
 )
+from services.vpngate import VPNGATE_SOURCE_ID, VPNGATE_SOURCE_NAME, list_vpngate_nodes
 
 logger = get_logger(__name__)
 
@@ -180,6 +181,34 @@ def find_subscription_node(
     return None
 
 
+def find_vpngate_node(
+    node_index: int = None,
+    node_name: str = None,
+    node_id: str = None,
+) -> Optional[dict]:
+    """Resolve one active VPN Gate node from the backend cache."""
+
+    nodes = list_vpngate_nodes()
+    candidate = None
+    if node_id:
+        candidate = next((node for node in nodes if str(node.get("id")) == str(node_id)), None)
+    if candidate is None and node_name:
+        for node in nodes:
+            transformed = NameTransformer.transform_name(node, VPNGATE_SOURCE_NAME)
+            if transformed.get("name") == node_name:
+                candidate = node
+                break
+    if candidate is None and node_index is not None and 0 <= node_index < len(nodes):
+        candidate = nodes[node_index]
+    if candidate is None or not ProxyFilter.is_valid_proxy(candidate):
+        return None
+
+    proxy = ProxyFilter.sanitize_proxy(dict(candidate))
+    transformed = strip_metadata(NameTransformer.transform_name(proxy, VPNGATE_SOURCE_NAME))
+    transformed["_allocation_id"] = str(candidate.get("id"))
+    return transformed
+
+
 def find_node_by_reference(
     sub_id: str,
     node_index: int = None,
@@ -205,6 +234,10 @@ def find_node_by_reference(
     if sub_id == 'custom':
         custom_nodes = config.get('custom_nodes', [])
         return find_custom_node(custom_nodes, node_index, node_name, node_id)
+
+    # VPN Gate dynamic nodes
+    if sub_id == VPNGATE_SOURCE_ID:
+        return find_vpngate_node(node_index, node_name, node_id)
     
     # Subscription nodes
     return find_subscription_node(sub_id, node_index, node_name, yaml_source_dir, node_id)

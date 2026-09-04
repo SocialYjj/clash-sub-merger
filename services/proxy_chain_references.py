@@ -13,6 +13,7 @@ from services.name_transformer import NameTransformer
 from services.node_identity import proxy_chain_virtual_node_id, virtual_node_id
 from services.node_visibility import clear_user_subscription_caches, is_node_enabled
 from services.proxy_chain_utils import unique_group_name, unique_name
+from services.vpngate import VPNGATE_SOURCE_NAME, list_vpngate_nodes
 
 
 logger = get_logger(__name__)
@@ -119,6 +120,13 @@ def _base_node_names(config: dict) -> set[str]:
         if not isinstance(node, dict) or not is_node_enabled(node):
             continue
         final_name = NameTransformer.transform_name(node, "Custom").get("name")
+        if final_name:
+            names.add(final_name)
+
+    for node in list_vpngate_nodes():
+        if not isinstance(node, dict) or not node.get("id"):
+            continue
+        final_name = NameTransformer.transform_name(node, VPNGATE_SOURCE_NAME).get("name")
         if final_name:
             names.add(final_name)
     return names

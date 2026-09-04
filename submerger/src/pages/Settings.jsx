@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Key, Globe, RefreshCw, Copy, Check, Eye, EyeOff, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, FileCode, Shuffle, Play, Sliders, Shield } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
+import { formatDate } from '../utils/format';
 import ConfirmModal from '../components/ConfirmModal';
 import UserConfigEditor from '../components/UserConfigEditor';
 import SocksExportModal from '../components/SocksExportModal';
@@ -808,6 +809,15 @@ export default function Settings({
   });
   const [savingOnlineConfig, setSavingOnlineConfig] = useState(false);
   const [cloudflareRadarToken, setCloudflareRadarToken] = useState('');
+  const [vpnGateConfig, setVpnGateConfig] = useState({
+    enabled: false,
+    interval_minutes: 60,
+    max_nodes: 100,
+    status: {},
+    next_refresh_at: null
+  });
+  const [savingVpnGate, setSavingVpnGate] = useState(false);
+  const [refreshingVpnGate, setRefreshingVpnGate] = useState(false);
   const [translationConfig, setTranslationConfig] = useState({
     preferred_provider: 'google',
     provider_order: [],
@@ -849,6 +859,7 @@ export default function Settings({
     const controller = new AbortController();
     fetchSpeedtestConfig(controller.signal);
     fetchOnlineGeoipConfig(controller.signal);
+    fetchVpnGateConfig(controller.signal);
     fetchTranslationConfig(controller.signal);
     fetchGeoipCacheStats(controller.signal);
     return () => {
@@ -878,6 +889,17 @@ export default function Settings({
     } catch (err) {
       if (shouldIgnoreRequest(err, signal)) return;
       console.error('Failed to fetch online GeoIP config', err);
+    }
+  };
+
+  const fetchVpnGateConfig = async (signal) => {
+    try {
+      const res = await request.get(`${API_BASE}/vpngate/config`, { signal });
+      if (signal?.aborted) return;
+      setVpnGateConfig(res.data);
+    } catch (err) {
+      if (shouldIgnoreRequest(err, signal)) return;
+      console.error('Failed to fetch VPN Gate config', err);
     }
   };
 
@@ -1037,6 +1059,33 @@ export default function Settings({
       showToast?.(`清除失败: ${err.response?.data?.detail || err.message}`, 'error');
     } finally {
       setSavingOnlineConfig(false);
+    }
+  };
+
+  const saveVpnGateConfig = async (updates) => {
+    setSavingVpnGate(true);
+    try {
+      const res = await request.put(`${API_BASE}/vpngate/config`, updates);
+      setVpnGateConfig(res.data);
+      showToast?.('VPN Gate 设置已保存');
+    } catch (err) {
+      showToast?.(`保存失败: ${err.response?.data?.detail || err.message}`, 'error');
+    } finally {
+      setSavingVpnGate(false);
+    }
+  };
+
+  const refreshVpnGate = async () => {
+    setRefreshingVpnGate(true);
+    try {
+      await request.post(`${API_BASE}/vpngate/refresh`);
+      await fetchVpnGateConfig();
+      showToast?.('VPN Gate 节点已更新');
+    } catch (err) {
+      await fetchVpnGateConfig();
+      showToast?.(`VPN Gate 更新失败: ${err.response?.data?.detail || err.message}`, 'error');
+    } finally {
+      setRefreshingVpnGate(false);
     }
   };
 
@@ -1596,6 +1645,96 @@ export default function Settings({
           </div>
           <p className="text-xs text-gray-500">
             Token 只保存在后端，不会回显到前端；保存后重新执行“地区/IP 信息检测”，节点表才会填充人机流量比。
+          </p>
+        </div>
+      </div>
+
+      {/* VPN Gate dynamic node source */}
+      <div className="bg-gray-800/50 border border-emerald-500/30 rounded-xl p-6">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <Globe size={20} />
+              VPN Gate 节点源
+            </h2>
+            <p className="text-sm text-gray-400 mt-2">
+              自动下载 VPN Gate 的 OpenVPN 节点，可在创建链式代理时作为落地节点或落地池使用。
+            </p>
+          </div>
+          <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${vpnGateConfig.enabled
+            ? 'bg-green-500/20 text-green-300'
+            : 'bg-gray-700 text-gray-400'}`}>
+            {vpnGateConfig.enabled ? '自动更新已启用' : '自动更新已停用'}
+          </span>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={vpnGateConfig.enabled === true}
+                onChange={(event) => saveVpnGateConfig({ enabled: event.target.checked })}
+                disabled={savingVpnGate || refreshingVpnGate}
+                className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-emerald-500 focus:ring-emerald-500"
+              />
+              自动更新
+            </label>
+
+            <label className="flex items-center gap-2 text-sm text-gray-300" htmlFor="vpngate-interval">
+              更新间隔
+              <select
+                id="vpngate-interval"
+                value={vpnGateConfig.interval_minutes || 60}
+                onChange={(event) => saveVpnGateConfig({ interval_minutes: Number(event.target.value) })}
+                disabled={savingVpnGate || refreshingVpnGate}
+                className="px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+              >
+                <option value={15}>15 分钟</option>
+                <option value={30}>30 分钟</option>
+                <option value={60}>1 小时</option>
+                <option value={360}>6 小时</option>
+                <option value={1440}>每天</option>
+                <option value={10080}>每周</option>
+              </select>
+            </label>
+
+            <button
+              onClick={refreshVpnGate}
+              disabled={refreshingVpnGate || savingVpnGate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg"
+            >
+              <RefreshCw size={15} className={refreshingVpnGate ? 'animate-spin' : ''} />
+              {refreshingVpnGate ? '更新中...' : '立即更新'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
+              <div className="text-xs text-gray-500">当前有效节点</div>
+              <div className="text-white mt-1">{vpnGateConfig.status?.active_node_count ?? 0}</div>
+            </div>
+            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
+              <div className="text-xs text-gray-500">失效节点</div>
+              <div className="text-white mt-1">{vpnGateConfig.status?.stale_node_count ?? 0}</div>
+            </div>
+            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
+              <div className="text-xs text-gray-500">最近成功</div>
+              <div className="text-white mt-1">{formatDate(vpnGateConfig.status?.last_success_at) || '暂无'}</div>
+            </div>
+            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
+              <div className="text-xs text-gray-500">下次更新</div>
+              <div className="text-white mt-1">{formatDate(vpnGateConfig.next_refresh_at) || '未安排'}</div>
+            </div>
+          </div>
+
+          {vpnGateConfig.status?.last_error && (
+            <div className="text-sm text-red-300 bg-red-900/20 border border-red-700/50 rounded-lg px-3 py-2 break-words">
+              最近一次更新失败：{vpnGateConfig.status.last_error}
+            </div>
+          )}
+          <p className="text-xs text-gray-500">
+            最多缓存 {vpnGateConfig.max_nodes || 100} 个节点；更新失败时继续使用上一份缓存。
           </p>
         </div>
       </div>

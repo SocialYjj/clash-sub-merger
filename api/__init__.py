@@ -21,6 +21,7 @@ from .geoip import router as geoip_router
 from .translation import router as translation_router
 from .proxy_chains import router as proxy_chains_router
 from .node_pools import router as node_pools_router
+from .vpngate import router as vpngate_router
 
 # Create main API router
 api_router = APIRouter()
@@ -75,5 +76,8 @@ api_router.include_router(proxy_chains_router, prefix="/api/proxy-chains", tags=
 
 # Configured node-pool endpoints (/api/node-pools/*)
 api_router.include_router(node_pools_router, prefix="/api/node-pools", tags=["node-pools"])
+
+# VPN Gate dynamic source endpoints (/api/vpngate/*)
+api_router.include_router(vpngate_router, prefix="/api/vpngate", tags=["vpngate"])
 
 __all__ = ['api_router']

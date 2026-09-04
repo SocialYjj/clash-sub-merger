@@ -226,7 +226,7 @@ class ProxyFilter:
         allowed_types = {
             'http', 'https', 'socks5', 'socks5h', 'ss', 'ssr', 'vmess',
             'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'wireguard',
-            'snell', 'anytls', 'ssh', 'direct', 'reject',
+            'snell', 'anytls', 'ssh', 'openvpn', 'direct', 'reject',
         }
         if not proxy_type:
             return 'missing-type'
@@ -253,6 +253,7 @@ class ProxyFilter:
             'anytls': ('password',),
             'ss': ('cipher', 'password'),
             'wireguard': ('private-key',),
+            'openvpn': ('ca', 'cert', 'key'),
         }
         for field in required_fields.get(proxy_type, ()):
             if not str(proxy.get(field) or '').strip():

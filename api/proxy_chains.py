@@ -19,6 +19,14 @@ from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
 from services.node_identity import custom_node_id, subscription_node_ids
+from services.vpngate import (
+    VPNGATE_SOURCE_ID,
+    VPNGATE_SOURCE_NAME,
+    get_vpngate_settings,
+    list_vpngate_nodes,
+    public_vpngate_node,
+    refresh_vpngate_cache,
+)
 from services.proxy_chain_references import (
     ensure_proxy_chain_component_ids,
     reconcile_proxy_chain_references,
@@ -206,6 +214,25 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
             'node_type': node.get('type', 'unknown'),
             'type': node.get('type', 'unknown'),
             'server': node.get('server', '')
+        })
+
+    # VPN Gate nodes are a dynamic source.  Keep the complete OpenVPN
+    # material in the backend cache and expose only picker metadata here.
+    vpngate_nodes = list_vpngate_nodes()
+    if not vpngate_nodes and get_vpngate_settings(config).get('enabled'):
+        try:
+            refresh_vpngate_cache()
+            vpngate_nodes = list_vpngate_nodes()
+        except Exception as exc:
+            logger.warning("Failed to refresh VPN Gate nodes for chain picker: %s", type(exc).__name__)
+    for node in vpngate_nodes:
+        public_node = public_vpngate_node(node)
+        nodes.append({
+            **public_node,
+            'sub_id': VPNGATE_SOURCE_ID,
+            'sub_name': VPNGATE_SOURCE_NAME,
+            'type': 'openvpn',
+            'server': node.get('server', ''),
         })
     
     return nodes

@@ -43,7 +43,7 @@ _ORIGINAL_BACKUP_DIR = BACKUP_DIR
 _MIGRATION_ROOTS = ("uploads",)
 _MIGRATION_FILES = ("node_region_history.json", "geoip_cache.json", "myconfig.yaml")
 _DATABASE_CACHE_SIDECAR = "database_caches.json"
-_DATABASE_CACHE_NAMES = ("geoip", "radar", "translation", "region_history")
+_DATABASE_CACHE_NAMES = ("geoip", "radar", "translation", "region_history", "vpngate")
 
 
 def _database_file_storage_active() -> bool:
