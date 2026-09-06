@@ -27,6 +27,7 @@ from services.vpngate import (
     VPNGATE_MIN_INTERVAL_MINUTES,
     VPNGATE_MIN_MAX_NODES,
     VPNGATE_SOURCE_ID,
+    normalize_vpngate_country_code,
 )
 
 
@@ -281,11 +282,19 @@ def _validate_proxy_chain_reference(
         group_source = str(reference.get("group_source") or "nodes").strip()
         if group_source not in {"nodes", VPNGATE_SOURCE_ID}:
             raise ValueError("Imported proxy group source is invalid")
+        vpngate_country_code = reference.get("vpngate_country_code")
         members = reference.get("group_nodes")
         if group_source == VPNGATE_SOURCE_ID:
             if members not in (None, []):
                 raise ValueError("Imported VPN Gate dynamic pool cannot contain manual nodes")
+            if vpngate_country_code is not None:
+                normalized_country_code = normalize_vpngate_country_code(vpngate_country_code)
+                if normalized_country_code is None:
+                    raise ValueError("Imported VPN Gate country code is invalid")
+                reference["vpngate_country_code"] = normalized_country_code
             return
+        if vpngate_country_code is not None:
+            raise ValueError("Imported VPN Gate country code is only valid for VPN Gate groups")
         if not isinstance(members, list) or not 1 <= len(members) <= 500:
             raise ValueError("Imported proxy group must contain 1 to 500 nodes")
         for member in members:

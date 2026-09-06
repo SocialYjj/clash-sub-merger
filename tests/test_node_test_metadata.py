@@ -180,6 +180,33 @@ class NodeTestMetadataTests(unittest.TestCase):
         self.assertEqual(saved_profile["fraud_score"], 8)
         self.assertEqual(saved_profile["radar_status"], "no_data")
 
+    def test_vpngate_batch_speed_result_uses_cache_metadata_writer(self):
+        import api.nodes as nodes_api
+
+        captured = []
+        endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
+        request = nodes_api.BatchSaveRequest(
+            results={"vpngate": {"vpngate_node_1": {
+                "latency": 88,
+                "speed": 12.5,
+                "peak_speed": 20.0,
+                "exit_ip": "203.0.113.10",
+            }}}
+        )
+
+        def save_vpngate_node(node_id, updates):
+            captured.append((node_id, updates))
+            return True
+
+        with patch.object(nodes_api, "update_vpngate_node_test_metadata", side_effect=save_vpngate_node):
+            response = asyncio.run(endpoint(request, request=None, _=True))
+
+        self.assertEqual(response["saved_count"], 1)
+        self.assertEqual(captured[0][0], "vpngate_node_1")
+        self.assertEqual(captured[0][1]["last_latency"], 88)
+        self.assertEqual(captured[0][1]["last_speed"], 12.5)
+        self.assertTrue(captured[0][1]["last_speed_time"])
+
 
 if __name__ == "__main__":
     unittest.main()

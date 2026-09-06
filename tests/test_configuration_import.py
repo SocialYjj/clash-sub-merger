@@ -81,6 +81,36 @@ class ConfigurationValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown subscription"):
             validate_and_normalize_configuration(bad_chain_config)
 
+    def test_import_normalizes_vpngate_country_pool_and_rejects_invalid_code(self):
+        config = _valid_configuration()
+        config["proxy_chains"] = [{
+            "id": "chain_vpngate",
+            "name": "VPN Gate",
+            "rows": [{
+                "row_id": "row_vpngate",
+                "nodes": [
+                    {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
+                    {
+                        "type": "group",
+                        "group_id": "group_vpngate",
+                        "group_name": "VPN Gate 日本池",
+                        "group_source": "vpngate",
+                        "vpngate_country_code": "jp",
+                    },
+                ],
+            }],
+        }]
+
+        normalized = validate_and_normalize_configuration(config)
+        self.assertEqual(
+            normalized["proxy_chains"][0]["rows"][0]["nodes"][1]["vpngate_country_code"],
+            "JP",
+        )
+
+        config["proxy_chains"][0]["rows"][0]["nodes"][1]["vpngate_country_code"] = "Japan"
+        with self.assertRaisesRegex(ValueError, "country code is invalid"):
+            validate_and_normalize_configuration(config)
+
     def test_import_rejects_missing_or_malformed_administrator_password_hash(self):
         missing_hash = _valid_configuration()
         missing_hash["auth"] = {}

@@ -24,6 +24,8 @@ from services.vpngate import (
     get_vpngate_settings,
     get_vpngate_node,
     list_vpngate_nodes,
+    list_vpngate_pools,
+    normalize_vpngate_country_code,
     public_vpngate_pool,
     refresh_vpngate_cache,
 )
@@ -60,6 +62,7 @@ class ProxyChainNode(BaseModel):
     group_interval: int | None = Field(None, ge=10, le=86400)
     group_tolerance: int | None = Field(None, ge=0, le=10000)
     group_source: Literal['nodes', 'vpngate'] | None = None
+    vpngate_country_code: str | None = Field(None, max_length=2)
     group_nodes: list[ProxyChainNode] | None = Field(None, max_length=500)
 
     @field_validator('sub_id', 'node_id', 'node_name', 'group_name', 'group_id')
@@ -68,6 +71,16 @@ class ProxyChainNode(BaseModel):
         if value is None:
             return None
         return value.strip()
+
+    @field_validator('vpngate_country_code')
+    @classmethod
+    def normalize_vpngate_country(cls, value):
+        if value is None:
+            return None
+        normalized = normalize_vpngate_country_code(value)
+        if normalized is None:
+            raise ValueError('VPN Gate country code must be a two-letter ISO code')
+        return normalized
 
     @model_validator(mode='after')
     def validate_reference(self):
@@ -81,6 +94,8 @@ class ProxyChainNode(BaseModel):
                 if self.group_nodes:
                     raise ValueError('VPN Gate 动态池不能包含手动节点成员')
             else:
+                if self.vpngate_country_code:
+                    raise ValueError('VPN Gate country selection is only valid for VPN Gate groups')
                 if not self.group_nodes:
                     raise ValueError('Proxy group must contain at least one node')
                 if any(member.type != 'node' for member in self.group_nodes):
@@ -105,6 +120,7 @@ class ProxyChainNode(BaseModel):
                 self.group_interval,
                 self.group_tolerance,
                 self.group_source,
+                self.vpngate_country_code,
                 self.group_nodes,
             )
         ):
@@ -223,9 +239,9 @@ def _get_all_nodes_for_chain(config: Optional[dict] = None):
             'server': node.get('server', '')
         })
 
-    # VPN Gate is represented as one aggregate pool in the chain editor.  Its
-    # individual OpenVPN profiles remain in the backend cache and are expanded
-    # only when a subscription configuration is generated.
+    # VPN Gate is represented as country-level dynamic pools in the chain
+    # editor. Its individual OpenVPN profiles remain in the backend cache and
+    # are expanded only when a subscription configuration is generated.
     if not list_vpngate_nodes() and get_vpngate_settings(config).get('enabled'):
         try:
             refresh_vpngate_cache()
@@ -243,8 +259,11 @@ def _validate_proxy_chain_references(rows: List[ProxyChainRow], config: Optional
     for row in rows:
         for chain_node in row.nodes:
             if chain_node.type == 'group' and chain_node.group_source == VPNGATE_GROUP_SOURCE:
-                if not list_vpngate_nodes():
-                    raise HTTPException(status_code=400, detail="VPN Gate 动态池当前没有可用节点，请先更新节点源")
+                if not list_vpngate_nodes(country_code=chain_node.vpngate_country_code):
+                    detail = "VPN Gate 所选国家当前没有可用节点，请先更新节点源"
+                    if not chain_node.vpngate_country_code:
+                        detail = "VPN Gate 动态池当前没有可用节点，请先更新节点源"
+                    raise HTTPException(status_code=400, detail=detail)
                 continue
             if chain_node.type == 'node' and chain_node.sub_id == VPNGATE_GROUP_SOURCE:
                 if not get_vpngate_node(
@@ -377,6 +396,7 @@ def get_available_nodes_for_chain(_: bool = Depends(verify_session)):
         "nodes": nodes,
         "count": len(nodes),
         "vpngate_pool": public_vpngate_pool(),
+        "vpngate_pools": list_vpngate_pools(),
     }
 
 

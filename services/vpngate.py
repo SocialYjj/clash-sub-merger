@@ -37,6 +37,7 @@ VPNGATE_DEFAULT_MAX_NODES = 100
 VPNGATE_MIN_MAX_NODES = 1
 VPNGATE_MAX_MAX_NODES = 500
 VPNGATE_DEFAULT_TIMEOUT_SECONDS = 30
+VPNGATE_UNKNOWN_COUNTRY_CODE = "XX"
 
 _ALLOWED_CIPHERS = {
     "AES-128-GCM",
@@ -48,6 +49,18 @@ _ALLOWED_CIPHERS = {
 _ALLOWED_AUTH = {"MD5", "SHA1", "SHA256", "SHA384", "SHA512"}
 _ALLOWED_COMP_LZO = {"yes", "no", "adaptive"}
 _REFRESH_LOCK = threading.RLock()
+_NODE_TEST_METADATA_FIELDS = (
+    "last_latency",
+    "last_latency_time",
+    "last_speed",
+    "last_speed_time",
+    "last_peak_speed",
+    "last_peak_speed_time",
+    "exit_ip",
+    "ip_profile",
+    "region",
+    "city",
+)
 
 
 class VpnGateRefreshError(RuntimeError):
@@ -61,6 +74,13 @@ def _safe_integer(value: object, default: int = 0) -> int:
         return default
 
 
+def normalize_vpngate_country_code(value: object) -> str | None:
+    """Normalize one VPN Gate country code or return ``None`` when invalid."""
+
+    country = str(value or "").strip().upper()
+    return country if re.fullmatch(r"[A-Z]{2}", country) else None
+
+
 def _normalize_country_codes(value: object) -> list[str]:
     if isinstance(value, str):
         candidates = value.split(",")
@@ -70,8 +90,8 @@ def _normalize_country_codes(value: object) -> list[str]:
         candidates = []
     normalized = []
     for candidate in candidates:
-        country = str(candidate or "").strip().upper()
-        if re.fullmatch(r"[A-Z]{2}", country) and country not in normalized:
+        country = normalize_vpngate_country_code(candidate)
+        if country and country not in normalized:
             normalized.append(country)
     return normalized
 
@@ -192,6 +212,17 @@ def _country_name(country_code: str) -> str:
         return NameTransformer.ISO_TO_COUNTRY.get(country_code, country_code or "未知")
     except Exception:
         return country_code or "未知"
+
+
+def _country_flag(country_code: str) -> str:
+    """Return the ISO flag used by the frontend for a country pool."""
+
+    try:
+        from geoip_service import GeoIPService
+
+        return GeoIPService.iso_to_flag(country_code) or "🏳️"
+    except Exception:
+        return "🏳️"
 
 
 def _build_display_name(record: dict[str, str], country_code: str, server: str, port: int) -> str:
@@ -329,8 +360,14 @@ def _merge_nodes_with_previous_cache(
     merged: list[dict[str, Any]] = []
     for node_id, node in fresh_by_id.items():
         previous = previous_by_id.get(node_id, {})
-        merged_node = dict(previous)
-        merged_node.update(node)
+        merged_node = dict(node)
+        # A fresh VPN Gate record contains the advertised server country in
+        # ``region``. Preserve measurements made through the node, especially
+        # the tested exit region/IP profile, when the same stable node returns
+        # in a later snapshot.
+        for field in _NODE_TEST_METADATA_FIELDS:
+            if field in previous:
+                merged_node[field] = previous[field]
         merged_node["enabled"] = True
         merged_node["stale"] = False
         merged_node["_vpngate_last_seen_at"] = refreshed_at
@@ -403,11 +440,24 @@ def run_scheduled_vpngate_refresh() -> None:
         logger.warning("Scheduled VPN Gate refresh failed", exc_info=True)
 
 
-def list_vpngate_nodes(*, include_stale: bool = False) -> list[dict[str, Any]]:
+def list_vpngate_nodes(
+    *,
+    include_stale: bool = False,
+    country_code: str | None = None,
+) -> list[dict[str, Any]]:
+    """List cached nodes, optionally restricted to one country."""
+
+    normalized_country = normalize_vpngate_country_code(country_code)
+    if country_code is not None and normalized_country is None:
+        return []
+
     payload = _get_cache_payload()
     nodes = []
     for node in payload.get("nodes", []):
         if not isinstance(node, dict) or not node.get("id"):
+            continue
+        node_country = normalize_vpngate_country_code(node.get("_vpngate_country"))
+        if normalized_country and node_country != normalized_country:
             continue
         if node.get("stale") and not include_stale:
             continue
@@ -425,6 +475,34 @@ def get_vpngate_node(node_id: str, *, include_stale: bool = False) -> dict[str, 
         (node for node in list_vpngate_nodes(include_stale=include_stale) if str(node.get("id")) == normalized_id),
         None,
     )
+
+
+def update_vpngate_node_test_metadata(node_id: str, updates: dict[str, Any]) -> bool:
+    """Persist test metadata for one cached VPN Gate node without exposing credentials."""
+
+    normalized_id = str(node_id or "").strip()
+    if not normalized_id or not isinstance(updates, dict):
+        return False
+
+    with _REFRESH_LOCK:
+        payload = _get_cache_payload()
+        for node in payload.get("nodes", []):
+            if not isinstance(node, dict) or str(node.get("id") or "") != normalized_id:
+                continue
+            for field in _NODE_TEST_METADATA_FIELDS:
+                if field not in updates:
+                    continue
+                value = updates[field]
+                if field == "ip_profile" and isinstance(value, dict):
+                    previous = node.get("ip_profile")
+                    value = {
+                        **(previous if isinstance(previous, dict) else {}),
+                        **value,
+                    }
+                node[field] = value
+            _write_cache_payload(payload)
+            return True
+    return False
 
 
 def get_vpngate_status() -> dict[str, Any]:
@@ -463,16 +541,34 @@ def public_vpngate_node(node: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
+    region = node.get("region") if isinstance(node.get("region"), dict) else {}
     return {
+        "id": node.get("id"),
+        "name": display_name,
+        "display_name": display_name,
         "sub_id": VPNGATE_SOURCE_ID,
         "source_name": VPNGATE_SOURCE_NAME,
         "node_id": node.get("id"),
         "node_index": None,
         "node_name": display_name,
         "node_type": "openvpn",
+        "type": "openvpn",
         "server": node.get("server", ""),
+        "port": node.get("port"),
+        "enabled": node.get("enabled", True) is not False,
         "country_code": node.get("_vpngate_country", ""),
         "country": node.get("_vpngate_country_name", ""),
+        "flag": region.get("flag") or _country_flag(str(node.get("_vpngate_country") or "")),
+        "region": region or None,
+        "city": node.get("city", ""),
+        "last_latency": node.get("last_latency"),
+        "last_latency_time": node.get("last_latency_time"),
+        "last_speed": node.get("last_speed"),
+        "last_speed_time": node.get("last_speed_time"),
+        "last_peak_speed": node.get("last_peak_speed"),
+        "last_peak_speed_time": node.get("last_peak_speed_time"),
+        "exit_ip": node.get("exit_ip"),
+        "ip_profile": node.get("ip_profile") if isinstance(node.get("ip_profile"), dict) else None,
         "official_ping_ms": node.get("_vpngate_official_ping_ms", 0),
         "official_mbps": node.get("_vpngate_official_mbps", 0),
         "sessions": node.get("_vpngate_sessions", 0),
@@ -492,3 +588,40 @@ def public_vpngate_pool() -> dict[str, Any]:
         "stale_node_count": status["stale_node_count"],
         "available": status["active_node_count"] > 0,
     }
+
+
+def list_vpngate_pools() -> list[dict[str, Any]]:
+    """Build one dynamic pool descriptor for every active VPN Gate country."""
+
+    active_nodes = list_vpngate_nodes()
+    stale_nodes = list_vpngate_nodes(include_stale=True)
+    active_counts: dict[str, int] = {}
+    stale_counts: dict[str, int] = {}
+
+    for node in active_nodes:
+        country_code = normalize_vpngate_country_code(node.get("_vpngate_country")) or VPNGATE_UNKNOWN_COUNTRY_CODE
+        active_counts[country_code] = active_counts.get(country_code, 0) + 1
+    for node in stale_nodes:
+        if not node.get("stale"):
+            continue
+        country_code = normalize_vpngate_country_code(node.get("_vpngate_country")) or VPNGATE_UNKNOWN_COUNTRY_CODE
+        stale_counts[country_code] = stale_counts.get(country_code, 0) + 1
+
+    # Only countries with at least one current node are selectable.  A country
+    # represented solely by stale cache entries must not appear as a usable
+    # dynamic landing pool.
+    country_codes = set(active_counts)
+    pools = []
+    for country_code in sorted(country_codes, key=lambda code: (-active_counts.get(code, 0), code)):
+        country = _country_name(country_code)
+        pools.append({
+            "pool_id": f"vpngate_country_{country_code.lower()}",
+            "pool_name": f"VPN Gate {country}池",
+            "country_code": country_code,
+            "country": country,
+            "flag": _country_flag(country_code),
+            "active_node_count": active_counts.get(country_code, 0),
+            "stale_node_count": stale_counts.get(country_code, 0),
+            "available": active_counts.get(country_code, 0) > 0,
+        })
+    return pools

@@ -28,6 +28,10 @@ from services.node_identity import (
 from services.custom_node_storage import update_custom_nodes
 from services.node_reference_updates import update_subscription_yaml_with_references
 from services.proxy_filter import ProxyFilter
+from services.vpngate import (
+    get_vpngate_node,
+    update_vpngate_node_test_metadata,
+)
 from services.region_history import (
     NODE_TEST_METADATA_FIELDS,
     inherit_regions_for_nodes,
@@ -852,7 +856,24 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
     unmatched_node_ids = []
     
     for source_id, nodes_data in data.results.items():
-        if source_id == "custom":
+        if source_id == "vpngate":
+            for node_id, result in nodes_data.items():
+                updates = result.model_dump(exclude_none=True)
+                measured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if "latency" in updates:
+                    updates["last_latency"] = updates.pop("latency")
+                    updates["last_latency_time"] = measured_at
+                if "speed" in updates:
+                    updates["last_speed"] = updates.pop("speed")
+                    updates["last_speed_time"] = measured_at
+                if "peak_speed" in updates:
+                    updates["last_peak_speed"] = updates.pop("peak_speed")
+                    updates["last_peak_speed_time"] = measured_at
+                if update_vpngate_node_test_metadata(node_id, updates):
+                    saved_count += 1
+                else:
+                    unmatched_node_ids.append(f"vpngate:{node_id}")
+        elif source_id == "custom":
             # 保存自定义节点
             def save_custom_results(config: dict):
                 updated_region_nodes = []
@@ -1042,6 +1063,14 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         node = nodes[node_index]
         persistent_custom_node_id = get_custom_node_id(node)
         is_custom = True
+        is_vpngate = False
+    elif source_id == "vpngate":
+        node = get_vpngate_node(node_id, include_stale=False)
+        if node is None:
+            raise HTTPException(status_code=404, detail="VPN Gate node not found")
+        persistent_custom_node_id = None
+        is_custom = False
+        is_vpngate = True
     else:
         # Test subscription node
         config = load_config()
@@ -1059,6 +1088,7 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         node = nodes[node_index]
         persistent_custom_node_id = None
         is_custom = False
+        is_vpngate = False
 
     # Speed testing is backed by Mihomo/Go's Clash-compatible adapter. Keep
     # protocol-neutral validation for storage/export, but do not attempt to
@@ -1281,6 +1311,19 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                             latest_nodes[target_index] = latest_node
 
                         update_custom_nodes(save_custom_test_result)
+                    elif is_vpngate:
+                        updates = {
+                            field: node[field]
+                            for field in (
+                                'last_latency', 'last_latency_time',
+                                'last_speed', 'last_speed_time',
+                                'last_peak_speed', 'last_peak_speed_time',
+                                'exit_ip', 'ip_profile', 'region', 'city',
+                            )
+                            if field in node
+                        }
+                        if not update_vpngate_node_test_metadata(node_id, updates):
+                            raise HTTPException(status_code=404, detail="VPN Gate node not found")
                     else:
                         def save_subscription_test_result(latest_sub_data: dict):
                             latest_nodes = latest_sub_data.get('proxies', []) if latest_sub_data else []

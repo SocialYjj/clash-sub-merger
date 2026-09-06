@@ -256,6 +256,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [loading, setLoading] = useState(false);
   const [geoipData, setGeoipData] = useState({});
   const [subNodes, setSubNodes] = useState({});
+  const [vpngateNodes, setVpngateNodes] = useState([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, nodeId: null });
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState({ open: false, ids: [], keys: [], count: 0 });
@@ -301,6 +302,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     stale_node_count: 0,
     available: false,
   });
+  const [vpngatePools, setVpngatePools] = useState([]);
   const [nodePools, setNodePools] = useState([]);
   const [availableNodePoolNodes, setAvailableNodePoolNodes] = useState([]);
   const [showNodePoolModal, setShowNodePoolModal] = useState(false);
@@ -321,6 +323,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const proxyChainsRequestSeq = useRef(0);
   const chainNodesRequestSeq = useRef(0);
   const nodePoolsRequestSeq = useRef(0);
+  const vpngateRequestSeq = useRef(0);
 
 
   // Fetch nodes from subscription files
@@ -340,6 +343,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setAvailableChainNodes([]);
     fetchProxyChains(controller.signal);
     fetchAvailableChainNodes(controller.signal);
+    fetchVpngateNodes(controller.signal);
     fetchNodePools(controller.signal);
     fetchAvailableNodePoolNodes(controller.signal);
     fetchGeoipApis(controller.signal);
@@ -404,10 +408,26 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         stale_node_count: 0,
         available: false,
       });
+      setVpngatePools(Array.isArray(res.data.vpngate_pools) ? res.data.vpngate_pools : []);
       return true;
     } catch (err) {
       if (signal?.aborted || isRequestCanceled(err)) return;
       console.error('Failed to fetch available chain nodes', err);
+      return false;
+    }
+  };
+
+  const fetchVpngateNodes = async (signal) => {
+    const requestId = ++vpngateRequestSeq.current;
+    try {
+      const res = await request.get(`${API_BASE}/vpngate/nodes`, { signal });
+      if (signal?.aborted || requestId !== vpngateRequestSeq.current) return;
+      setVpngateNodes(Array.isArray(res.data.nodes) ? res.data.nodes : []);
+      return true;
+    } catch (err) {
+      if (signal?.aborted || isRequestCanceled(err)) return;
+      console.error('Failed to fetch VPN Gate nodes', err);
+      setVpngateNodes([]);
       return false;
     }
   };
@@ -469,7 +489,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       controller.abort();
       geoipRequestSeq.current += 1;
     };
-  }, [subNodes, customNodes, loadingNodes]);
+  }, [subNodes, customNodes, vpngateNodes, loadingNodes]);
 
   const fetchGeoipData = async (signal, requestId) => {
     const servers = new Set();
@@ -479,6 +499,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
     });
     customNodes?.forEach(node => {
+      if (node.server) servers.add(node.server);
+    });
+    vpngateNodes?.forEach(node => {
       if (node.server) servers.add(node.server);
     });
 
@@ -634,6 +657,46 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       });
     });
 
+    // VPN Gate nodes are cached OpenVPN profiles. They are leaf nodes for
+    // diagnostics, but are intentionally not exposed as selectable chain
+    // members; chain construction uses the country-level dynamic pools.
+    vpngateNodes?.forEach((node, idx) => {
+      if (!node?.node_id) return;
+
+      const nodeKey = `vpngate|${node.node_id}`;
+      const testResult = nodeTestResults[nodeKey];
+      const testedRegion = testResult?.region || node.region;
+      const region = testedRegion?.display || testedRegion?.country || node.country || '';
+      const flag = testedRegion?.flag || node.flag || '';
+      const country = testedRegion?.country_code || node.country_code || '';
+      const city = testResult?.city || node.city || '';
+
+      nodes.push({
+        ...node,
+        id: node.node_id,
+        name: node.name || node.node_name || 'VPN Gate',
+        display_name: node.display_name || node.node_name || node.name || 'VPN Gate',
+        final_name: node.display_name || node.node_name || node.name || 'VPN Gate',
+        source: 'VPN Gate',
+        sourceId: 'vpngate',
+        sourceType: 'vpngate',
+        enabled: node.enabled !== false,
+        idx,
+        nodeKey,
+        flag,
+        region,
+        country,
+        city,
+        exit_ip: testResult?.exit_ip || node.exit_ip,
+        ip_profile: mergeIpProfiles(node.ip_profile, testResult?.ip_profile),
+        latency: testResult?.latency !== undefined ? testResult.latency : node.last_latency,
+        speed: testResult?.speed !== undefined ? testResult.speed : node.last_speed,
+        speedError: testResult?.speed_error,
+        testError: testResult?.error,
+        detectedRegion: testResult?.region,
+      });
+    });
+
     // Configured node pools are virtual proxy-group entries.  They are shown
     // in the same table for management and port binding, but are not leaf
     // nodes and therefore do not participate in single-node diagnostics.
@@ -730,7 +793,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     });
 
     return nodes;
-  }, [subNodes, customNodes, nodePools, proxyChains, geoipData, nodeTestResults]);
+  }, [subNodes, customNodes, vpngateNodes, nodePools, proxyChains, geoipData, nodeTestResults]);
 
   // Get unique types and sources
   const nodeTypes = useMemo(() => {
@@ -748,6 +811,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (customNodes && customNodes.length > 0) {
       options.push({ id: 'custom', name: '自建节点' });
     }
+    if (vpngateNodes && vpngateNodes.length > 0) {
+      options.push({ id: 'vpngate', name: 'VPN Gate' });
+    }
     if (proxyChains && proxyChains.length > 0) {
       options.push({ id: 'chain', name: '链式代理' });
     }
@@ -755,7 +821,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       options.push({ id: 'node_pools', name: '节点池' });
     }
     return options;
-  }, [subscriptions, customNodes, proxyChains, nodePools]);
+  }, [subscriptions, customNodes, vpngateNodes, proxyChains, nodePools]);
 
   const countryOptions = useMemo(() => {
     const options = new Map();
@@ -1871,6 +1937,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       const subRefreshOk = await fetchAllSubNodes();
       const chainsRefreshOk = await fetchProxyChains();
       const chainNodesRefreshOk = await fetchAvailableChainNodes();
+      const vpngateRefreshOk = await fetchVpngateNodes();
       const poolsRefreshOk = await fetchNodePools();
       const poolNodesRefreshOk = await fetchAvailableNodePoolNodes();
       const customRefreshOk = await onRefreshCustomNodes?.();
@@ -1878,6 +1945,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         !subRefreshOk
         || chainsRefreshOk === false
         || chainNodesRefreshOk === false
+        || vpngateRefreshOk === false
         || poolsRefreshOk === false
         || poolNodesRefreshOk === false
         || customRefreshOk === false
@@ -1954,6 +2022,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               group_id: resolveGroupId(null, rowIndex, colIndex),
               group_name: 'VPN Gate 动态池',
               group_source: 'vpngate',
+              vpngate_country_code: null,
               group_strategy: 'url-test',
               lb_strategy: 'round-robin',
               group_nodes: [],
@@ -1967,6 +2036,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               group_id: resolveGroupId(node.group_id, rowIndex, colIndex),
               group_name: node.group_name || defaultLabel,
               group_source: node.group_source || 'nodes',
+              vpngate_country_code: node.vpngate_country_code || null,
               group_strategy: node.group_strategy || 'load-balance',
               lb_strategy: node.lb_strategy || 'round-robin',
               group_nodes: (node.group_source === 'vpngate' ? [] : (node.group_nodes || [])).map(n => {
@@ -2129,6 +2199,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           group_id: generateGroupId(),
           group_name: defaultName,
           group_source: cellType === 'vpngate' ? 'vpngate' : 'nodes',
+          vpngate_country_code: null,
           group_strategy: cellType === 'vpngate' ? 'url-test' : 'load-balance',
           lb_strategy: 'round-robin',
           group_nodes: []
@@ -2155,6 +2226,14 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       if (!current || current.type !== 'group') return newRows;
       newRows[rowIndex][colIndex] = { ...current, ...patch };
       return newRows;
+    });
+  };
+
+  const updateVpngateCountry = (rowIndex, colIndex, countryCode) => {
+    const selectedPool = vpngatePools.find(pool => pool.country_code === countryCode);
+    updateChainGroup(rowIndex, colIndex, {
+      vpngate_country_code: countryCode || null,
+      group_name: selectedPool?.pool_name || 'VPN Gate 动态池',
     });
   };
 
@@ -2257,8 +2336,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             return;
           }
           if (node.group_source === 'vpngate') {
-            if (!vpngatePool.available) {
-              showToast?.('VPN Gate 动态池当前没有可用节点，请先在系统设置中更新节点源', 'error');
+            const selectedPool = node.vpngate_country_code
+              ? vpngatePools.find(pool => pool.country_code === node.vpngate_country_code)
+              : vpngatePool;
+            if (!selectedPool?.available) {
+              showToast?.(
+                node.vpngate_country_code
+                  ? 'VPN Gate 所选国家当前没有可用节点，请先在系统设置中更新节点源'
+                  : 'VPN Gate 动态池当前没有可用节点，请先在系统设置中更新节点源',
+                'error'
+              );
               return;
             }
           } else {
@@ -2290,7 +2377,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               group_strategy: node.group_strategy,
               lb_strategy: node.lb_strategy,
               group_source: node.group_source || 'nodes',
-              ...(node.group_source === 'vpngate' ? {} : {
+              ...(node.group_source === 'vpngate' ? {
+                ...(node.vpngate_country_code ? { vpngate_country_code: node.vpngate_country_code } : {})
+              } : {
                 group_nodes: (node.group_nodes || []).map(n => ({
                   sub_id: n.sub_id,
                   node_id: n.node_id,
@@ -3046,7 +3135,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </div>
                         </td>
                         <td className="px-2 py-1.5">
-                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : node.sourceType === 'node_pool' ? 'text-emerald-400' : 'text-gray-400'}`}>
+                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : node.sourceType === 'node_pool' ? 'text-emerald-400' : node.sourceType === 'vpngate' ? 'text-cyan-400' : 'text-gray-400'}`}>
                             {node.source}
                           </span>
                         </td>
@@ -3141,21 +3230,23 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-0">
-                            <button
-                              onClick={() => {
-                                if (node.sourceType === 'chain') {
-                                  openChainModal(proxyChains.find(c => c.id === node.chainId));
-                                } else if (isNodePool) {
-                                  openNodePoolModal(nodePools.find(pool => pool.id === node.poolId));
-                                } else {
-                                  setEditingNode(node);
-                                }
-                              }}
-                              className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
-                              title="查看/编辑"
-                            >
-                              <Edit2 size={14} />
-                            </button>
+                            {node.sourceType !== 'vpngate' && (
+                              <button
+                                onClick={() => {
+                                  if (node.sourceType === 'chain') {
+                                    openChainModal(proxyChains.find(c => c.id === node.chainId));
+                                  } else if (isNodePool) {
+                                    openNodePoolModal(nodePools.find(pool => pool.id === node.poolId));
+                                  } else {
+                                    setEditingNode(node);
+                                  }
+                                }}
+                                className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
+                                title="查看/编辑"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
                             {/* IP/region test button */}
                             <button
                               onClick={() => testNode(node, true)}
@@ -3221,16 +3312,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 <Play size={14} />
                               )}
                             </button>
-                            <button
-                              onClick={() => openPortMapping(node)}
-                              className={`p-0.5 rounded transition-colors ${currentMappedPort
-                                ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10'
-                                : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
-                                }`}
-                              title={currentMappedPort ? `已绑定端口 ${currentMappedPort}` : '绑定端口'}
-                            >
-                              <Link2 size={14} />
-                            </button>
+                            {node.sourceType !== 'vpngate' && (
+                              <button
+                                onClick={() => openPortMapping(node)}
+                                className={`p-0.5 rounded transition-colors ${currentMappedPort
+                                  ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10'
+                                  : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                                  }`}
+                                title={currentMappedPort ? `已绑定端口 ${currentMappedPort}` : '绑定端口'}
+                              >
+                                <Link2 size={14} />
+                              </button>
+                            )}
                             {node.sourceType === 'custom' && (
                               <>
                                 <button
@@ -3746,7 +3839,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                     <option value="group">{groupLabel}</option>
                                     {isLast && (
                                       <option value="vpngate">
-                                        VPN Gate 动态池（{vpngatePool.active_node_count ?? 0} 个）
+                                        VPN Gate 国家动态池（{vpngatePools.length} 个国家）
                                       </option>
                                     )}
                                   </select>
@@ -3785,8 +3878,33 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                     )}
 
                                     {isVpnGatePool ? (
-                                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                                        自动使用当前有效的 VPN Gate 节点，刷新节点源后池成员会同步更新；当前有效节点：{vpngatePool.active_node_count ?? 0}
+                                      <div className="space-y-2">
+                                        <select
+                                          value={node?.vpngate_country_code || ''}
+                                          onChange={(e) => updateVpngateCountry(rowIndex, colIndex, e.target.value)}
+                                          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                        >
+                                          <option value="">全部国家（{vpngatePool.active_node_count ?? 0} 个）</option>
+                                          {vpngatePools.map(pool => (
+                                            <option key={pool.pool_id || pool.country_code} value={pool.country_code}>
+                                              {pool.flag || ''} {pool.country || pool.country_code}（{pool.active_node_count ?? 0} 个）
+                                            </option>
+                                          ))}
+                                        </select>
+                                        {(() => {
+                                          const selectedPool = node?.vpngate_country_code
+                                            ? vpngatePools.find(pool => pool.country_code === node.vpngate_country_code)
+                                            : null;
+                                          const poolLabel = selectedPool?.country
+                                            ? `${selectedPool.country} `
+                                            : '';
+                                          const activeCount = selectedPool?.active_node_count ?? vpngatePool.active_node_count ?? 0;
+                                          return (
+                                            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                                              自动使用当前有效的 {poolLabel}VPN Gate 节点，刷新节点源后池成员会同步更新；当前有效节点：{activeCount}
+                                            </div>
+                                          );
+                                        })()}
                                       </div>
                                     ) : (() => {
                                       const cellKey = getGroupCellKey(rowIndex, colIndex);
@@ -3933,6 +4051,13 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         预览: 我 → {row.map((n, colIndex) => {
                           if (n?.type === 'group') {
                             const groupName = n?.group_name || '落地池';
+                            if (n?.group_source === 'vpngate') {
+                              const selectedPool = n.vpngate_country_code
+                                ? vpngatePools.find(pool => pool.country_code === n.vpngate_country_code)
+                                : null;
+                              const count = selectedPool?.active_node_count ?? vpngatePool.active_node_count ?? 0;
+                              return `组:${groupName}(${count}个)`;
+                            }
                             const key = getGroupCellKey(rowIndex, colIndex);
                             const draftCount = (groupDrafts[key] || []).length;
                             const savedCount = (n?.group_nodes || []).length;

@@ -48,6 +48,32 @@ class TokenAndChainRegressionTests(unittest.TestCase):
         self.assertEqual(dumped["group_interval"], 120)
         self.assertEqual(dumped["group_tolerance"], 20)
 
+    def test_vpngate_group_normalizes_country_code_and_rejects_it_for_static_groups(self):
+        dynamic_group = ProxyChainNode(
+            type="group",
+            group_id="vpngate-jp",
+            group_name="VPN Gate 日本池",
+            group_source="vpngate",
+            vpngate_country_code="jp",
+        )
+
+        self.assertEqual(dynamic_group.vpngate_country_code, "JP")
+
+        with self.assertRaises(ValidationError):
+            ProxyChainNode(
+                type="group",
+                group_id="static-group",
+                group_name="静态池",
+                group_source="nodes",
+                vpngate_country_code="JP",
+                group_nodes=[{
+                    "type": "node",
+                    "sub_id": "sub_1",
+                    "node_id": "node_stable",
+                    "node_name": "Node",
+                }],
+            )
+
     def test_proxy_chain_node_rejects_unknown_fields_instead_of_silently_dropping(self):
         with self.assertRaises(ValidationError):
             ProxyChainNode(type="group", unknown_field="will-not-be-silently-dropped")

@@ -20,7 +20,10 @@ from services.vpngate import (
     _merge_nodes_with_previous_cache,
     parse_vpngate_csv,
     parse_vpngate_record,
+    list_vpngate_nodes,
+    list_vpngate_pools,
     public_vpngate_node,
+    update_vpngate_node_test_metadata,
 )
 
 
@@ -119,6 +122,51 @@ class VpnGateParsingTests(unittest.TestCase):
 
 
 class VpnGateCacheTests(unittest.TestCase):
+    def test_country_pools_group_active_nodes_and_exclude_stale_only_countries(self):
+        japan = parse_vpngate_record(_record(IP="198.51.100.11", HostName="jp.example", CountryShort="JP"))
+        japan_two = parse_vpngate_record(_record(IP="198.51.100.12", HostName="jp-2.example", CountryShort="JP"))
+        united_states = parse_vpngate_record(_record(IP="198.51.100.13", HostName="us.example", CountryShort="US"))
+        stale_korea = parse_vpngate_record(_record(IP="198.51.100.14", HostName="kr.example", CountryShort="KR"))
+        stale_korea["stale"] = True
+        stale_korea["enabled"] = False
+        payload = {"nodes": [japan, japan_two, united_states, stale_korea]}
+
+        with patch("services.vpngate._get_cache_payload", return_value=payload):
+            pools = list_vpngate_pools()
+            japan_nodes = list_vpngate_nodes(country_code="jp")
+
+        self.assertEqual(
+            [(pool["country_code"], pool["active_node_count"]) for pool in pools],
+            [("JP", 2), ("US", 1)],
+        )
+        self.assertEqual([node["id"] for node in japan_nodes], [japan["id"], japan_two["id"]])
+        self.assertNotIn("KR", {pool["country_code"] for pool in pools})
+
+    def test_test_metadata_updates_are_persisted_without_openvpn_credentials_in_public_data(self):
+        node = parse_vpngate_record(_record())
+        payload = {"nodes": [node]}
+        written = []
+
+        with (
+            patch("services.vpngate._get_cache_payload", return_value=copy.deepcopy(payload)),
+            patch("services.vpngate._write_cache_payload", side_effect=written.append),
+        ):
+            self.assertTrue(update_vpngate_node_test_metadata(node["id"], {
+                "last_latency": 123,
+                "exit_ip": "203.0.113.10",
+                "ip_profile": {"fraud_score": 4},
+            }))
+            public = public_vpngate_node(written[-1]["nodes"][0])
+
+        self.assertEqual(written[-1]["nodes"][0]["last_latency"], 123)
+        self.assertEqual(written[-1]["nodes"][0]["ip_profile"]["fraud_score"], 4)
+        self.assertEqual(public["exit_ip"], "203.0.113.10")
+        self.assertEqual(public["last_latency"], 123)
+        self.assertNotIn("ca", public)
+        self.assertNotIn("cert", public)
+        self.assertNotIn("key", public)
+        self.assertNotIn("password", public)
+
     def test_missing_nodes_are_marked_stale_without_replacing_fresh_nodes(self):
         old_node = parse_vpngate_record(_record(IP="198.51.100.11", HostName="old.example"))
         fresh_node = parse_vpngate_record(_record())
@@ -129,6 +177,23 @@ class VpnGateCacheTests(unittest.TestCase):
         self.assertFalse(by_id[fresh_node["id"]]["stale"])
         self.assertTrue(by_id[old_node["id"]]["stale"])
         self.assertFalse(by_id[old_node["id"]]["enabled"])
+
+    def test_refresh_preserves_previous_tested_exit_metadata_for_returning_node(self):
+        previous = parse_vpngate_record(_record())
+        previous["last_latency"] = 88
+        previous["exit_ip"] = "203.0.113.20"
+        previous["region"] = {"country_code": "US", "country": "美国", "flag": "🇺🇸"}
+        previous["city"] = "纽约"
+        previous["ip_profile"] = {"fraud_score": 3}
+        fresh = parse_vpngate_record(_record())
+
+        merged = _merge_nodes_with_previous_cache([fresh], [previous], 123)
+
+        self.assertEqual(merged[0]["last_latency"], 88)
+        self.assertEqual(merged[0]["exit_ip"], "203.0.113.20")
+        self.assertEqual(merged[0]["region"]["country_code"], "US")
+        self.assertEqual(merged[0]["city"], "纽约")
+        self.assertEqual(merged[0]["ip_profile"]["fraud_score"], 3)
 
     def test_refresh_failure_preserves_previous_cache(self):
         previous = {
@@ -324,6 +389,103 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(generated_proxy["server"], "198.51.100.10")
         self.assertTrue(generated_proxy.get("dialer-proxy"))
+
+    def test_clash_output_expands_only_the_selected_vpngate_country_pool(self):
+        front = {
+            "id": "front-1",
+            "name": "Front",
+            "type": "http",
+            "server": "front.example",
+            "port": 8080,
+        }
+        japan = parse_vpngate_record(_record(
+            IP="198.51.100.20",
+            HostName="jp.example",
+            CountryShort="JP",
+        ))
+        united_states = parse_vpngate_record(_record(
+            IP="198.51.100.21",
+            HostName="us.example",
+            CountryShort="US",
+        ))
+        resolved_nodes = {
+            ("custom", front["id"]): front,
+            ("vpngate", japan["id"]): japan,
+            ("vpngate", united_states["id"]): united_states,
+        }
+
+        def resolve_node(sub_id, _node_index, _node_name, *, node_id=None):
+            node = resolved_nodes.get((sub_id, node_id))
+            return copy.deepcopy(node) if node else None
+
+        config = {
+            "auth": {"sub_token": "admin-token"},
+            "subscriptions": [],
+            "custom_nodes": [front],
+            "users": [],
+            "admin_tokens": [],
+            "templates": [],
+            "source_order": ["custom_nodes"],
+            "proxy_chains": [{
+                "id": "chain-vpngate-jp-pool",
+                "name": "VPN Gate Japan pool chain",
+                "enabled": True,
+                "rows": [{
+                    "row_id": "row-1",
+                    "nodes": [
+                        {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+                        {
+                            "type": "group",
+                            "group_id": "pool-jp",
+                            "group_name": "VPN Gate 日本池",
+                            "group_source": "vpngate",
+                            "vpngate_country_code": "JP",
+                            "group_strategy": "url-test",
+                        },
+                    ],
+                }],
+            }],
+        }
+
+        app = FastAPI()
+
+        def load_config():
+            return copy.deepcopy(config)
+
+        def update_config(mutator):
+            return mutator(config)
+
+        app.include_router(create_subscription_output_router(
+            yaml_source_dir="/tmp/vpngate-country-pool-chain-tests",
+            output_file="/tmp/vpngate-country-pool-chain-tests/config.yaml",
+            load_config=load_config,
+            update_config=update_config,
+            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
+            find_node_by_reference=resolve_node,
+            is_name_allocated=lambda *args, **kwargs: False,
+            filter_underscore_fields=strip_node_metadata,
+            extract_country_from_name=lambda *args, **kwargs: None,
+            split_template=lambda content: (content, ""),
+            logger=logging.getLogger("test.vpngate.country-pool"),
+        ))
+
+        def list_nodes(*, country_code=None):
+            if country_code == "JP":
+                return [japan]
+            return [japan, united_states]
+
+        with patch("services.subscription_output.list_vpngate_nodes", side_effect=list_nodes):
+            with tempfile.TemporaryDirectory():
+                response = TestClient(app).get("/sub?token=admin-token&format=clash")
+
+        self.assertEqual(response.status_code, 200)
+        rendered = yaml.safe_load(response.text)
+        openvpn_nodes = [proxy for proxy in rendered["proxies"] if proxy.get("type") == "openvpn"]
+        self.assertTrue(openvpn_nodes)
+        self.assertTrue(all("jp.example" in proxy["name"] for proxy in openvpn_nodes))
+        self.assertFalse(any("us.example" in proxy["name"] for proxy in openvpn_nodes))
+        pool = next(group for group in rendered["proxy-groups"] if group.get("name", "").startswith("🔀 VPN Gate 日本池"))
+        self.assertEqual(len(pool["proxies"]), 1)
 
 
 if __name__ == "__main__":

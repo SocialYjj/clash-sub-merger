@@ -23,6 +23,7 @@ from services.vpngate import (
     get_vpngate_settings,
     get_vpngate_status,
     list_vpngate_nodes,
+    list_vpngate_pools,
     public_vpngate_node,
     refresh_vpngate_cache,
 )
@@ -136,7 +137,12 @@ def get_vpngate_nodes(include_stale: bool = False, _: bool = Depends(verify_sess
     """Return frontend-safe VPN Gate node metadata."""
 
     nodes = [public_vpngate_node(node) for node in list_vpngate_nodes(include_stale=include_stale)]
-    return {"nodes": nodes, "count": len(nodes), "status": get_vpngate_status()}
+    return {
+        "nodes": nodes,
+        "count": len(nodes),
+        "pools": list_vpngate_pools(),
+        "status": get_vpngate_status(),
+    }
 
 
 @router.get("/nodes/{node_id}")

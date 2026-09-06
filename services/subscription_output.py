@@ -941,7 +941,8 @@ def create_subscription_output_router(
 
                 if str(group_spec.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID:
                     member_proxies = []
-                    for vpngate_node in list_vpngate_nodes():
+                    country_code = group_spec.get("vpngate_country_code")
+                    for vpngate_node in list_vpngate_nodes(country_code=country_code):
                         node_proxy = find_node_by_reference(
                             VPNGATE_SOURCE_ID,
                             None,

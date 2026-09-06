@@ -1658,7 +1658,7 @@ export default function Settings({
               VPN Gate 节点源
             </h2>
             <p className="text-sm text-gray-400 mt-2">
-              自动下载 VPN Gate 的 OpenVPN 节点，可在创建链式代理时作为落地节点或落地池使用。
+              自动下载 VPN Gate 的 OpenVPN 节点，可在创建链式代理时按国家聚合为落地节点池。
             </p>
           </div>
           <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${vpnGateConfig.enabled
