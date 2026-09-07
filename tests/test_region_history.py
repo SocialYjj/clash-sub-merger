@@ -8,6 +8,22 @@ from services.country_data import detect_country
 
 
 class RegionHistoryTests(unittest.TestCase):
+    def test_region_normalization_replaces_legacy_hong_kong_alias(self):
+        normalized = region_history._normalize_region({
+            "country_code": "HK",
+            "country": "香港",
+            "flag": "🇭🇰",
+        })
+
+        self.assertEqual(normalized["country"], "中国香港")
+
+    def test_region_normalization_recovers_hong_kong_code_from_legacy_alias(self):
+        normalized = region_history._normalize_region({"country": "香港"})
+
+        self.assertEqual(normalized["country_code"], "HK")
+        self.assertEqual(normalized["country"], "中国香港")
+        self.assertEqual(normalized["flag"], "🇭🇰")
+
     def test_legacy_entries_without_updated_at_are_not_immortal(self):
         entries = {
             "legacy": {

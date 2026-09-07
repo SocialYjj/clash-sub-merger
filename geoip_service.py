@@ -772,10 +772,26 @@ async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None)
     return None
 
 def normalize_country_name(country_name: str, iso_code: str = "") -> str:
-    """Normalize provider output without applying a hard-coded name map."""
+    """Normalize provider output to the canonical Chinese country label."""
     source_text = str(country_name or "").strip()
+    normalized_code = str(iso_code or "").strip().upper()
+    try:
+        from services.name_transformer import NameTransformer
+
+        normalized_code, canonical_name = NameTransformer.canonical_country_name(
+            source_text,
+            normalized_code,
+        )
+    except Exception:
+        canonical_name = None
+    if canonical_name and normalized_code != "XX":
+        # A saved GeoIP result may contain an older alias such as ``香港``.
+        # The ISO code is the stable identity, so prefer the canonical label
+        # for that code whenever it is available.
+        return canonical_name
+
     text = convert_to_simplified(get_cached_translation(source_text, "country") or source_text)
-    return text or (iso_code or "").upper()
+    return text or normalized_code
 
 
 def _normalize_geo_result_fields(iso_code: str, country_name: str, city_name: str) -> Dict[str, Optional[str]]:

@@ -231,7 +231,9 @@ class CountryGrouper:
         code = str(country_code or '').upper().strip()
         if code and code != 'XX':
             flag = flag or GeoIPService.iso_to_flag(code)
-            country_name = country_name or COUNTRY_NAMES.get(code) or NameTransformer.ISO_TO_COUNTRY.get(code, code)
+            # Country code is the stable identity.  Do not preserve stale
+            # aliases such as ``香港`` when the canonical label is 中国香港.
+            country_name = COUNTRY_NAMES.get(code) or NameTransformer.ISO_TO_COUNTRY.get(code, code)
 
         if flag and country_name:
             return f"{flag} {country_name}"

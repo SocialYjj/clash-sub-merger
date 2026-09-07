@@ -275,19 +275,19 @@ class NameTransformer:
         if not isinstance(region, dict):
             return None
 
-        country_code = str(region.get('country_code') or '').upper()
         country = str(region.get('country') or '').strip()
+        country_code = str(region.get('country_code') or '').upper()
         flag = str(region.get('flag') or '').strip()
 
+        country_code, country = NameTransformer.canonical_country_name(country, country_code)
         if country_code and country_code != 'XX':
             flag = flag or NameTransformer._get_iso_to_flag().get(country_code, '')
-            country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or country_code)
         elif flag:
             country_code = NameTransformer.FLAG_TO_ISO.get(flag, '')
             if country_code and country_code != 'XX':
-                country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or country_code)
+                _, country = NameTransformer.canonical_country_name(country, country_code)
 
-        if not country_code and not flag:
+        if country_code in ('', 'XX') and not flag:
             return None
 
         return {
@@ -478,6 +478,24 @@ class NameTransformer:
         'ZA': '南非', 'ZM': '赞比亚', 'ZW': '津巴布韦',
         'XX': '未知',
     }
+
+    COUNTRY_NAME_ALIASES = {
+        '香港': 'HK', 'hong kong': 'HK', 'hongkong': 'HK', '中国香港': 'HK',
+        '台湾': 'TW', 'taiwan': 'TW', '中国台湾': 'TW',
+        '澳门': 'MO', 'macau': 'MO', 'macao': 'MO', '中国澳门': 'MO',
+        '中国': 'CN', '中国大陆': 'CN', 'china': 'CN',
+    }
+
+    @staticmethod
+    def canonical_country_name(country_name: str = '', country_code: str = '') -> tuple[str, str]:
+        """Return the stable ISO code and canonical Chinese country label."""
+        normalized_code = str(country_code or '').strip().upper()
+        source_name = str(country_name or '').strip()
+        if normalized_code in ('', 'XX'):
+            normalized_code = NameTransformer.COUNTRY_NAME_ALIASES.get(source_name.casefold(), '')
+        if normalized_code and normalized_code != 'XX':
+            return normalized_code, NameTransformer.ISO_TO_COUNTRY.get(normalized_code, source_name)
+        return normalized_code or 'XX', source_name
 
     @staticmethod
     def transform_name(proxy: dict, source_name: str) -> dict:

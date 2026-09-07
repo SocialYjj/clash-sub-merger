@@ -88,8 +88,8 @@ def _normalize_region(region: dict) -> Optional[dict]:
     if not isinstance(region, dict):
         return None
 
-    country_code = str(region.get('country_code') or '').upper().strip()
     country = _normalize_text(region.get('country'))
+    country_code = str(region.get('country_code') or '').upper().strip()
     flag = str(region.get('flag') or '').strip()
 
     if not country_code and not country and not flag:
@@ -98,10 +98,9 @@ def _normalize_region(region: dict) -> Optional[dict]:
     if country_code == 'XX' and not country and not flag:
         return None
 
+    country_code, country = NameTransformer.canonical_country_name(country, country_code)
     if not flag and country_code and country_code != 'XX':
         flag = _iso_to_flag(country_code)
-    if not country and country_code:
-        country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country_code)
 
     return {
         'country_code': country_code or 'XX',

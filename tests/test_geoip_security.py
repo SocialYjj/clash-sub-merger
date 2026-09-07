@@ -28,6 +28,10 @@ class _ChunkedAsyncStream(httpx.AsyncByteStream):
 
 
 class GeoIPDestinationSecurityTests(unittest.TestCase):
+    def test_country_code_uses_canonical_hong_kong_label(self):
+        self.assertEqual(geoip_service.normalize_country_name("香港", "HK"), "中国香港")
+        self.assertEqual(geoip_service.normalize_country_name("香港"), "中国香港")
+
     def test_custom_api_url_rejects_local_hosts_credentials_and_private_addresses(self):
         invalid_urls = (
             "http://localhost/lookup/{ip}",
