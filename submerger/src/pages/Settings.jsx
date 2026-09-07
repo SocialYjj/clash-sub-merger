@@ -1643,9 +1643,6 @@ export default function Settings({
               </button>
             )}
           </div>
-          <p className="text-xs text-gray-500">
-            Token 只保存在后端，不会回显到前端；保存后重新执行“地区/IP 信息检测”，节点表才会填充人机流量比。
-          </p>
         </div>
       </div>
 
@@ -1733,9 +1730,6 @@ export default function Settings({
               最近一次更新失败：{vpnGateConfig.status.last_error}
             </div>
           )}
-          <p className="text-xs text-gray-500">
-            最多缓存 {vpnGateConfig.max_nodes || 100} 个节点；更新失败时继续使用上一份缓存。
-          </p>
         </div>
       </div>
 
