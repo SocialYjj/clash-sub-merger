@@ -34,12 +34,14 @@ class TokenAndChainRegressionTests(unittest.TestCase):
             group_url="https://cp.cloudflare.com/generate_204",
             group_interval="120",
             group_tolerance="20",
-            group_nodes=[{
-                "type": "node",
-                "sub_id": "sub_1",
-                "node_id": "node_stable",
-                "node_name": "Node",
-            }],
+            group_nodes=[
+                {
+                    "type": "node",
+                    "sub_id": "sub_1",
+                    "node_id": "node_stable",
+                    "node_name": "Node",
+                }
+            ],
         )
 
         dumped = node.model_dump(exclude_none=True)
@@ -66,12 +68,14 @@ class TokenAndChainRegressionTests(unittest.TestCase):
                 group_name="静态池",
                 group_source="nodes",
                 vpngate_country_code="JP",
-                group_nodes=[{
-                    "type": "node",
-                    "sub_id": "sub_1",
-                    "node_id": "node_stable",
-                    "node_name": "Node",
-                }],
+                group_nodes=[
+                    {
+                        "type": "node",
+                        "sub_id": "sub_1",
+                        "node_id": "node_stable",
+                        "node_name": "Node",
+                    }
+                ],
             )
 
     def test_proxy_chain_node_rejects_unknown_fields_instead_of_silently_dropping(self):

@@ -14,10 +14,7 @@ class DefaultGroupUrlTests(unittest.TestCase):
     def test_builtin_template_uses_default_group_url(self):
         template = get_builtin_template()
 
-        url_test_groups = [
-            group for group in template["proxy_groups"]
-            if group.get("type") == "url-test"
-        ]
+        url_test_groups = [group for group in template["proxy_groups"] if group.get("type") == "url-test"]
 
         self.assertEqual(len(url_test_groups), 1)
         self.assertEqual(url_test_groups[0].get("url"), DEFAULT_GROUP_URL)

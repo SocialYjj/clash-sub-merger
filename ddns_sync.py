@@ -45,9 +45,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from fastapi import HTTPException
+
 from core.config import DATA_DIR
 from core.database import load_config, update_config
-from fastapi import HTTPException
 
 # =============================================================================
 # 配置区（按需修改）
@@ -67,16 +68,16 @@ LOG_DIR = DATA_PATH / "logs"
 # 本机自建节点的 id 列表（用 `python ddns_sync.py --list` 查询）。
 # 当前监控本机三个 JP 节点（共用一台机器，分别是 v4/v6 × 三种协议）。
 MONITORED_NODE_IDS: list[str] = [
-    "node_1778293140529_0",   # JP-xhttp-reality   (v4)
-    "node_1778293140529_2",   # JP-tcp-reality-v6  (v6)
-    "node_1778293140529_1",   # JP-ws              (v4)
+    "node_1778293140529_0",  # JP-xhttp-reality   (v4)
+    "node_1778293140529_2",  # JP-tcp-reality-v6  (v6)
+    "node_1778293140529_1",  # JP-ws              (v4)
 ]
 
 # 仅当 MONITORED_NODE_IDS 为空时启用：本机当前基准 IP。
 # 脚本会把 config.json 中所有 server 等于该值的节点视作本机节点并跟踪。
 # 首次填写当前真实 IP；之后脚本会用 state 文件滚动跟踪，无需再改这里。
-BASE_V4: str = ""   # 例 "138.197.237.55"
-BASE_V6: str = ""   # 例 "2604:a880:2:d1:0:1:2c93:5001"
+BASE_V4: str = ""  # 例 "138.197.237.55"
+BASE_V6: str = ""  # 例 "2604:a880:2:d1:0:1:2c93:5001"
 
 # ---- IPv4 获取（公网 checkip 接口，按顺序尝试，首个成功即用）----
 V4_API_LIST: list[str] = [
@@ -92,12 +93,12 @@ V4_REGEX = re.compile(r"(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d
 # ---- IPv6 获取（读网卡全局地址）----
 V6_INTERFACE = "ens5"
 # 可选：仅匹配该前缀的全局地址，避免取到 SLAAC 临时隐私地址；留空取第一个全局地址
-V6_PREFIX_FILTER = ""   # 例 "2604:a880:"
+V6_PREFIX_FILTER = ""  # 例 "2604:a880:"
 
 # ---- 行为开关 ----
 # IP 变化后是否调用 SubMerger 刷新接口（留空=不调用，依赖 mtime 自动重载）
-REFRESH_API = ""        # 例 "http://127.0.0.1:8000/api/subscription/refresh"
-REFRESH_TOKEN = ""      # 若接口需要鉴权
+REFRESH_API = ""  # 例 "http://127.0.0.1:8000/api/subscription/refresh"
+REFRESH_TOKEN = ""  # 若接口需要鉴权
 
 # 单次 checkip 请求超时（秒）
 HTTP_TIMEOUT = 8
@@ -121,6 +122,7 @@ log = logging.getLogger("ddns_sync")
 # =============================================================================
 # IP 检测
 # =============================================================================
+
 
 def get_current_v4() -> Optional[str]:
     """轮询 V4_API_LIST，从响应中提取公网 IPv4。"""
@@ -150,7 +152,9 @@ def get_current_v6(iface: str = V6_INTERFACE) -> Optional[str]:
     try:
         out = subprocess.run(
             ["ip", "-6", "addr", "show", "dev", iface],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if out.returncode == 0:
             # 行形如: inet6 2604:a880:2:d1::1/64 scope global
@@ -166,9 +170,7 @@ def get_current_v6(iface: str = V6_INTERFACE) -> Optional[str]:
     # 方式 2：socket（取本机所有 v6，过滤）
     if not candidates:
         try:
-            for _name, _fam, _type, _proto, sockaddr in socket.getaddrinfo(
-                socket.gethostname(), None, socket.AF_INET6
-            ):
+            for _name, _fam, _type, _proto, sockaddr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6):
                 addr = sockaddr[0].split("%")[0]
                 candidates.append(addr)
         except Exception as e:
@@ -203,12 +205,14 @@ def get_current_v6(iface: str = V6_INTERFACE) -> Optional[str]:
 def ip_normalize(addr: str) -> str:
     """用 ipaddress 压缩 IPv6 表示，便于比较。"""
     import ipaddress
+
     return str(ipaddress.ip_address(addr))
 
 
 def is_ipv4(s: str) -> bool:
     try:
         import ipaddress
+
         ipaddress.IPv4Address(s)
         return True
     except Exception:
@@ -218,6 +222,7 @@ def is_ipv4(s: str) -> bool:
 def is_ipv6(s: str) -> bool:
     try:
         import ipaddress
+
         ipaddress.IPv6Address(s)
         return True
     except Exception:
@@ -227,6 +232,7 @@ def is_ipv6(s: str) -> bool:
 # =============================================================================
 # state 文件（记录上次同步到的本机 IP，用于滚动跟踪）
 # =============================================================================
+
 
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -269,6 +275,7 @@ def replace_host_in_link(link: str, new_ip: str) -> str:
 # SQLite 原子更新（与运行中的服务共用 core.database）
 # =============================================================================
 
+
 def atomic_update_config(mutator):
     """
     在 SQLite 事务中读取-修改-写回配置。
@@ -290,11 +297,13 @@ def atomic_update_config(mutator):
 # 刷新通知（可选）
 # =============================================================================
 
+
 def notify_refresh() -> None:
     if not REFRESH_API:
         return
     try:
         import urllib.request
+
         headers = {"User-Agent": "ddns-sync/1.0"}
         if REFRESH_TOKEN:
             headers["Authorization"] = f"Bearer {REFRESH_TOKEN}"
@@ -308,6 +317,7 @@ def notify_refresh() -> None:
 # =============================================================================
 # 核心：解析监控目标
 # =============================================================================
+
 
 def resolve_targets(config: dict) -> list[dict]:
     """
@@ -345,6 +355,7 @@ def resolve_targets(config: dict) -> list[dict]:
 # 主流程
 # =============================================================================
 
+
 def cmd_list() -> None:
     """列出所有 custom_nodes，便于挑选监控 id。"""
     config = load_config()
@@ -355,7 +366,7 @@ def cmd_list() -> None:
     for n in nodes:
         srv = n.get("server", "")
         ver = "v4" if is_ipv4(srv) else ("v6" if is_ipv6(srv) else "host")
-        print(f"{n.get('id',''):<32} {ver:<5} {srv:<42} {n.get('name','')}")
+        print(f"{n.get('id', ''):<32} {ver:<5} {srv:<42} {n.get('name', '')}")
 
 
 def sync_once(check_only: bool = False, force: bool = False) -> int:
@@ -378,10 +389,7 @@ def sync_once(check_only: bool = False, force: bool = False) -> int:
         log.info("IP 未变化 (v4=%s, v6=%s)，无需更新", cur_v4, cur_v6)
         return 0
 
-    log.info(
-        "检测到变化: v4 %s->%s | v6 %s->%s%s",
-        prev_v4, cur_v4, prev_v6, cur_v6, " [FORCE]" if force else ""
-    )
+    log.info("检测到变化: v4 %s->%s | v6 %s->%s%s", prev_v4, cur_v4, prev_v6, cur_v6, " [FORCE]" if force else "")
 
     if check_only:
         log.info("--check 模式，不写入")
@@ -414,10 +422,7 @@ def sync_once(check_only: bool = False, force: bool = False) -> int:
             link = n.get("link")
             if link:
                 n["link"] = replace_host_in_link(link, new_ip)
-            log.info(
-                "更新节点 %s (%s): %s -> %s",
-                n.get("id"), n.get("name"), old_server, new_ip
-            )
+            log.info("更新节点 %s (%s): %s -> %s", n.get("id"), n.get("name"), old_server, new_ip)
             any_change = True
         return any_change
 

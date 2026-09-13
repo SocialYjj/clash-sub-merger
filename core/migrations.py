@@ -1,9 +1,9 @@
 """Historical configuration migrations and runtime reload routines."""
 
-import os
-import json
-import time
 import hashlib
+import json
+import os
+import time
 from copy import deepcopy
 
 from core.config import AppConfig
@@ -23,6 +23,7 @@ YAML_SOURCE_DIR = os.path.join(DATA_DIR, "uploads")
 def _resolve_load_config():
     try:
         import server
+
         return getattr(server, "load_config", load_config)
     except Exception:
         return load_config
@@ -31,6 +32,7 @@ def _resolve_load_config():
 def _resolve_save_config():
     try:
         import server
+
         return getattr(server, "save_config", save_config)
     except Exception:
         return save_config
@@ -39,6 +41,7 @@ def _resolve_save_config():
 def _resolve_load_subscription_yaml():
     try:
         import server
+
         return getattr(server, "load_subscription_yaml", load_subscription_yaml)
     except Exception:
         return load_subscription_yaml
@@ -224,15 +227,10 @@ def migrate_subscription_node_counts() -> None:
                 YAML_SOURCE_DIR,
                 use_cache=False,
             )
-            source_nodes = (
-                source_config.get("proxies")
-                if isinstance(source_config, dict)
-                else None
-            )
+            source_nodes = source_config.get("proxies") if isinstance(source_config, dict) else None
             if not isinstance(source_nodes, list):
                 logger.warning(
-                    "Skipping node-count migration for subscription %s: "
-                    "source has no list-valued proxies field",
+                    "Skipping node-count migration for subscription %s: source has no list-valued proxies field",
                     subscription_id,
                 )
                 if subscription.get("enabled", True):
@@ -276,8 +274,7 @@ def migrate_subscription_node_counts() -> None:
         )
         log_migration(
             "migrate_subscription_node_counts: updated "
-            f"{updated} subscriptions"
-            + (" and marked complete" if not missing_required_source else "")
+            f"{updated} subscriptions" + (" and marked complete" if not missing_required_source else "")
         )
 
 
@@ -393,6 +390,7 @@ def reload_runtime_configuration() -> None:
     # Import lifecycle schedulers without circular import
     try:
         import server
+
         server._restore_scheduled_jobs()
         server.reschedule_vpngate_refresh()
     except Exception as e:

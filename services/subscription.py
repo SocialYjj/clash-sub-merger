@@ -6,6 +6,7 @@ This module intentionally delegates all URI parsing to services.node_parser so
 remote subscriptions, local subscriptions and manually pasted links preserve the
 same protocol fields.
 """
+
 import json
 from typing import Optional
 
@@ -74,27 +75,27 @@ class SubscriptionParser:
             logger.warning("Error parsing YAML: %s", e)
             return None
 
-        if isinstance(data, dict) and 'proxies' in data:
+        if isinstance(data, dict) and "proxies" in data:
             return data
         return None
 
     @staticmethod
     def _parse_json_proxy_line(line: str) -> Optional[dict]:
         """Parse one JSON proxy line used by some mixed subscription exports."""
-        if not (line.startswith('{') and line.endswith('}')):
+        if not (line.startswith("{") and line.endswith("}")):
             return None
         try:
             proxy = json.loads(line)
         except json.JSONDecodeError:
             return None
-        if isinstance(proxy, dict) and proxy.get('name') and proxy.get('type'):
+        if isinstance(proxy, dict) and proxy.get("name") and proxy.get("type"):
             return proxy
         return None
 
     @staticmethod
     def parse_content(content: str) -> dict:
         """Try to parse YAML, Base64-wrapped YAML, or URI-list content."""
-        content = (content or '').strip()
+        content = (content or "").strip()
         if not content:
             return {}
 
@@ -120,7 +121,7 @@ class SubscriptionParser:
         for candidate in candidates:
             for raw_line in candidate.splitlines():
                 line = raw_line.strip()
-                if not line or line.startswith('#'):
+                if not line or line.startswith("#"):
                     continue
 
                 proxy = parse_node_link(line) or SubscriptionParser._parse_json_proxy_line(line)
@@ -130,6 +131,6 @@ class SubscriptionParser:
                 break
 
         if proxies:
-            return {'proxies': proxies}
+            return {"proxies": proxies}
 
         return {}

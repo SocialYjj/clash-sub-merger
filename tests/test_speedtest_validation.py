@@ -24,32 +24,41 @@ class SpeedtestValidationTests(unittest.TestCase):
     def test_rejects_unbounded_concurrency(self):
         client = self.make_client()
 
-        response = client.post("/api/speedtest/batch", json={
-            "node_ids": ["sub_demo_0"],
-            "concurrency": speedtest_api.MAX_SPEEDTEST_CONCURRENCY + 1,
-            "timeout": 10,
-        })
+        response = client.post(
+            "/api/speedtest/batch",
+            json={
+                "node_ids": ["sub_demo_0"],
+                "concurrency": speedtest_api.MAX_SPEEDTEST_CONCURRENCY + 1,
+                "timeout": 10,
+            },
+        )
 
         self.assertEqual(response.status_code, 422)
 
     def test_rejects_invalid_timeout(self):
         client = self.make_client()
 
-        response = client.post("/api/speedtest/single", json={
-            "node_id": "sub_demo_0",
-            "timeout": 0,
-        })
+        response = client.post(
+            "/api/speedtest/single",
+            json={
+                "node_id": "sub_demo_0",
+                "timeout": 0,
+            },
+        )
 
         self.assertEqual(response.status_code, 422)
 
     def test_rejects_empty_batch(self):
         client = self.make_client()
 
-        response = client.post("/api/speedtest/batch", json={
-            "node_ids": [],
-            "concurrency": 10,
-            "timeout": 10,
-        })
+        response = client.post(
+            "/api/speedtest/batch",
+            json={
+                "node_ids": [],
+                "concurrency": 10,
+                "timeout": 10,
+            },
+        )
 
         self.assertEqual(response.status_code, 422)
 
@@ -121,17 +130,16 @@ class SpeedtestValidationTests(unittest.TestCase):
             {"name": "a", "type": "http", "server": "a.example.com", "port": 8080},
             {"name": "b", "type": "http", "server": "b.example.com", "port": 8080},
         ]
+
         async def fake_batch(node_ids, test_speed=False, timeout=10, concurrency=10):
             return {"node_ids": node_ids, "test_speed": test_speed, "timeout": timeout, "concurrency": concurrency}
 
         async def run_test():
             with (
-                patch.object(speedtest_api, "load_config", return_value={
-                    "subscriptions": [{"id": "my_sub_1", "name": "Demo"}]
-                }),
-                patch.object(speedtest_api, "load_subscription_yaml", return_value={
-                    "proxies": nodes
-                }),
+                patch.object(
+                    speedtest_api, "load_config", return_value={"subscriptions": [{"id": "my_sub_1", "name": "Demo"}]}
+                ),
+                patch.object(speedtest_api, "load_subscription_yaml", return_value={"proxies": nodes}),
                 patch.object(speedtest_api, "_speedtest_batch", side_effect=fake_batch),
             ):
                 endpoint = inspect.unwrap(speedtest_api.speedtest_subscription)
@@ -157,9 +165,11 @@ class SpeedtestValidationTests(unittest.TestCase):
 
         async def run_test():
             with (
-                patch.object(speedtest_api, "load_config", return_value={
-                    "subscriptions": [{"id": "my_sub_1", "name": "Demo", "enabled": True}]
-                }),
+                patch.object(
+                    speedtest_api,
+                    "load_config",
+                    return_value={"subscriptions": [{"id": "my_sub_1", "name": "Demo", "enabled": True}]},
+                ),
                 patch.object(speedtest_api, "load_subscription_yaml", return_value={"proxies": nodes}),
                 patch.object(speedtest_api, "_speedtest_batch", side_effect=fake_batch),
             ):

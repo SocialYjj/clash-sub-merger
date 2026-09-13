@@ -1,9 +1,9 @@
 """Regression tests for server security and speedtest startup hardening."""
 
 import asyncio
+import json
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -14,8 +14,8 @@ from slowapi.errors import RateLimitExceeded
 
 import api.auth as auth_api
 import api.health as health_api
-import services.backup as backup_service
 import server
+import services.backup as backup_service
 from core.dependencies import verify_session
 from core.security import generate_session_token, hash_password, session_storage_key
 from core.token_utils import constant_time_equal
@@ -28,7 +28,7 @@ class ServerSecurityTests(unittest.TestCase):
             "proxies:\n"
             "  - name: evil\n"
             "    type: ss\n"
-            "    server: !!python/object/apply:os.system [\"echo pwned\"]\n"
+            '    server: !!python/object/apply:os.system ["echo pwned"]\n'
             "    port: 443\n"
         )
 
@@ -103,11 +103,9 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertIn('exec gosu appuser "$@"', entrypoint)
 
     def test_subscription_refresh_lock_uses_async_filelock_and_timeout_alias(self):
-        content = (
-            Path(__file__).resolve().parents[1]
-            / "services"
-            / "subscription_refresh_lock.py"
-        ).read_text(encoding="utf-8")
+        content = (Path(__file__).resolve().parents[1] / "services" / "subscription_refresh_lock.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("AsyncFileLock", content)
         self.assertIn("Timeout as FileLockTimeout", content)
@@ -275,10 +273,7 @@ class ServerSecurityTests(unittest.TestCase):
         client = TestClient(app)
 
         with patch.object(auth_api, "update_config", side_effect=update_config):
-            responses = [
-                client.post("/api/auth/login", json={"password": "wrong-password"})
-                for _ in range(11)
-            ]
+            responses = [client.post("/api/auth/login", json={"password": "wrong-password"}) for _ in range(11)]
 
         self.assertEqual([r.status_code for r in responses[:10]], [401] * 10)
         self.assertEqual(responses[10].status_code, 429)

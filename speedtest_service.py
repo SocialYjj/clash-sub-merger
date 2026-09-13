@@ -4,11 +4,12 @@ Provides node latency and speed testing functionality.
 """
 
 import asyncio
-import httpx
 import time
-from datetime import datetime
-from typing import Optional, Dict, List, Callable
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
+
+import httpx
 
 # GeoIP lookup is now done via online API in server.py
 
@@ -31,6 +32,7 @@ ALTERNATIVE_SPEED_URLS = [
 @dataclass
 class SpeedTestConfig:
     """Configuration for speed tests"""
+
     latency_url: str = DEFAULT_LATENCY_URL
     speed_url: str = DEFAULT_SPEED_URL
     landing_ip_url: str = DEFAULT_LANDING_IP_URL
@@ -42,22 +44,23 @@ class SpeedTestConfig:
 @dataclass
 class SpeedTestResult:
     """Result of a speed test"""
+
     node_id: str = ""
     node_name: str = ""
-    
+
     # Latency test
     latency: int = -1  # ms, -1 = failed
     latency_status: str = "untested"  # untested, success, timeout, error
-    
+
     # Speed test
     speed: float = 0.0  # MB/s
     speed_status: str = "untested"  # untested, success, timeout, error, partial
     bytes_downloaded: int = 0
-    
+
     # Landing IP (exit IP)
     landing_ip: Optional[str] = None
     country: Optional[Dict] = None
-    
+
     # Metadata
     test_time: str = ""
     error: Optional[str] = None
@@ -66,10 +69,10 @@ class SpeedTestResult:
 class SpeedTestService:
     """
     Service for testing node latency and speed.
-    
+
     Tests are performed by making HTTP requests through a proxy.
     """
-    
+
     def __init__(self, config: SpeedTestConfig = None):
         self.config = config or SpeedTestConfig()
         self._running_tests: Dict[str, asyncio.Task] = {}  # Track running tests
@@ -79,11 +82,7 @@ class SpeedTestService:
     async def _get_client(self) -> httpx.AsyncClient:
         """Return a reusable httpx client for the current event loop."""
         loop = asyncio.get_running_loop()
-        if (
-            self._client is None
-            or self._client.is_closed
-            or self._client_loop is not loop
-        ):
+        if self._client is None or self._client.is_closed or self._client_loop is not loop:
             if self._client is not None and not self._client.is_closed:
                 try:
                     await self._client.aclose()
@@ -103,39 +102,36 @@ class SpeedTestService:
     @staticmethod
     def _running_test_key(node: Dict, proxy_url: str) -> str:
         """Build a stable de-duplication key for concurrent tests of the same node."""
-        node_id = node.get('id') if isinstance(node, dict) else None
+        node_id = node.get("id") if isinstance(node, dict) else None
         if node_id:
             return f"id:{node_id}"
         if not isinstance(node, dict):
             return f"proxy:{proxy_url}"
-        return "|".join([
-            f"proxy:{proxy_url}",
-            str(node.get('name', '')),
-            str(node.get('type', '')),
-            str(node.get('server', '')),
-            str(node.get('port', '')),
-        ])
-    
-    async def test_latency(
-        self,
-        proxy_url: str,
-        test_url: str = None,
-        timeout: int = None
-    ) -> Dict:
+        return "|".join(
+            [
+                f"proxy:{proxy_url}",
+                str(node.get("name", "")),
+                str(node.get("type", "")),
+                str(node.get("server", "")),
+                str(node.get("port", "")),
+            ]
+        )
+
+    async def test_latency(self, proxy_url: str, test_url: str = None, timeout: int = None) -> Dict:
         """
         Test latency by making HTTP request through proxy.
-        
+
         Args:
             proxy_url: HTTP proxy URL (e.g., "http://127.0.0.1:7890")
             test_url: URL to test (default: generate_204)
             timeout: Request timeout in seconds
-        
+
         Returns:
             {"status": "success/timeout/error", "latency": ms, "error": str}
         """
         test_url = test_url or self.config.latency_url
         timeout = timeout or self.config.timeout
-        
+
         start = time.time()
         try:
             async with httpx.AsyncClient(
@@ -146,11 +142,7 @@ class SpeedTestService:
             ) as client:
                 resp = await client.get(test_url)
             latency = int((time.time() - start) * 1000)
-            return {
-                "status": "success",
-                "latency": latency,
-                "status_code": resp.status_code
-            }
+            return {"status": "success", "latency": latency, "status_code": resp.status_code}
         except httpx.TimeoutException:
             return {"status": "timeout", "latency": -1}
         except httpx.ProxyError as e:
@@ -159,30 +151,25 @@ class SpeedTestService:
             return {"status": "error", "latency": -1, "error": str(e)}
         except Exception as e:
             return {"status": "error", "latency": -1, "error": str(e)}
-    
-    async def test_speed(
-        self,
-        proxy_url: str,
-        test_url: str = None,
-        timeout: int = None
-    ) -> Dict:
+
+    async def test_speed(self, proxy_url: str, test_url: str = None, timeout: int = None) -> Dict:
         """
         Test download speed through proxy.
-        
+
         Args:
             proxy_url: HTTP proxy URL
             test_url: URL to download (default: 10MB test file)
             timeout: Request timeout in seconds
-        
+
         Returns:
             {"status": "success/timeout/error/partial", "speed": MB/s, "bytes": downloaded}
         """
         test_url = test_url or self.config.speed_url
         timeout = timeout or self.config.timeout
-        
+
         start = time.time()
         total_bytes = 0
-        
+
         try:
             async with httpx.AsyncClient(
                 proxy=proxy_url,
@@ -197,12 +184,7 @@ class SpeedTestService:
 
             elapsed = time.time() - start
             speed = total_bytes / elapsed / 1024 / 1024 if elapsed > 0 else 0
-            return {
-                "status": "success",
-                "speed": round(speed, 2),
-                "bytes": total_bytes,
-                "elapsed": round(elapsed, 2)
-            }
+            return {"status": "success", "speed": round(speed, 2), "bytes": total_bytes, "elapsed": round(elapsed, 2)}
         except httpx.TimeoutException:
             elapsed = time.time() - start
             if total_bytes > 0 and elapsed > 0:
@@ -211,24 +193,20 @@ class SpeedTestService:
                     "status": "partial",
                     "speed": round(speed, 2),
                     "bytes": total_bytes,
-                    "elapsed": round(elapsed, 2)
+                    "elapsed": round(elapsed, 2),
                 }
             return {"status": "timeout", "speed": 0, "bytes": 0}
         except Exception as e:
             return {"status": "error", "speed": 0, "bytes": 0, "error": str(e)}
-    
-    async def get_landing_ip(
-        self,
-        proxy_url: str,
-        timeout: int = 5
-    ) -> Optional[str]:
+
+    async def get_landing_ip(self, proxy_url: str, timeout: int = 5) -> Optional[str]:
         """
         Get exit IP address through proxy.
-        
+
         Args:
             proxy_url: HTTP proxy URL
             timeout: Request timeout
-        
+
         Returns:
             IP address string or None
         """
@@ -246,21 +224,17 @@ class SpeedTestService:
             return None
 
     async def test_node(
-        self,
-        node: Dict,
-        proxy_url: str,
-        test_speed: bool = None,
-        progress_callback: Callable = None
+        self, node: Dict, proxy_url: str, test_speed: bool = None, progress_callback: Callable = None
     ) -> SpeedTestResult:
         """
         Full test for a single node.
-        
+
         Args:
             node: Node configuration dict
             proxy_url: HTTP proxy URL for this node
             test_speed: Whether to test download speed
             progress_callback: Optional callback for progress updates
-        
+
         Returns:
             SpeedTestResult
         """
@@ -269,9 +243,7 @@ class SpeedTestService:
         if existing_task and not existing_task.done():
             return await asyncio.shield(existing_task)
 
-        task = asyncio.create_task(
-            self._test_node_uncached(node, proxy_url, test_speed, progress_callback)
-        )
+        task = asyncio.create_task(self._test_node_uncached(node, proxy_url, test_speed, progress_callback))
         self._running_tests[test_key] = task
         try:
             return await asyncio.shield(task)
@@ -280,75 +252,71 @@ class SpeedTestService:
                 self._running_tests.pop(test_key, None)
 
     async def _test_node_uncached(
-        self,
-        node: Dict,
-        proxy_url: str,
-        test_speed: bool = None,
-        progress_callback: Callable = None
+        self, node: Dict, proxy_url: str, test_speed: bool = None, progress_callback: Callable = None
     ) -> SpeedTestResult:
         """Run the actual node test. Caller handles duplicate in-flight tests."""
         test_speed = test_speed if test_speed is not None else self.config.test_speed
-        
+
         result = SpeedTestResult(
-            node_id=node.get('id', ''),
-            node_name=node.get('name', ''),
-            test_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            node_id=node.get("id", ""),
+            node_name=node.get("name", ""),
+            test_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
-        
+
         # Test latency first
         latency_result = await self.test_latency(proxy_url)
-        result.latency = latency_result.get('latency', -1)
-        result.latency_status = latency_result.get('status', 'error')
-        
-        if latency_result.get('error'):
-            result.error = latency_result['error']
-        
+        result.latency = latency_result.get("latency", -1)
+        result.latency_status = latency_result.get("status", "error")
+
+        if latency_result.get("error"):
+            result.error = latency_result["error"]
+
         # If latency test passed, continue with other tests
-        if result.latency_status == 'success':
+        if result.latency_status == "success":
             # Get landing IP
             landing_ip = await self.get_landing_ip(proxy_url)
             if landing_ip:
                 result.landing_ip = landing_ip
                 # Country lookup is done via online API in server.py
-            
+
             # Test speed if requested
             if test_speed:
                 speed_result = await self.test_speed(proxy_url)
-                result.speed = speed_result.get('speed', 0)
-                result.speed_status = speed_result.get('status', 'error')
-                result.bytes_downloaded = speed_result.get('bytes', 0)
-        
+                result.speed = speed_result.get("speed", 0)
+                result.speed_status = speed_result.get("status", "error")
+                result.bytes_downloaded = speed_result.get("bytes", 0)
+
         return result
-    
+
     async def test_nodes_batch(
         self,
         nodes: List[Dict],
         get_proxy_url: Callable[[Dict], str],
         test_speed: bool = None,
         concurrency: int = None,
-        progress_callback: Callable[[int, int, SpeedTestResult], None] = None
+        progress_callback: Callable[[int, int, SpeedTestResult], None] = None,
     ) -> List[SpeedTestResult]:
         """
         Test multiple nodes with concurrency control.
-        
+
         Args:
             nodes: List of node configurations
             get_proxy_url: Function to get proxy URL for a node
             test_speed: Whether to test download speed
             concurrency: Max concurrent tests
             progress_callback: Callback(completed, total, result) for progress
-        
+
         Returns:
             List of SpeedTestResult
         """
         concurrency = concurrency or self.config.concurrency
         test_speed = test_speed if test_speed is not None else self.config.test_speed
-        
+
         results = []
         semaphore = asyncio.Semaphore(concurrency)
         total = len(nodes)
         completed = 0
-        
+
         async def test_with_semaphore(node: Dict) -> SpeedTestResult:
             nonlocal completed
             async with semaphore:
@@ -358,7 +326,7 @@ class SpeedTestService:
                 if progress_callback:
                     progress_callback(completed, total, result)
                 return result
-        
+
         tasks = [asyncio.create_task(test_with_semaphore(node)) for node in nodes]
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -367,28 +335,30 @@ class SpeedTestService:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        
+
         # Convert exceptions to error results
         final_results = []
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
-                final_results.append(SpeedTestResult(
-                    node_id=nodes[i].get('id', ''),
-                    node_name=nodes[i].get('name', ''),
-                    latency_status='error',
-                    error=str(result),
-                    test_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ))
+                final_results.append(
+                    SpeedTestResult(
+                        node_id=nodes[i].get("id", ""),
+                        node_name=nodes[i].get("name", ""),
+                        latency_status="error",
+                        error=str(result),
+                        test_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                )
             else:
                 final_results.append(result)
-        
+
         return final_results
 
 
 def get_latency_color(latency: int) -> str:
     """
     Get color code for latency value.
-    
+
     Returns:
         "green" (<200ms), "yellow" (200-500ms), "red" (>500ms), "gray" (failed)
     """
@@ -405,7 +375,7 @@ def get_latency_color(latency: int) -> str:
 def get_speed_color(speed: float) -> str:
     """
     Get color code for speed value.
-    
+
     Returns:
         "green" (>1MB/s), "yellow" (0.5-1MB/s), "red" (<0.5MB/s), "gray" (untested)
     """

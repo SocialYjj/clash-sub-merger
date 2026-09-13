@@ -69,26 +69,30 @@ class NodeTestMetadataTests(unittest.TestCase):
                 "last_latency": 300,
             },
         ]
-        refreshed = [{
-            "name": "New label",
-            "server": "shared.example",
-            "port": 443,
-            "type": "trojan",
-        }]
+        refreshed = [
+            {
+                "name": "New label",
+                "server": "shared.example",
+                "port": 443,
+                "type": "trojan",
+            }
+        ]
 
         self.assertEqual(inherit_node_test_metadata(refreshed, previous), 0)
         self.assertNotIn("last_latency", refreshed[0])
 
     def test_yaml_refresh_persists_inherited_metadata(self):
-        previous = [{
-            "name": "US 01",
-            "server": "us.example",
-            "port": 443,
-            "type": "trojan",
-            "last_latency": 75,
-            "last_speed": 18.2,
-            "region": {"country_code": "US", "country": "United States", "flag": "🇺🇸"},
-        }]
+        previous = [
+            {
+                "name": "US 01",
+                "server": "us.example",
+                "port": 443,
+                "type": "trojan",
+                "last_latency": 75,
+                "last_speed": 18.2,
+                "region": {"country_code": "US", "country": "United States", "flag": "🇺🇸"},
+            }
+        ]
         content = yaml.safe_dump(
             {"proxies": [{"name": "US 01", "server": "us.example", "port": 443, "type": "trojan"}]},
             allow_unicode=True,
@@ -107,22 +111,22 @@ class NodeTestMetadataTests(unittest.TestCase):
         import api.nodes as nodes_api
 
         config = {
-            "custom_nodes": [{
-                "id": "node_1",
-                "name": "US 01",
-                "type": "http",
-                "server": "us.example",
-                "port": 8080,
-            }]
+            "custom_nodes": [
+                {
+                    "id": "node_1",
+                    "name": "US 01",
+                    "type": "http",
+                    "server": "us.example",
+                    "port": 8080,
+                }
+            ]
         }
 
         def fake_update_custom_nodes(mutator):
             return mutator(config)
 
         endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
-        request = nodes_api.BatchSaveRequest(
-            results={"custom": {"node_1": {"speed": 12.5, "peak_speed": 20.0}}}
-        )
+        request = nodes_api.BatchSaveRequest(results={"custom": {"node_1": {"speed": 12.5, "peak_speed": 20.0}}})
 
         with patch.object(nodes_api, "update_custom_nodes", side_effect=fake_update_custom_nodes):
             response = asyncio.run(endpoint(request, request=None, _=True))
@@ -136,20 +140,22 @@ class NodeTestMetadataTests(unittest.TestCase):
         import api.nodes as nodes_api
 
         config = {
-            "custom_nodes": [{
-                "id": "node_1",
-                "name": "US 01",
-                "type": "http",
-                "server": "us.example",
-                "port": 8080,
-                "exit_ip": "203.0.113.10",
-                "ip_profile": {
+            "custom_nodes": [
+                {
+                    "id": "node_1",
+                    "name": "US 01",
+                    "type": "http",
+                    "server": "us.example",
+                    "port": 8080,
                     "exit_ip": "203.0.113.10",
-                    "ip_source": "native",
-                    "network_type": "residential",
-                    "fraud_score": 8,
-                },
-            }]
+                    "ip_profile": {
+                        "exit_ip": "203.0.113.10",
+                        "ip_source": "native",
+                        "network_type": "residential",
+                        "fraud_score": 8,
+                    },
+                }
+            ]
         }
 
         def fake_update_custom_nodes(mutator):
@@ -157,16 +163,20 @@ class NodeTestMetadataTests(unittest.TestCase):
 
         endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
         request = nodes_api.BatchSaveRequest(
-            results={"custom": {"node_1": {
-                # A rotating provider can expose a different egress IP during
-                # the Radar request.  The partial Radar profile must not erase
-                # the previously saved IPPure values.
-                "exit_ip": "203.0.113.11",
-                "ip_profile": {
-                    "exit_ip": "203.0.113.11",
-                    "radar_status": "no_data",
-                },
-            }}}
+            results={
+                "custom": {
+                    "node_1": {
+                        # A rotating provider can expose a different egress IP during
+                        # the Radar request.  The partial Radar profile must not erase
+                        # the previously saved IPPure values.
+                        "exit_ip": "203.0.113.11",
+                        "ip_profile": {
+                            "exit_ip": "203.0.113.11",
+                            "radar_status": "no_data",
+                        },
+                    }
+                }
+            }
         )
 
         with patch.object(nodes_api, "update_custom_nodes", side_effect=fake_update_custom_nodes):
@@ -186,12 +196,16 @@ class NodeTestMetadataTests(unittest.TestCase):
         captured = []
         endpoint = inspect.unwrap(nodes_api.batch_save_test_results)
         request = nodes_api.BatchSaveRequest(
-            results={"vpngate": {"vpngate_node_1": {
-                "latency": 88,
-                "speed": 12.5,
-                "peak_speed": 20.0,
-                "exit_ip": "203.0.113.10",
-            }}}
+            results={
+                "vpngate": {
+                    "vpngate_node_1": {
+                        "latency": 88,
+                        "speed": 12.5,
+                        "peak_speed": 20.0,
+                        "exit_ip": "203.0.113.10",
+                    }
+                }
+            }
         )
 
         def save_vpngate_node(node_id, updates):

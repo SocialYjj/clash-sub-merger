@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import HTTPException
-from logger_config import get_logger
 
 from helpers import (
     atomic_write_text,
@@ -18,6 +17,7 @@ from helpers import (
     subscription_yaml_lock,
     yaml_cache,
 )
+from logger_config import get_logger
 
 logger = get_logger(__name__)
 

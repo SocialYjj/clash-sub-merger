@@ -4,11 +4,12 @@ Persistent node region history.
 Used to inherit previously tested region/city/exit IP metadata for nodes that
 cannot be recognized from name alone when the same node is re-imported later.
 """
+
+import hashlib
 import json
 import os
 import re
 import time
-import hashlib
 from copy import deepcopy
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -24,63 +25,65 @@ from services.name_transformer import NameTransformer
 logger = get_logger(__name__)
 
 try:
-    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
+    from yaml import CSafeDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader
 except ImportError:
-    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
+    from yaml import SafeDumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader
 
-REGION_HISTORY_FILE = os.path.join(DATA_DIR, 'node_region_history.json')
+REGION_HISTORY_FILE = os.path.join(DATA_DIR, "node_region_history.json")
 _DEFAULT_REGION_HISTORY_FILE = REGION_HISTORY_FILE
 REGION_HISTORY_LOCK = f"{REGION_HISTORY_FILE}.lock"
 REGION_HISTORY_VERSION = 1
-REGION_HISTORY_MAX_AGE_DAYS = env_int('NODE_REGION_HISTORY_MAX_AGE_DAYS', 180, minimum=1)
-REGION_HISTORY_MAX_ENTRIES = env_int('NODE_REGION_HISTORY_MAX_ENTRIES', 20000, minimum=1)
+REGION_HISTORY_MAX_AGE_DAYS = env_int("NODE_REGION_HISTORY_MAX_AGE_DAYS", 180, minimum=1)
+REGION_HISTORY_MAX_ENTRIES = env_int("NODE_REGION_HISTORY_MAX_ENTRIES", 20000, minimum=1)
 
 # Test results are persisted on the source node itself.  These fields must be
 # carried to a refreshed node when the provider omits them from the new YAML.
 # Keeping the list in one module prevents refresh, reparse and save paths from
 # silently drifting apart.
 NODE_TEST_METADATA_FIELDS = (
-    'last_latency',
-    'last_latency_time',
-    'last_speed',
-    'last_speed_time',
-    'last_peak_speed',
-    'last_peak_speed_time',
-    'exit_ip',
-    'ip_profile',
-    'region',
-    'city',
+    "last_latency",
+    "last_latency_time",
+    "last_speed",
+    "last_speed_time",
+    "last_peak_speed",
+    "last_peak_speed_time",
+    "exit_ip",
+    "ip_profile",
+    "region",
+    "city",
 )
 
-_SPACE_RE = re.compile(r'\s+')
-_NON_WORD_RE = re.compile(r'[\W_]+', re.UNICODE)
+_SPACE_RE = re.compile(r"\s+")
+_NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
 
 
 def _normalize_text(value) -> str:
     """Normalize text for stable matching."""
-    return _SPACE_RE.sub(' ', str(value or '').strip())
+    return _SPACE_RE.sub(" ", str(value or "").strip())
 
 
 def _normalize_name(value) -> str:
     """Normalize proxy name for identity matching."""
-    return _normalize_text(NameTransformer.remove_flags(str(value or '')))
+    return _normalize_text(NameTransformer.remove_flags(str(value or "")))
 
 
 def _compact_name(value) -> str:
     """Compact name used for loose rename matching."""
     normalized = _normalize_name(value).lower()
-    return _NON_WORD_RE.sub('', normalized)
+    return _NON_WORD_RE.sub("", normalized)
 
 
 def _iso_to_flag(country_code: str) -> str:
     """Resolve ISO code to flag without depending on NameTransformer internals."""
-    code = str(country_code or '').upper().strip()
-    if not code or code == 'XX':
-        return ''
+    code = str(country_code or "").upper().strip()
+    if not code or code == "XX":
+        return ""
     for flag, iso in NameTransformer.FLAG_TO_ISO.items():
         if iso == code:
             return flag
-    return ''
+    return ""
 
 
 def _normalize_region(region: dict) -> Optional[dict]:
@@ -88,24 +91,24 @@ def _normalize_region(region: dict) -> Optional[dict]:
     if not isinstance(region, dict):
         return None
 
-    country = _normalize_text(region.get('country'))
-    country_code = str(region.get('country_code') or '').upper().strip()
-    flag = str(region.get('flag') or '').strip()
+    country = _normalize_text(region.get("country"))
+    country_code = str(region.get("country_code") or "").upper().strip()
+    flag = str(region.get("flag") or "").strip()
 
     if not country_code and not country and not flag:
         return None
 
-    if country_code == 'XX' and not country and not flag:
+    if country_code == "XX" and not country and not flag:
         return None
 
     country_code, country = NameTransformer.canonical_country_name(country, country_code)
-    if not flag and country_code and country_code != 'XX':
+    if not flag and country_code and country_code != "XX":
         flag = _iso_to_flag(country_code)
 
     return {
-        'country_code': country_code or 'XX',
-        'country': country or 'Unknown',
-        'flag': flag or '🔰',
+        "country_code": country_code or "XX",
+        "country": country or "Unknown",
+        "flag": flag or "🔰",
     }
 
 
@@ -114,19 +117,19 @@ def _node_identity(node: dict) -> Optional[dict]:
     if not isinstance(node, dict):
         return None
 
-    name = _normalize_name(node.get('name'))
-    server = _normalize_text(node.get('server')).lower()
-    port = str(node.get('port') or '').strip()
-    node_type = _normalize_text(node.get('type')).lower()
+    name = _normalize_name(node.get("name"))
+    server = _normalize_text(node.get("server")).lower()
+    port = str(node.get("port") or "").strip()
+    node_type = _normalize_text(node.get("type")).lower()
 
     if not name or not server or not port:
         return None
 
     return {
-        'name': name,
-        'server': server,
-        'port': port,
-        'type': node_type,
+        "name": name,
+        "server": server,
+        "port": port,
+        "type": node_type,
     }
 
 
@@ -135,17 +138,17 @@ def _endpoint_identity(node: dict) -> Optional[dict]:
     if not isinstance(node, dict):
         return None
 
-    server = _normalize_text(node.get('server')).lower()
-    port = str(node.get('port') or '').strip()
-    node_type = _normalize_text(node.get('type')).lower()
+    server = _normalize_text(node.get("server")).lower()
+    port = str(node.get("port") or "").strip()
+    node_type = _normalize_text(node.get("type")).lower()
 
     if not server or not port:
         return None
 
     return {
-        'server': server,
-        'port': port,
-        'type': node_type,
+        "server": server,
+        "port": port,
+        "type": node_type,
     }
 
 
@@ -154,8 +157,8 @@ def _node_history_key(node: dict) -> Optional[str]:
     identity = _node_identity(node)
     if not identity:
         return None
-    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-    return hashlib.sha1(raw.encode('utf-8')).hexdigest()
+    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _same_region_payload(left: dict, right: dict) -> bool:
@@ -164,10 +167,10 @@ def _same_region_payload(left: dict, right: dict) -> bool:
         return False
 
     return (
-        _normalize_region(left.get('region', {})) == _normalize_region(right.get('region', {}))
-        and _normalize_text(left.get('city')) == _normalize_text(right.get('city'))
-        and _normalize_text(left.get('exit_ip')) == _normalize_text(right.get('exit_ip'))
-        and left.get('ip_profile') == right.get('ip_profile')
+        _normalize_region(left.get("region", {})) == _normalize_region(right.get("region", {}))
+        and _normalize_text(left.get("city")) == _normalize_text(right.get("city"))
+        and _normalize_text(left.get("exit_ip")) == _normalize_text(right.get("exit_ip"))
+        and left.get("ip_profile") == right.get("ip_profile")
     )
 
 
@@ -214,22 +217,16 @@ def _find_existing_node_for_metadata(node: dict, existing_nodes: Iterable[dict])
     endpoint = _endpoint_identity(node)
     if not endpoint:
         return None
-    endpoint_matches = [
-        candidate
-        for candidate in candidates
-        if _endpoint_identity(candidate) == endpoint
-    ]
+    endpoint_matches = [candidate for candidate in candidates if _endpoint_identity(candidate) == endpoint]
     if len(endpoint_matches) == 1:
         return endpoint_matches[0]
     if not endpoint_matches:
         return None
 
-    compact_name = _compact_name(node.get('name'))
+    compact_name = _compact_name(node.get("name"))
     if compact_name:
         compact_matches = [
-            candidate
-            for candidate in endpoint_matches
-            if _compact_name(candidate.get('name')) == compact_name
+            candidate for candidate in endpoint_matches if _compact_name(candidate.get("name")) == compact_name
         ]
         if len(compact_matches) == 1:
             return compact_matches[0]
@@ -245,7 +242,7 @@ def _find_existing_node_for_metadata(node: dict, existing_nodes: Iterable[dict])
 def inherit_node_test_metadata(
     nodes: Iterable[dict],
     existing_nodes: Optional[Iterable[dict]] = None,
-    source: str = '',
+    source: str = "",
 ) -> int:
     """Carry saved region and test results from matching previous nodes.
 
@@ -282,7 +279,7 @@ def inherit_node_test_metadata(
         logger.info(
             "Inherited saved node test metadata for %s node(s)%s",
             inherited,
-            f" from {source}" if source else '',
+            f" from {source}" if source else "",
         )
     return inherited
 
@@ -290,7 +287,7 @@ def inherit_node_test_metadata(
 def apply_node_test_metadata_to_yaml_content(
     yaml_content: str,
     existing_nodes: Optional[Iterable[dict]] = None,
-    source: str = '',
+    source: str = "",
 ) -> Tuple[str, int]:
     """Apply saved node test metadata to a refreshed YAML document."""
     try:
@@ -298,7 +295,7 @@ def apply_node_test_metadata_to_yaml_content(
     except Exception as exc:
         logger.warning(
             "Failed to parse YAML for node test metadata%s: %s",
-            f" ({source})" if source else '',
+            f" ({source})" if source else "",
             exc,
         )
         return yaml_content, 0
@@ -306,7 +303,7 @@ def apply_node_test_metadata_to_yaml_content(
     if not isinstance(cfg, dict):
         return yaml_content, 0
 
-    proxies = cfg.get('proxies', [])
+    proxies = cfg.get("proxies", [])
     if not isinstance(proxies, list):
         return yaml_content, 0
 
@@ -322,7 +319,7 @@ def apply_node_test_metadata_to_yaml_content(
     except Exception as exc:
         logger.warning(
             "Failed to dump YAML after node test metadata apply%s: %s",
-            f" ({source})" if source else '',
+            f" ({source})" if source else "",
             exc,
         )
         return yaml_content, 0
@@ -351,9 +348,9 @@ def _find_history_entry_for_node(node: dict, entries: Dict[str, dict]) -> Option
         if not isinstance(entry, dict):
             continue
         if (
-            _normalize_text(entry.get('server')).lower() == endpoint['server']
-            and str(entry.get('port') or '').strip() == endpoint['port']
-            and _normalize_text(entry.get('type')).lower() == endpoint['type']
+            _normalize_text(entry.get("server")).lower() == endpoint["server"]
+            and str(entry.get("port") or "").strip() == endpoint["port"]
+            and _normalize_text(entry.get("type")).lower() == endpoint["type"]
         ):
             candidates.append(entry)
 
@@ -367,7 +364,7 @@ def _find_history_entry_for_node(node: dict, entries: Dict[str, dict]) -> Option
     # payloads are identical, it is still safe to inherit the latest one.
     latest_candidates = sorted(
         candidates,
-        key=lambda entry: int(entry.get('updated_at') or 0),
+        key=lambda entry: int(entry.get("updated_at") or 0),
         reverse=True,
     )
     first = latest_candidates[0]
@@ -375,17 +372,13 @@ def _find_history_entry_for_node(node: dict, entries: Dict[str, dict]) -> Option
         return first
 
     # Final conservative fallback: exact compact-name match under same endpoint.
-    compact_name = _compact_name(node.get('name'))
+    compact_name = _compact_name(node.get("name"))
     if compact_name:
-        compact_matches = [
-            entry for entry in latest_candidates
-            if _compact_name(entry.get('name')) == compact_name
-        ]
+        compact_matches = [entry for entry in latest_candidates if _compact_name(entry.get("name")) == compact_name]
         if len(compact_matches) == 1:
             return compact_matches[0]
         if len(compact_matches) > 1 and all(
-            _same_region_payload(compact_matches[0], candidate)
-            for candidate in compact_matches[1:]
+            _same_region_payload(compact_matches[0], candidate) for candidate in compact_matches[1:]
         ):
             return compact_matches[0]
 
@@ -398,14 +391,14 @@ def _load_history_entries() -> Dict[str, dict]:
         if REGION_HISTORY_FILE != _DEFAULT_REGION_HISTORY_FILE:
             if not os.path.exists(REGION_HISTORY_FILE):
                 return {}
-            with open(REGION_HISTORY_FILE, 'r', encoding='utf-8') as f:
+            with open(REGION_HISTORY_FILE, "r", encoding="utf-8") as f:
                 payload = json.load(f)
         else:
-            payload = read_cache_document('region_history', default=None)
+            payload = read_cache_document("region_history", default=None)
             if payload is None:
                 return {}
-        if isinstance(payload, dict) and isinstance(payload.get('entries'), dict):
-            return payload['entries']
+        if isinstance(payload, dict) and isinstance(payload.get("entries"), dict):
+            return payload["entries"]
         if isinstance(payload, dict):
             # Backward-compatible fallback if the file contains raw entries.
             return payload
@@ -447,7 +440,7 @@ def _entry_updated_at(entry: dict) -> int:
     Old raw history files did not always contain updated_at. Treat those rows as
     very old instead of immortal so max-age cleanup can remove them.
     """
-    for key in ('updated_at', 'last_seen', 'detected_at', 'created_at', 'timestamp'):
+    for key in ("updated_at", "last_seen", "detected_at", "created_at", "timestamp"):
         try:
             value = int(entry.get(key) or 0)
         except (TypeError, ValueError):
@@ -460,9 +453,9 @@ def _entry_updated_at(entry: dict) -> int:
 def _save_history_entries(entries: Dict[str, dict]):
     """Persist region history entries in SQLite or a test override file."""
     payload = {
-        'version': REGION_HISTORY_VERSION,
-        'updated_at': int(time.time()),
-        'entries': _trim_entries(entries),
+        "version": REGION_HISTORY_VERSION,
+        "updated_at": int(time.time()),
+        "entries": _trim_entries(entries),
     }
     if REGION_HISTORY_FILE != _DEFAULT_REGION_HISTORY_FILE:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -471,7 +464,7 @@ def _save_history_entries(entries: Dict[str, dict]):
             json.dumps(payload, ensure_ascii=False, indent=2),
         )
     else:
-        write_cache_document('region_history', payload)
+        write_cache_document("region_history", payload)
 
 
 def _with_history_lock():
@@ -487,13 +480,13 @@ def node_needs_region_inheritance(node: dict) -> bool:
     if not isinstance(node, dict):
         return False
 
-    if _normalize_region(node.get('region', {})):
+    if _normalize_region(node.get("region", {})):
         return False
 
     return _node_identity(node) is not None
 
 
-def remember_nodes_region(nodes: Iterable[dict], source: str = '') -> int:
+def remember_nodes_region(nodes: Iterable[dict], source: str = "") -> int:
     """Remember region data for nodes that already have tested metadata."""
     nodes = list(nodes or [])
     if not nodes:
@@ -506,32 +499,32 @@ def remember_nodes_region(nodes: Iterable[dict], source: str = '') -> int:
 
         for node in nodes:
             key = _node_history_key(node)
-            region = _normalize_region((node or {}).get('region', {}))
+            region = _normalize_region((node or {}).get("region", {}))
             if not key or not region:
                 continue
 
-            city = _normalize_text((node or {}).get('city'))
-            exit_ip = _normalize_text((node or {}).get('exit_ip'))
+            city = _normalize_text((node or {}).get("city"))
+            exit_ip = _normalize_text((node or {}).get("exit_ip"))
             identity = _node_identity(node) or {}
 
             entry_core = {
-                'region': region,
-                'city': city,
-                'exit_ip': exit_ip,
-                'ip_profile': deepcopy((node or {}).get('ip_profile')),
-                'source': source or '',
-                'name': identity.get('name', ''),
-                'server': identity.get('server', ''),
-                'port': identity.get('port', ''),
-                'type': identity.get('type', ''),
+                "region": region,
+                "city": city,
+                "exit_ip": exit_ip,
+                "ip_profile": deepcopy((node or {}).get("ip_profile")),
+                "source": source or "",
+                "name": identity.get("name", ""),
+                "server": identity.get("server", ""),
+                "port": identity.get("port", ""),
+                "type": identity.get("type", ""),
             }
 
             old_entry = entries.get(key)
             old_entry_core = dict(old_entry) if isinstance(old_entry, dict) else {}
-            old_entry_core.pop('updated_at', None)
+            old_entry_core.pop("updated_at", None)
             if old_entry_core != entry_core:
                 new_entry = dict(entry_core)
-                new_entry['updated_at'] = now
+                new_entry["updated_at"] = now
                 entries[key] = new_entry
                 updated += 1
 
@@ -541,7 +534,7 @@ def remember_nodes_region(nodes: Iterable[dict], source: str = '') -> int:
     return updated
 
 
-def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = '') -> int:
+def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = "") -> int:
     """Apply remembered region data to nodes when eligible."""
     nodes = list(nodes or [])
     if not nodes:
@@ -559,23 +552,23 @@ def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = '') -> int:
             if not isinstance(entry, dict):
                 continue
 
-            region = _normalize_region(entry.get('region', {}))
+            region = _normalize_region(entry.get("region", {}))
             if not region:
                 continue
 
-            node['region'] = region
+            node["region"] = region
 
-            city = _normalize_text(entry.get('city'))
-            if city and not _normalize_text(node.get('city')):
-                node['city'] = city
+            city = _normalize_text(entry.get("city"))
+            if city and not _normalize_text(node.get("city")):
+                node["city"] = city
 
-            exit_ip = _normalize_text(entry.get('exit_ip'))
-            if exit_ip and not _normalize_text(node.get('exit_ip')):
-                node['exit_ip'] = exit_ip
+            exit_ip = _normalize_text(entry.get("exit_ip"))
+            if exit_ip and not _normalize_text(node.get("exit_ip")):
+                node["exit_ip"] = exit_ip
 
-            ip_profile = entry.get('ip_profile')
-            if isinstance(ip_profile, dict) and not isinstance(node.get('ip_profile'), dict):
-                node['ip_profile'] = deepcopy(ip_profile)
+            ip_profile = entry.get("ip_profile")
+            if isinstance(ip_profile, dict) and not isinstance(node.get("ip_profile"), dict):
+                node["ip_profile"] = deepcopy(ip_profile)
 
             applied += 1
 
@@ -583,7 +576,7 @@ def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = '') -> int:
         logger.info(
             "Inherited saved region for %s node(s)%s",
             applied,
-            f" from {source}" if source else '',
+            f" from {source}" if source else "",
         )
 
     return applied
@@ -592,7 +585,7 @@ def inherit_regions_for_nodes(nodes: Iterable[dict], source: str = '') -> int:
 def process_nodes_with_region_history(
     nodes: Iterable[dict],
     existing_nodes: Optional[Iterable[dict]] = None,
-    source: str = '',
+    source: str = "",
 ) -> Tuple[int, int]:
     """
     Seed history from existing nodes first, then apply to incoming nodes.
@@ -600,7 +593,7 @@ def process_nodes_with_region_history(
     Returns:
         Tuple[remembered_count, inherited_count]
     """
-    remembered = remember_nodes_region(existing_nodes or [], source=f"{source}:existing" if source else 'existing')
+    remembered = remember_nodes_region(existing_nodes or [], source=f"{source}:existing" if source else "existing")
     inherited = inherit_regions_for_nodes(nodes, source=source)
     return remembered, inherited
 
@@ -608,7 +601,7 @@ def process_nodes_with_region_history(
 def apply_region_history_to_yaml_content(
     yaml_content: str,
     existing_nodes: Optional[Iterable[dict]] = None,
-    source: str = '',
+    source: str = "",
 ) -> Tuple[str, int, int]:
     """
     Apply region history to YAML content that contains a top-level proxies list.
@@ -619,13 +612,13 @@ def apply_region_history_to_yaml_content(
     try:
         cfg = yaml.load(yaml_content, Loader=YAMLLoader)
     except Exception as exc:
-        logger.warning("Failed to parse YAML for region history apply%s: %s", f" ({source})" if source else '', exc)
+        logger.warning("Failed to parse YAML for region history apply%s: %s", f" ({source})" if source else "", exc)
         return yaml_content, 0, 0
 
     if not isinstance(cfg, dict):
         return yaml_content, 0, 0
 
-    proxies = cfg.get('proxies', [])
+    proxies = cfg.get("proxies", [])
     if not isinstance(proxies, list):
         return yaml_content, 0, 0
 
@@ -640,5 +633,5 @@ def apply_region_history_to_yaml_content(
             inherited,
         )
     except Exception as exc:
-        logger.warning("Failed to dump YAML after region history apply%s: %s", f" ({source})" if source else '', exc)
+        logger.warning("Failed to dump YAML after region history apply%s: %s", f" ({source})" if source else "", exc)
         return yaml_content, remembered, 0

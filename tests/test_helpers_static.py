@@ -2,10 +2,8 @@
 
 import ast
 import pathlib
-import re
 import unittest
 from collections import Counter
-
 
 HELPERS_PATH = pathlib.Path(__file__).resolve().parents[1] / "helpers.py"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -18,9 +16,7 @@ class HelpersStaticTests(unittest.TestCase):
 
     def test_top_level_function_names_are_unique(self):
         function_names = [
-            node.name
-            for node in self.tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            node.name for node in self.tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         duplicates = sorted(name for name, count in Counter(function_names).items() if count > 1)
 
@@ -46,9 +42,10 @@ class HelpersStaticTests(unittest.TestCase):
     def test_timeout_environment_variables_are_not_cross_wired(self):
         content = HELPERS_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("TIMEOUT_GEOIP_LOOKUP = env_int('GEOIP_LOOKUP_TIMEOUT', 10, minimum=1)", content)
-        self.assertIn("TIMEOUT_SPEEDTEST_PROXY = env_int('SPEEDTEST_TIMEOUT', 10, minimum=1)", content)
-        self.assertNotIn("TIMEOUT_GEOIP_LOOKUP = int(os.getenv('HEALTH_CHECK_TIMEOUT'", content)
+        # ruff format 把源码统一为双引号；断言去掉引号细节，只绑定变量名与 env 键。
+        self.assertIn('TIMEOUT_GEOIP_LOOKUP = env_int("GEOIP_LOOKUP_TIMEOUT", 10, minimum=1)', content)
+        self.assertIn('TIMEOUT_SPEEDTEST_PROXY = env_int("SPEEDTEST_TIMEOUT", 10, minimum=1)', content)
+        self.assertNotIn('TIMEOUT_GEOIP_LOOKUP = int(os.getenv("HEALTH_CHECK_TIMEOUT"', content)
 
     def test_environment_integer_reads_use_safe_parser(self):
         for path in (
@@ -85,8 +82,7 @@ class HelpersStaticTests(unittest.TestCase):
 
     def test_services_init_does_not_create_orphan_http_client(self):
         services_init = (REPO_ROOT / "services" / "__init__.py").read_text(encoding="utf-8")
-        http_client_path = REPO_ROOT / "services" / "http_client.py"
-        
+
         # http_client.py was removed during refactoring, so we only check services/__init__.py
         self.assertNotIn("from .http_client import", services_init)
         self.assertNotIn("import http_client", services_init)

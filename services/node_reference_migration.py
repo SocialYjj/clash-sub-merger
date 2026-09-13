@@ -11,9 +11,7 @@ from services.node_identity import custom_node_id, subscription_node_ids
 def ensure_custom_node_ids(config: dict) -> int:
     added = 0
     reserved_ids = {
-        str(node.get("id"))
-        for node in config.get("custom_nodes", [])
-        if isinstance(node, dict) and node.get("id")
+        str(node.get("id")) for node in config.get("custom_nodes", []) if isinstance(node, dict) and node.get("id")
     }
     seen_ids: set[str] = set()
     for node in config.get("custom_nodes", []):

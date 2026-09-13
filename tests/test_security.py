@@ -8,8 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import api.auth as auth_api
-from core.dependencies import verify_session
 import core.security as security
+from core.dependencies import verify_session
 
 
 class SecurityTests(unittest.TestCase):
@@ -48,11 +48,15 @@ class SecurityTests(unittest.TestCase):
     def test_password_policy_can_be_relaxed_by_environment(self):
         original_env = os.environ.copy()
         try:
-            with patch.dict(os.environ, {
-                "PASSWORD_MIN_LENGTH": "4",
-                "PASSWORD_REQUIRE_LETTER": "false",
-                "PASSWORD_REQUIRE_NUMBER": "false",
-            }, clear=False):
+            with patch.dict(
+                os.environ,
+                {
+                    "PASSWORD_MIN_LENGTH": "4",
+                    "PASSWORD_REQUIRE_LETTER": "false",
+                    "PASSWORD_REQUIRE_NUMBER": "false",
+                },
+                clear=False,
+            ):
                 relaxed_security = importlib.reload(security)
                 self.assertEqual(relaxed_security.PASSWORD_MIN_LENGTH, 4)
                 self.assertEqual(relaxed_security.validate_password_policy("1234"), "1234")
@@ -78,17 +82,26 @@ class SecurityTests(unittest.TestCase):
         client = TestClient(app)
 
         with patch.object(auth_api, "update_config", side_effect=update_config):
-            missing_current = client.post("/api/auth/change-password", json={
-                "new_password": "NewPass123",
-            })
-            wrong_current = client.post("/api/auth/change-password", json={
-                "current_password": "WrongPass123",
-                "new_password": "NewPass123",
-            })
-            ok = client.post("/api/auth/change-password", json={
-                "current_password": "OldPass123",
-                "new_password": "NewPass123",
-            })
+            missing_current = client.post(
+                "/api/auth/change-password",
+                json={
+                    "new_password": "NewPass123",
+                },
+            )
+            wrong_current = client.post(
+                "/api/auth/change-password",
+                json={
+                    "current_password": "WrongPass123",
+                    "new_password": "NewPass123",
+                },
+            )
+            ok = client.post(
+                "/api/auth/change-password",
+                json={
+                    "current_password": "OldPass123",
+                    "new_password": "NewPass123",
+                },
+            )
 
         self.assertEqual(missing_current.status_code, 422)
         self.assertEqual(wrong_current.status_code, 401)

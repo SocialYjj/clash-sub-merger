@@ -4,12 +4,12 @@ Proxy compatibility migrations.
 Keep these helpers free of service-layer imports so they can be used while
 loading both config.json and subscription YAML files.
 """
+
 from __future__ import annotations
 
 import base64
 import re
 from typing import Any, Iterable
-
 
 XHTTP_LEGACY_FIELD_MAP = {
     "xhttp-mode": "mode",
@@ -64,11 +64,7 @@ def certificate_pins_equal(left: Any, right: Any) -> bool:
         return True
     left_fingerprint = certificate_pin_fingerprint(left_text)
     right_fingerprint = certificate_pin_fingerprint(right_text)
-    return (
-        left_fingerprint is not None
-        and right_fingerprint is not None
-        and left_fingerprint == right_fingerprint
-    )
+    return left_fingerprint is not None and right_fingerprint is not None and left_fingerprint == right_fingerprint
 
 
 def store_certificate_pin(proxy: dict, value: Any) -> bool:
@@ -122,8 +118,7 @@ def normalize_certificate_pin(proxy: dict) -> bool:
                 continue
             normalized_explicit = certificate_pin_fingerprint(explicit)
             if not certificate_pins_equal(explicit, preserved) and (
-                preserved_fingerprint is None
-                or normalized_explicit != preserved_fingerprint
+                preserved_fingerprint is None or normalized_explicit != preserved_fingerprint
             ):
                 return False
         store_certificate_pin(proxy, preserved)

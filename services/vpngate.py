@@ -21,7 +21,6 @@ from typing import Any
 from core import storage
 from logger_config import get_logger
 
-
 logger = get_logger(__name__)
 
 VPNGATE_SOURCE_ID = "vpngate"
@@ -259,11 +258,7 @@ def parse_vpngate_record(record: dict[str, str]) -> dict[str, Any]:
     raw_data_ciphers = _get_directive(configuration, "data-ciphers")
     if raw_data_ciphers:
         data_ciphers = list(
-            dict.fromkeys(
-                item
-                for item in re.split(r"[:,\s]+", raw_data_ciphers.upper())
-                if item in _ALLOWED_CIPHERS
-            )
+            dict.fromkeys(item for item in re.split(r"[:,\s]+", raw_data_ciphers.upper()) if item in _ALLOWED_CIPHERS)
         )
     auth = (_get_directive(configuration, "auth") or "").strip().upper()
     auth = auth if auth in _ALLOWED_AUTH else None
@@ -508,7 +503,11 @@ def update_vpngate_node_test_metadata(node_id: str, updates: dict[str, Any]) -> 
 def get_vpngate_status() -> dict[str, Any]:
     payload = _get_cache_payload()
     nodes = payload.get("nodes", [])
-    active_count = sum(1 for node in nodes if isinstance(node, dict) and not node.get("stale") and node.get("enabled", True) is not False)
+    active_count = sum(
+        1
+        for node in nodes
+        if isinstance(node, dict) and not node.get("stale") and node.get("enabled", True) is not False
+    )
     stale_count = sum(1 for node in nodes if isinstance(node, dict) and node.get("stale"))
     last_success_at = payload.get("last_success_at")
     age_seconds = None
@@ -614,14 +613,16 @@ def list_vpngate_pools() -> list[dict[str, Any]]:
     pools = []
     for country_code in sorted(country_codes, key=lambda code: (-active_counts.get(code, 0), code)):
         country = _country_name(country_code)
-        pools.append({
-            "pool_id": f"vpngate_country_{country_code.lower()}",
-            "pool_name": f"VPN Gate {country}池",
-            "country_code": country_code,
-            "country": country,
-            "flag": _country_flag(country_code),
-            "active_node_count": active_counts.get(country_code, 0),
-            "stale_node_count": stale_counts.get(country_code, 0),
-            "available": active_counts.get(country_code, 0) > 0,
-        })
+        pools.append(
+            {
+                "pool_id": f"vpngate_country_{country_code.lower()}",
+                "pool_name": f"VPN Gate {country}池",
+                "country_code": country_code,
+                "country": country,
+                "flag": _country_flag(country_code),
+                "active_node_count": active_counts.get(country_code, 0),
+                "stale_node_count": stale_counts.get(country_code, 0),
+                "available": active_counts.get(country_code, 0) > 0,
+            }
+        )
     return pools

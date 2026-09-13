@@ -2,24 +2,25 @@
 Backup service module
 Handles config backup, restore, and cleanup
 """
-import os
-import json
-import shutil
+
 import base64
+import json
+import os
+import shutil
 import tempfile
 from copy import deepcopy
-from pathlib import Path
 from datetime import datetime as dt
-from typing import Optional, List
+from pathlib import Path
+from typing import List, Optional
 
 from filelock import FileLock, Timeout
 
-from core.config import AppConfig, CONFIG_FILE, BACKUP_DIR
-from core.database import load_config, invalidate_config_cache, replace_config_locked
+from core.config import BACKUP_DIR, CONFIG_FILE, AppConfig
+from core.database import invalidate_config_cache, load_config, replace_config_locked
 from core.storage import (
+    database_lock_path,
     delete_stored_file,
     delete_stored_files,
-    database_lock_path,
     has_stored_file,
     list_stored_files,
     read_cache_document,
@@ -27,12 +28,12 @@ from core.storage import (
     write_cache_document,
     write_stored_file,
 )
-from logger_config import get_logger
 from helpers import subscription_content_exists
+from logger_config import get_logger
 from services.configuration_validation import (
     remove_legacy_stale_references,
-    validate_configuration_node_references,
     validate_and_normalize_configuration,
+    validate_configuration_node_references,
 )
 
 logger = get_logger(__name__)
@@ -48,10 +49,7 @@ _DATABASE_CACHE_NAMES = ("geoip", "radar", "translation", "region_history", "vpn
 
 def _database_file_storage_active() -> bool:
     """Use database-backed uploads/backups only for the production data root."""
-    return (
-        CONFIG_FILE == _ORIGINAL_CONFIG_FILE
-        and BACKUP_DIR == _ORIGINAL_BACKUP_DIR
-    )
+    return CONFIG_FILE == _ORIGINAL_CONFIG_FILE and BACKUP_DIR == _ORIGINAL_BACKUP_DIR
 
 
 def _stored_backup_key(filename: str) -> str:
@@ -88,26 +86,26 @@ def _legacy_json_override_active() -> bool:
 
 def _resolve_backup_path(filename: str) -> Path:
     """Resolve a user-supplied backup filename inside BACKUP_DIR only."""
-    if not filename or '/' in filename or '\\' in filename or filename in ('.', '..'):
-        raise ValueError("Invalid backup filename")
+    if not filename or "/" in filename or "\\" in filename or filename in (".", ".."):
+        raise ValueError("Invalid backup filename") from None
 
     backup_dir = Path(BACKUP_DIR).resolve()
     raw_backup_path = backup_dir / filename
     if raw_backup_path.exists() and raw_backup_path.is_symlink():
-        raise ValueError("Invalid backup file")
+        raise ValueError("Invalid backup file") from None
 
     backup_path = raw_backup_path.resolve()
 
     if backup_path.parent != backup_dir or backup_path.name != filename:
-        raise ValueError("Invalid backup filename")
-    if not backup_path.name.startswith('config_') or backup_path.suffix != '.json':
-        raise ValueError("Invalid backup filename")
+        raise ValueError("Invalid backup filename") from None
+    if not backup_path.name.startswith("config_") or backup_path.suffix != ".json":
+        raise ValueError("Invalid backup filename") from None
 
     return backup_path
 
 
 def _backup_filename(reason: str) -> str:
-    timestamp = dt.now().strftime('%Y%m%d_%H%M%S_%f')
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S_%f")
     return f"config_{timestamp}_{reason}.json"
 
 
@@ -126,7 +124,7 @@ def _iter_migration_files() -> list[Path]:
         directory = root / relative_root
         if not directory.is_dir():
             continue
-        files.extend(path for path in directory.rglob('*') if path.is_file())
+        files.extend(path for path in directory.rglob("*") if path.is_file())
     return files
 
 
@@ -141,7 +139,7 @@ def _snapshot_migration_files(backup_path: str) -> None:
         delete_stored_files(prefix)
         for relative_name, encoded_content in _export_migration_files().items():
             try:
-                content = base64.b64decode(encoded_content.encode('ascii'), validate=True).decode('utf-8')
+                content = base64.b64decode(encoded_content.encode("ascii"), validate=True).decode("utf-8")
             except (ValueError, UnicodeDecodeError) as exc:
                 raise ValueError(f"Migration file {relative_name} is not UTF-8 text") from exc
             write_stored_file(f"{prefix}/{relative_name}", content)
@@ -186,7 +184,7 @@ def _restore_migration_files(sidecar: Path) -> None:
     database_cache_payload: dict | None = None
     allowed_prefixes = tuple(Path(name) for name in _MIGRATION_ROOTS)
     allowed_files = set(_MIGRATION_FILES)
-    for source in sidecar.rglob('*'):
+    for source in sidecar.rglob("*"):
         if not source.is_file():
             continue
         relative = source.relative_to(sidecar)
@@ -200,7 +198,7 @@ def _restore_migration_files(sidecar: Path) -> None:
         if relative_text not in allowed_files and not any(
             relative == prefix or prefix in relative.parents for prefix in allowed_prefixes
         ):
-            raise ValueError("Backup contains an unsupported migration file")
+            raise ValueError("Backup contains an unsupported migration file") from None
         target = root / relative
         restore_items.append((source, target))
 
@@ -232,12 +230,10 @@ def _restore_stored_migration_files(backup_filename: str) -> None:
                 raise ValueError("Backup database cache snapshot is invalid") from exc
             continue
         relative = Path(relative_name)
-        if relative.is_absolute() or '..' in relative.parts:
-            raise ValueError("Backup contains an unsupported migration file")
-        if relative_name not in _MIGRATION_FILES and not (
-            relative.parts and relative.parts[0] in _MIGRATION_ROOTS
-        ):
-            raise ValueError("Backup contains an unsupported migration file")
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Backup contains an unsupported migration file") from None
+        if relative_name not in _MIGRATION_FILES and not (relative.parts and relative.parts[0] in _MIGRATION_ROOTS):
+            raise ValueError("Backup contains an unsupported migration file") from None
         restored_files[relative_name] = content
 
     _clear_migration_targets()
@@ -277,7 +273,7 @@ def _export_migration_files() -> dict[str, str]:
             if "/" in relative_name:
                 continue
             content = str(entry.get("content") or "")
-            exported[f"uploads/{relative_name}"] = base64.b64encode(content.encode('utf-8')).decode('ascii')
+            exported[f"uploads/{relative_name}"] = base64.b64encode(content.encode("utf-8")).decode("ascii")
         # During the migration window, include legacy upload files that have
         # not been copied yet so a pre-restore backup remains complete.
         legacy_uploads = _data_root() / "uploads"
@@ -288,21 +284,21 @@ def _export_migration_files() -> dict[str, str]:
                 relative_name = source.relative_to(legacy_uploads).as_posix()
                 logical_name = f"uploads/{relative_name}"
                 if logical_name not in exported:
-                    exported[logical_name] = base64.b64encode(source.read_bytes()).decode('ascii')
+                    exported[logical_name] = base64.b64encode(source.read_bytes()).decode("ascii")
         # Keep any explicitly maintained root migration files available for
         # old imports, even though normal runtime caches live in the database.
         root = _data_root()
         for relative_name in _MIGRATION_FILES:
             source = root / relative_name
             if source.is_file():
-                exported[relative_name] = base64.b64encode(source.read_bytes()).decode('ascii')
+                exported[relative_name] = base64.b64encode(source.read_bytes()).decode("ascii")
         return exported
 
     root = _data_root()
     exported: dict[str, str] = {}
     for source in _iter_migration_files():
         relative = source.relative_to(root).as_posix()
-        exported[relative] = base64.b64encode(source.read_bytes()).decode('ascii')
+        exported[relative] = base64.b64encode(source.read_bytes()).decode("ascii")
     return exported
 
 
@@ -318,7 +314,7 @@ def _export_database_cache_documents() -> dict[str, object]:
 
 def _restore_database_cache_documents(documents: object) -> None:
     if not isinstance(documents, dict):
-        raise ValueError("Database cache snapshot must be an object")
+        raise ValueError("Database cache snapshot must be an object") from None
     for namespace, payload in documents.items():
         if namespace in _DATABASE_CACHE_NAMES:
             write_cache_document(namespace, payload)
@@ -328,22 +324,22 @@ def _decode_migration_files(files: object) -> dict[str, bytes]:
     if files is None:
         return {}
     if not isinstance(files, dict):
-        raise ValueError("Imported migration files must be an object")
+        raise ValueError("Imported migration files must be an object") from None
     decoded: dict[str, bytes] = {}
     allowed_prefixes = tuple(Path(name) for name in _MIGRATION_ROOTS)
     allowed_files = set(_MIGRATION_FILES)
     for relative_text, encoded in files.items():
         if not isinstance(relative_text, str) or not isinstance(encoded, str):
-            raise ValueError("Imported migration file entry is invalid")
+            raise ValueError("Imported migration file entry is invalid") from None
         relative = Path(relative_text)
-        if relative.is_absolute() or '..' in relative.parts:
-            raise ValueError("Imported migration file path is invalid")
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Imported migration file path is invalid") from None
         if relative_text not in allowed_files and not any(
             relative == prefix or prefix in relative.parents for prefix in allowed_prefixes
         ):
-            raise ValueError("Imported migration file path is unsupported")
+            raise ValueError("Imported migration file path is unsupported") from None
         try:
-            decoded[relative_text] = base64.b64decode(encoded.encode('ascii'), validate=True)
+            decoded[relative_text] = base64.b64decode(encoded.encode("ascii"), validate=True)
         except (ValueError, UnicodeEncodeError):
             raise ValueError("Imported migration file content is invalid") from None
     return decoded
@@ -354,7 +350,7 @@ def _restore_encoded_files(files: dict[str, bytes]) -> list[Path]:
         restored: list[Path] = []
         for relative_text, content in files.items():
             try:
-                write_stored_file(relative_text, content.decode('utf-8'))
+                write_stored_file(relative_text, content.decode("utf-8"))
             except UnicodeDecodeError as exc:
                 raise ValueError(f"Imported migration file {relative_text} is not UTF-8 text") from exc
             restored.append(_data_root() / Path(relative_text))
@@ -396,9 +392,7 @@ def _merge_encoded_files(files: dict[str, bytes], added_subscription_ids: set[st
         # Root migration files are copied only when the destination does not
         # have one yet. This preserves the active instance's output and caches.
         destination_exists = (
-            has_stored_file(relative_text)
-            if _database_file_storage_active()
-            else (root / relative).exists()
+            has_stored_file(relative_text) if _database_file_storage_active() else (root / relative).exists()
         )
         if relative_text in _MIGRATION_FILES and not destination_exists:
             selected[relative_text] = content
@@ -406,7 +400,7 @@ def _merge_encoded_files(files: dict[str, bytes], added_subscription_ids: set[st
     return _restore_encoded_files(selected)
 
 
-def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
+def _create_backup_locked(reason: str = "manual") -> Optional[str]:
     """Create a backup while the caller holds the config file lock."""
     if _legacy_json_override_active() and not os.path.exists(CONFIG_FILE):
         return None
@@ -428,7 +422,7 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
     # copied (especially on network filesystems).
     temporary_fd, temporary_name = tempfile.mkstemp(
         prefix=f".{backup_filename}.",
-        suffix='.tmp',
+        suffix=".tmp",
         dir=BACKUP_DIR,
     )
     os.close(temporary_fd)
@@ -437,7 +431,7 @@ def _create_backup_locked(reason: str = 'manual') -> Optional[str]:
         if _legacy_json_override_active():
             shutil.copyfile(CONFIG_FILE, temporary)
         else:
-            with open(temporary, 'w', encoding='utf-8') as handle:
+            with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump(load_config(), handle, ensure_ascii=False, indent=2)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -463,7 +457,7 @@ def _atomic_restore_config_locked(config_data: dict):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     tmp_file = f"{CONFIG_FILE}.restore.tmp"
     try:
-        with open(tmp_file, 'w', encoding='utf-8') as f:
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
@@ -488,29 +482,29 @@ def _load_current_config_locked() -> dict:
         return load_config()
     if not os.path.exists(CONFIG_FILE):
         return {}
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as config_file:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as config_file:
         value = json.load(config_file)
     if not isinstance(value, dict):
-        raise ValueError("Existing configuration is invalid")
+        raise ValueError("Existing configuration is invalid") from None
     return value
 
 
-def create_backup(reason: str = 'manual') -> Optional[str]:
+def create_backup(reason: str = "manual") -> Optional[str]:
     """
     Create a backup of config.json
-    
+
     Args:
         reason: Reason for backup (manual, auto, pre_restore, pre_import)
-    
+
     Returns:
         Backup filename or None if failed
     """
     try:
         with _config_file_lock():
             backup_filename = _create_backup_locked(reason)
-        
+
         cleanup_old_backups()
-        
+
         return backup_filename
     except Timeout:
         logger.error("Timeout waiting for config file lock while creating backup")
@@ -524,18 +518,18 @@ def cleanup_old_backups():
     """Keep only the most recent backups"""
     try:
         if _database_file_storage_active():
-            stored_entries = list_stored_files('backups')
+            stored_entries = list_stored_files("backups")
             backups = sorted(
                 {
-                    Path(str(entry.get('file_path') or '')).name
+                    Path(str(entry.get("file_path") or "")).name
                     for entry in stored_entries
-                    if '.files/' not in str(entry.get('file_path') or '')
-                    and Path(str(entry.get('file_path') or '')).name.startswith('config_')
-                    and Path(str(entry.get('file_path') or '')).name.endswith('.json')
+                    if ".files/" not in str(entry.get("file_path") or "")
+                    and Path(str(entry.get("file_path") or "")).name.startswith("config_")
+                    and Path(str(entry.get("file_path") or "")).name.endswith(".json")
                 },
                 reverse=True,
             )
-            for old_backup in backups[AppConfig.AUTO_BACKUP_KEEP_COUNT:]:
+            for old_backup in backups[AppConfig.AUTO_BACKUP_KEEP_COUNT :]:
                 try:
                     delete_stored_file(_stored_backup_key(old_backup))
                     delete_stored_files(_stored_backup_sidecar_prefix(old_backup))
@@ -546,11 +540,10 @@ def cleanup_old_backups():
                 return
 
         backups = sorted(
-            [f for f in os.listdir(BACKUP_DIR) if f.startswith('config_') and f.endswith('.json')],
-            reverse=True
+            [f for f in os.listdir(BACKUP_DIR) if f.startswith("config_") and f.endswith(".json")], reverse=True
         )
-        
-        for old_backup in backups[AppConfig.AUTO_BACKUP_KEEP_COUNT:]:
+
+        for old_backup in backups[AppConfig.AUTO_BACKUP_KEEP_COUNT :]:
             try:
                 os.remove(os.path.join(BACKUP_DIR, old_backup))
                 sidecar = _backup_sidecar_path(os.path.join(BACKUP_DIR, old_backup))
@@ -566,53 +559,57 @@ def cleanup_old_backups():
 def list_backups() -> List[dict]:
     """List all available backups"""
     backups = []
-    
+
     try:
         if _database_file_storage_active():
-            stored_entries = list_stored_files('backups')
+            stored_entries = list_stored_files("backups")
             for entry in stored_entries:
-                logical_path = str(entry.get('file_path') or '')
+                logical_path = str(entry.get("file_path") or "")
                 filename = Path(logical_path).name
-                if '.files/' in logical_path or not filename.startswith('config_') or not filename.endswith('.json'):
+                if ".files/" in logical_path or not filename.startswith("config_") or not filename.endswith(".json"):
                     continue
-                content = str(entry.get('content') or '')
-                backups.append({
-                    'filename': filename,
-                    'size': len(content.encode('utf-8')),
-                    'created_at': int(float(entry.get('updated_at') or 0)),
-                    'complete': _stored_backup_sidecar_exists(filename),
-                })
-            backups.sort(key=lambda x: x['created_at'], reverse=True)
+                content = str(entry.get("content") or "")
+                backups.append(
+                    {
+                        "filename": filename,
+                        "size": len(content.encode("utf-8")),
+                        "created_at": int(float(entry.get("updated_at") or 0)),
+                        "complete": _stored_backup_sidecar_exists(filename),
+                    }
+                )
+            backups.sort(key=lambda x: x["created_at"], reverse=True)
             if backups:
                 return backups
 
         with _config_file_lock():
             filenames = list(os.listdir(BACKUP_DIR))
         for f in filenames:
-            if f.startswith('config_') and f.endswith('.json'):
+            if f.startswith("config_") and f.endswith(".json"):
                 filepath = os.path.join(BACKUP_DIR, f)
                 stat = os.stat(filepath)
-                backups.append({
-                    'filename': f,
-                    'size': stat.st_size,
-                    'created_at': int(stat.st_mtime),
-                    'complete': _backup_sidecar_path(filepath).is_dir(),
-                })
-        
-        backups.sort(key=lambda x: x['created_at'], reverse=True)
+                backups.append(
+                    {
+                        "filename": f,
+                        "size": stat.st_size,
+                        "created_at": int(stat.st_mtime),
+                        "complete": _backup_sidecar_path(filepath).is_dir(),
+                    }
+                )
+
+        backups.sort(key=lambda x: x["created_at"], reverse=True)
     except Exception as e:
         logger.error(f"Failed to list backups: {e}")
-    
+
     return backups
 
 
 def restore_backup(filename: str) -> bool:
     """
     Restore config from a backup
-    
+
     Args:
         filename: Backup filename
-    
+
     Returns:
         True if successful
     """
@@ -622,32 +619,32 @@ def restore_backup(filename: str) -> bool:
     if using_stored_backup:
         backup_content = read_stored_file(_stored_backup_key(filename), default=None)
         if backup_content is None:
-            raise FileNotFoundError(f"Backup not found: {filename}")
+            raise FileNotFoundError(f"Backup not found: {filename}") from None
         try:
             backup_config = json.loads(backup_content)
         except (TypeError, ValueError):
             raise ValueError("Invalid backup file") from None
     else:
         if not backup_path.exists():
-            raise FileNotFoundError(f"Backup not found: {filename}")
+            raise FileNotFoundError(f"Backup not found: {filename}") from None
         # Validate and load backup file before taking the config write lock.
         try:
-            with open(backup_path, 'r', encoding='utf-8') as f:
+            with open(backup_path, "r", encoding="utf-8") as f:
                 backup_config = json.load(f)
         except json.JSONDecodeError:
-            raise ValueError("Invalid backup file")
+            raise ValueError("Invalid backup file") from None
     if not isinstance(backup_config, dict):
-        raise ValueError("Invalid backup file")
+        raise ValueError("Invalid backup file") from None
     remove_legacy_stale_references(backup_config)
     backup_config = validate_and_normalize_configuration(backup_config)
-    backup_config.setdefault('auth', {}).pop('sessions', None)
-    
+    backup_config.setdefault("auth", {}).pop("sessions", None)
+
     try:
         with _config_file_lock():
             # Create backup before restore under the same lock used for the
             # atomic replacement, so concurrent readers/writers never observe a
             # partially copied config file.
-            _create_backup_locked('pre_restore')
+            _create_backup_locked("pre_restore")
             _atomic_restore_config_locked(backup_config)
             if using_stored_backup:
                 _restore_stored_migration_files(filename)
@@ -656,7 +653,7 @@ def restore_backup(filename: str) -> bool:
                 if sidecar.is_dir():
                     _restore_migration_files(sidecar)
     except Timeout:
-        raise TimeoutError("Configuration is being updated, please try again")
+        raise TimeoutError("Configuration is being updated, please try again") from None
 
     _apply_geoip_runtime_config(backup_config)
     logger.info(f"Config restored from backup: {filename}")
@@ -675,11 +672,11 @@ def delete_backup(filename: str) -> bool:
         return True
 
     if not backup_path.exists():
-        raise FileNotFoundError(f"Backup not found: {filename}")
-    
+        raise FileNotFoundError(f"Backup not found: {filename}") from None
+
     with _config_file_lock():
         if not backup_path.exists():
-            raise FileNotFoundError(f"Backup not found: {filename}")
+            raise FileNotFoundError(f"Backup not found: {filename}") from None
         os.remove(backup_path)
         sidecar = _backup_sidecar_path(backup_path)
         if sidecar.exists():
@@ -691,65 +688,68 @@ def delete_backup(filename: str) -> bool:
 def export_config() -> dict:
     """Export full configuration for migration"""
     import time
+
     config = deepcopy(load_config())
     # Login sessions are runtime credentials, not migration data. Password
     # hashes and subscription tokens remain because this is a full migration.
-    config.setdefault('auth', {}).pop('sessions', None)
+    config.setdefault("auth", {}).pop("sessions", None)
     # Radar tokens are administrator API credentials. They can be supplied
     # again through the destination instance's settings or environment and
     # must never be included in a downloadable migration file.
-    geoip_config = config.get('geoip_config')
+    geoip_config = config.get("geoip_config")
     if isinstance(geoip_config, dict):
-        geoip_config.pop('cloudflare_radar_token', None)
-    translation_config = config.get('translation_config')
+        geoip_config.pop("cloudflare_radar_token", None)
+    translation_config = config.get("translation_config")
     if isinstance(translation_config, dict):
-        providers = translation_config.get('providers')
+        providers = translation_config.get("providers")
         if isinstance(providers, dict):
             sensitive_provider_fields = {
-                'api_key', 'secret_key', 'secret_id',
+                "api_key",
+                "secret_key",
+                "secret_id",
             }
             for provider_record in providers.values():
                 if isinstance(provider_record, dict):
                     for field_name in sensitive_provider_fields:
                         provider_record.pop(field_name, None)
     remove_legacy_stale_references(config)
-    
+
     return {
-        'version': AppConfig.VERSION,
-        'exported_at': int(time.time()),
-        'config': config,
-        'files': _export_migration_files(),
-        'database_caches': _export_database_cache_documents(),
+        "version": AppConfig.VERSION,
+        "exported_at": int(time.time()),
+        "config": config,
+        "files": _export_migration_files(),
+        "database_caches": _export_database_cache_documents(),
     }
 
 
 def import_config(import_data: dict, merge: bool = False) -> str:
     """
     Import configuration from export file
-    
+
     Args:
         import_data: Exported data dict
         merge: If True, merge with existing; if False, replace
-    
+
     Returns:
         'merge' or 'replace' indicating mode used
     """
-    if 'config' not in import_data:
-        raise ValueError("Invalid import data: missing 'config' field")
-    
-    new_config = import_data['config']
+    if "config" not in import_data:
+        raise ValueError("Invalid import data: missing 'config' field") from None
+
+    new_config = import_data["config"]
     if not isinstance(new_config, dict):
-        raise ValueError("Invalid import data: config must be an object")
+        raise ValueError("Invalid import data: config must be an object") from None
     new_config = validate_and_normalize_configuration(new_config)
-    migration_files = _decode_migration_files(import_data.get('files'))
-    database_caches = import_data.get('database_caches')
+    migration_files = _decode_migration_files(import_data.get("files"))
+    database_caches = import_data.get("database_caches")
     if database_caches is not None and not isinstance(database_caches, dict):
-        raise ValueError("Imported database caches must be an object")
-    files_field_present = 'files' in import_data
+        raise ValueError("Imported database caches must be an object") from None
+    files_field_present = "files" in import_data
 
     try:
         with _config_file_lock():
-            _create_backup_locked('pre_import')
+            _create_backup_locked("pre_import")
             rollback_config: dict | None = None
             if merge:
                 merged_config = _load_current_config_locked()
@@ -762,43 +762,39 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                 # is deliberately kept as the destination object: changing an
                 # ID would require rewriting every allocation/chain reference.
                 merge_specs = (
-                    'subscriptions',
-                    'custom_nodes',
-                    'users',
-                    'templates',
-                    'admin_tokens',
-                    'proxy_chains',
-                    'node_pools',
+                    "subscriptions",
+                    "custom_nodes",
+                    "users",
+                    "templates",
+                    "admin_tokens",
+                    "proxy_chains",
+                    "node_pools",
                 )
                 added_subscription_ids: set[str] = set()
                 for collection_name in merge_specs:
                     destination = merged_config.setdefault(collection_name, [])
                     if not isinstance(destination, list):
-                        raise ValueError(f"Existing {collection_name} configuration is invalid")
+                        raise ValueError(f"Existing {collection_name} configuration is invalid") from None
                     known_ids = {
-                        str(item.get('id'))
-                        for item in destination
-                        if isinstance(item, dict) and item.get('id')
+                        str(item.get("id")) for item in destination if isinstance(item, dict) and item.get("id")
                     }
                     known_tokens = {
-                        str(item.get('token'))
-                        for item in destination
-                        if isinstance(item, dict) and item.get('token')
+                        str(item.get("token")) for item in destination if isinstance(item, dict) and item.get("token")
                     }
                     incoming = new_config.get(collection_name, [])
                     if not isinstance(incoming, list):
-                        raise ValueError(f"Imported {collection_name} must be a list")
+                        raise ValueError(f"Imported {collection_name} must be a list") from None
                     for item in incoming:
                         if not isinstance(item, dict):
-                            raise ValueError(f"Imported {collection_name} contains an invalid item")
-                        item_id = str(item.get('id') or '')
-                        item_token = str(item.get('token') or '')
+                            raise ValueError(f"Imported {collection_name} contains an invalid item") from None
+                        item_id = str(item.get("id") or "")
+                        item_token = str(item.get("token") or "")
                         if item_id and item_id in known_ids:
                             continue
                         if item_token and item_token in known_tokens:
                             continue
                         destination.append(deepcopy(item))
-                        if collection_name == 'subscriptions' and item_id:
+                        if collection_name == "subscriptions" and item_id:
                             added_subscription_ids.add(item_id)
                         if item_id:
                             known_ids.add(item_id)
@@ -808,38 +804,37 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                 # Preserve imported non-collection settings without replacing
                 # operator-specific runtime values.  Mapping keys are stable
                 # node/chain references, so a shallow union is safe here.
-                for key in ('settings', 'geoip_config', 'translation_config', 'port_mappings', 'speedtest_profiles'):
+                for key in ("settings", "geoip_config", "translation_config", "port_mappings", "speedtest_profiles"):
                     incoming_value = new_config.get(key)
                     if incoming_value is None:
                         continue
-                    if key in ('settings', 'geoip_config', 'translation_config'):
+                    if key in ("settings", "geoip_config", "translation_config"):
                         existing_value = merged_config.setdefault(key, {})
                         if not isinstance(existing_value, dict) or not isinstance(incoming_value, dict):
-                            raise ValueError(f"Imported {key} configuration is invalid")
+                            raise ValueError(f"Imported {key} configuration is invalid") from None
                         for setting_key, setting_value in incoming_value.items():
                             existing_value.setdefault(setting_key, deepcopy(setting_value))
-                    elif key == 'port_mappings':
+                    elif key == "port_mappings":
                         existing_value = merged_config.setdefault(key, {})
                         if not isinstance(existing_value, dict) or not isinstance(incoming_value, dict):
-                            raise ValueError("Imported port mappings are invalid")
+                            raise ValueError("Imported port mappings are invalid") from None
                         for reference, port in incoming_value.items():
                             existing_value.setdefault(reference, port)
                     else:
                         existing_value = merged_config.setdefault(key, [])
                         if not isinstance(existing_value, list) or not isinstance(incoming_value, list):
-                            raise ValueError("Imported speedtest profiles are invalid")
+                            raise ValueError("Imported speedtest profiles are invalid") from None
                         known_profile_ids = {
-                            str(item.get('id')) for item in existing_value
-                            if isinstance(item, dict) and item.get('id')
+                            str(item.get("id")) for item in existing_value if isinstance(item, dict) and item.get("id")
                         }
                         for item in incoming_value:
-                            if isinstance(item, dict) and str(item.get('id') or '') not in known_profile_ids:
+                            if isinstance(item, dict) and str(item.get("id") or "") not in known_profile_ids:
                                 existing_value.append(deepcopy(item))
-                                if item.get('id'):
-                                    known_profile_ids.add(str(item['id']))
+                                if item.get("id"):
+                                    known_profile_ids.add(str(item["id"]))
 
-                incoming_order = new_config.get('source_order', [])
-                merged_order = merged_config.setdefault('source_order', [])
+                incoming_order = new_config.get("source_order", [])
+                merged_order = merged_config.setdefault("source_order", [])
                 if isinstance(incoming_order, list) and isinstance(merged_order, list):
                     for source_id in incoming_order:
                         if source_id not in merged_order:
@@ -851,44 +846,44 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                         for subscription_id in added_subscription_ids
                         if next(
                             (
-                                subscription.get('enabled', True)
-                                for subscription in final_config.get('subscriptions', [])
-                                if subscription.get('id') == subscription_id
+                                subscription.get("enabled", True)
+                                for subscription in final_config.get("subscriptions", [])
+                                if subscription.get("id") == subscription_id
                             ),
                             True,
                         )
-                        if not subscription_content_exists(subscription_id, str(_data_root() / 'uploads'))
-                        and f'uploads/{subscription_id}.yaml' not in migration_files
+                        if not subscription_content_exists(subscription_id, str(_data_root() / "uploads"))
+                        and f"uploads/{subscription_id}.yaml" not in migration_files
                     }
                     if missing_subscription_files:
                         raise ValueError(
-                            'Merge import is missing subscription files: '
-                            + ', '.join(sorted(missing_subscription_files))
-                        )
-                mode = 'merge'
+                            "Merge import is missing subscription files: "
+                            + ", ".join(sorted(missing_subscription_files))
+                        ) from None
+                mode = "merge"
             else:
                 rollback_config = _load_current_config_locked()
                 final_config = new_config
-                final_config.setdefault('auth', {}).pop('sessions', None)
-                mode = 'replace'
+                final_config.setdefault("auth", {}).pop("sessions", None)
+                mode = "replace"
 
             previous_migration_files = _export_migration_files()
             previous_database_caches = _export_database_cache_documents()
             restored_merge_files: list[Path] = []
-            if migration_files and mode == 'merge':
+            if migration_files and mode == "merge":
                 restored_merge_files = _merge_encoded_files(migration_files, added_subscription_ids)
-            elif mode == 'replace':
+            elif mode == "replace":
                 _clear_migration_targets()
                 if migration_files:
                     _restore_encoded_files(migration_files)
             try:
                 _atomic_restore_config_locked(final_config)
-                if database_caches and mode == 'replace':
+                if database_caches and mode == "replace":
                     _restore_database_cache_documents(database_caches)
                 if files_field_present:
                     validate_configuration_node_references(
                         final_config,
-                        str(_data_root() / 'uploads'),
+                        str(_data_root() / "uploads"),
                     )
             except BaseException:
                 for restored_path in restored_merge_files:
@@ -898,24 +893,24 @@ def import_config(import_data: dict, merge: bool = False) -> str:
                         logger.error("Failed to remove staged merge file %s", restored_path, exc_info=True)
                 if rollback_config is not None:
                     _atomic_restore_config_locked(rollback_config)
-                if mode == 'replace' and database_caches is not None:
+                if mode == "replace" and database_caches is not None:
                     _restore_database_cache_documents(previous_database_caches)
-                if mode == 'replace' and files_field_present:
+                if mode == "replace" and files_field_present:
                     _clear_migration_targets()
                     _restore_encoded_files(previous_migration_files)
                 raise
     except Timeout:
-        raise TimeoutError("Configuration is being updated, please try again")
+        raise TimeoutError("Configuration is being updated, please try again") from None
 
     _apply_geoip_runtime_config(final_config)
-    logger.info("Config %sd from import", 'merge' if mode == 'merge' else 'replace')
+    logger.info("Config %sd from import", "merge" if mode == "merge" else "replace")
     return mode
 
 
 def restore_config_snapshot(config_snapshot: dict) -> None:
     """Restore a trusted in-memory snapshot after a runtime reload failure."""
     if not isinstance(config_snapshot, dict):
-        raise ValueError("Configuration snapshot must be an object")
+        raise ValueError("Configuration snapshot must be an object") from None
     try:
         with _config_file_lock():
             _atomic_restore_config_locked(deepcopy(config_snapshot))

@@ -72,22 +72,26 @@ class CloudflareRadarTests(unittest.TestCase):
         self.assertEqual(result["radar_source"], "cloudflare_radar")
 
     def test_parses_legacy_human_bot_keys_and_fraction_values(self):
-        result = radar.parse_radar_bot_class_response({
-            "success": True,
-            "result": {"summary_0": {"human": 0.625, "bot": 0.375}},
-        })
+        result = radar.parse_radar_bot_class_response(
+            {
+                "success": True,
+                "result": {"summary_0": {"human": 0.625, "bot": 0.375}},
+            }
+        )
 
         self.assertEqual(result["radar_human_ratio"], 62.5)
         self.assertEqual(result["radar_bot_ratio"], 37.5)
 
     def test_preserves_explicit_no_data_state(self):
-        result = radar.parse_radar_bot_class_response({
-            "success": True,
-            "result": {
-                "summary_0": {},
-                "meta": {"confidenceInfo": {"level": 0}},
-            },
-        })
+        result = radar.parse_radar_bot_class_response(
+            {
+                "success": True,
+                "result": {
+                    "summary_0": {},
+                    "meta": {"confidenceInfo": {"level": 0}},
+                },
+            }
+        )
 
         self.assertEqual(result["radar_status"], "no_data")
         self.assertEqual(result["radar_confidence_level"], 0)
@@ -95,31 +99,34 @@ class CloudflareRadarTests(unittest.TestCase):
 
     def test_missing_token_skips_network_request(self):
         async def run_lookup():
-            with patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": ""}, clear=False), \
-                 patch.object(radar.httpx, "AsyncClient", side_effect=AssertionError("network call")):
+            with (
+                patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": ""}, clear=False),
+                patch.object(radar.httpx, "AsyncClient", side_effect=AssertionError("network call")),
+            ):
                 return await radar.lookup_radar_for_asn("AS15169")
 
         self.assertIsNone(asyncio.run(run_lookup()))
 
     def test_persisted_admin_token_enables_runtime_lookup(self):
         with patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": ""}, clear=False):
-            radar.apply_cloudflare_radar_runtime_config({
-                "geoip_config": {"cloudflare_radar_token": "admin-token"},
-            })
+            radar.apply_cloudflare_radar_runtime_config(
+                {
+                    "geoip_config": {"cloudflare_radar_token": "admin-token"},
+                }
+            )
             self.assertTrue(radar.is_radar_enabled())
 
         radar._configured_radar_token = ""
 
     def test_concurrent_same_asn_uses_one_request_and_cache_persists(self):
         async def run_lookup():
-            with tempfile.TemporaryDirectory() as tempdir, \
-                 patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": "test-token"}, clear=False), \
-                 patch.object(radar, "RADAR_CACHE_FILE", str(Path(tempdir) / "radar.json")), \
-                 patch.object(radar.httpx, "AsyncClient", _FakeClient):
-                results = await asyncio.gather(*[
-                    radar.lookup_radar_for_asn("AS15169")
-                    for _ in range(8)
-                ])
+            with (
+                tempfile.TemporaryDirectory() as tempdir,
+                patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": "test-token"}, clear=False),
+                patch.object(radar, "RADAR_CACHE_FILE", str(Path(tempdir) / "radar.json")),
+                patch.object(radar.httpx, "AsyncClient", _FakeClient),
+            ):
+                results = await asyncio.gather(*[radar.lookup_radar_for_asn("AS15169") for _ in range(8)])
                 return results
 
         results = asyncio.run(run_lookup())
@@ -148,8 +155,10 @@ class CloudflareRadarTests(unittest.TestCase):
 
     def test_rate_limit_failure_is_short_lived_negative_cached(self):
         async def run_lookup():
-            with patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": "test-token"}, clear=False), \
-                 patch.object(radar.httpx, "AsyncClient", _RateLimitedClient):
+            with (
+                patch.dict("os.environ", {"CLOUDFLARE_RADAR_API_TOKEN": "test-token"}, clear=False),
+                patch.object(radar.httpx, "AsyncClient", _RateLimitedClient),
+            ):
                 first = await radar.lookup_radar_for_asn("AS15169")
                 second = await radar.lookup_radar_for_asn("AS15169")
                 return first, second
@@ -167,9 +176,11 @@ class CloudflareRadarConfigurationApiTests(unittest.TestCase):
             },
         }
         endpoint = inspect.unwrap(geoip_api.get_online_geoip_config)
-        with patch.object(geoip_api, "load_config", return_value=persisted), \
-             patch("geoip_service.get_all_geoip_apis", return_value=[]), \
-             patch("services.cloudflare_radar.is_radar_enabled", return_value=True):
+        with (
+            patch.object(geoip_api, "load_config", return_value=persisted),
+            patch("geoip_service.get_all_geoip_apis", return_value=[]),
+            patch("services.cloudflare_radar.is_radar_enabled", return_value=True),
+        ):
             response = endpoint(_=True)
 
         self.assertTrue(response["radar_enabled"])
@@ -183,8 +194,10 @@ class CloudflareRadarConfigurationApiTests(unittest.TestCase):
             return mutator(persisted)
 
         endpoint = inspect.unwrap(geoip_api.update_online_geoip_config)
-        with patch.object(geoip_api, "update_config", side_effect=apply_update), \
-             patch.object(geoip_api, "_apply_persisted_geoip_config"):
+        with (
+            patch.object(geoip_api, "update_config", side_effect=apply_update),
+            patch.object(geoip_api, "_apply_persisted_geoip_config"),
+        ):
             endpoint(geoip_api.OnlineGeoIPConfig(cloudflare_radar_token="  admin-token  "), _=True)
             self.assertEqual(persisted["geoip_config"]["cloudflare_radar_token"], "admin-token")
             endpoint(geoip_api.OnlineGeoIPConfig(cloudflare_radar_token=""), _=True)

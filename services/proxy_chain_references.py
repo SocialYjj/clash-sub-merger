@@ -15,7 +15,6 @@ from services.node_visibility import clear_user_subscription_caches, is_node_ena
 from services.proxy_chain_utils import unique_group_name, unique_name
 from services.vpngate import VPNGATE_SOURCE_NAME, list_vpngate_nodes
 
-
 logger = get_logger(__name__)
 
 CHAIN_NODE_SOURCE = "chain_nodes"
@@ -188,23 +187,27 @@ def list_proxy_chain_virtual_references(
                     _valid_identifier(node.get("group_id")) or None,
                 )
                 group_id = _valid_identifier(node.get("group_id")) or f"legacy_group_{row_index}_{node_index}"
-                references.append(ProxyChainVirtualReference(
-                    source_id=CHAIN_POOL_SOURCE,
-                    chain_id=chain_id,
-                    component_id=group_id,
-                    name=group_name,
-                    enabled=chain_enabled,
-                ))
+                references.append(
+                    ProxyChainVirtualReference(
+                        source_id=CHAIN_POOL_SOURCE,
+                        chain_id=chain_id,
+                        component_id=group_id,
+                        name=group_name,
+                        enabled=chain_enabled,
+                    )
+                )
 
             if not terminal_group:
                 final_name = unique_name(f"🔗 {row_name}", existing_names)
-                references.append(ProxyChainVirtualReference(
-                    source_id=CHAIN_NODE_SOURCE,
-                    chain_id=chain_id,
-                    component_id=row_id,
-                    name=final_name,
-                    enabled=chain_enabled,
-                ))
+                references.append(
+                    ProxyChainVirtualReference(
+                        source_id=CHAIN_NODE_SOURCE,
+                        chain_id=chain_id,
+                        component_id=row_id,
+                        name=final_name,
+                        enabled=chain_enabled,
+                    )
+                )
 
     return references
 
@@ -263,13 +266,9 @@ def _replace_port_mapping_references(
 def reconcile_proxy_chain_references(config: dict, previous_config: dict) -> None:
     """Migrate or remove all references affected by a chain lifecycle change."""
     old_references = {
-        reference.identity_key: reference
-        for reference in list_proxy_chain_virtual_references(previous_config)
+        reference.identity_key: reference for reference in list_proxy_chain_virtual_references(previous_config)
     }
-    new_references = {
-        reference.identity_key: reference
-        for reference in list_proxy_chain_virtual_references(config)
-    }
+    new_references = {reference.identity_key: reference for reference in list_proxy_chain_virtual_references(config)}
 
     id_targets: dict[str, str | None] = {}
     name_targets: dict[str, str | None] = {}

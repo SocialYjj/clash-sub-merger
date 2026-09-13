@@ -2,25 +2,28 @@
 API routers module
 Organizes all API endpoints into logical groups
 """
+
 from fastapi import APIRouter
+
+from .admin_tokens import router as admin_tokens_router
 
 # Import all routers
 from .auth import router as auth_router
-from .health import router as health_router
-from .system import router as system_router
-from .subscriptions import router as subscriptions_router
-from .nodes import router as nodes_router
-from .users import router as users_router
-from .templates import router as templates_router
-from .admin_tokens import router as admin_tokens_router
-from .settings import router as settings_router, port_mappings_router
-from .stats import router as stats_router
-from .speedtest import router as speedtest_router
-from .scheduler import router as scheduler_router
 from .geoip import router as geoip_router
-from .translation import router as translation_router
-from .proxy_chains import router as proxy_chains_router
+from .health import router as health_router
 from .node_pools import router as node_pools_router
+from .nodes import router as nodes_router
+from .proxy_chains import router as proxy_chains_router
+from .scheduler import router as scheduler_router
+from .settings import port_mappings_router
+from .settings import router as settings_router
+from .speedtest import router as speedtest_router
+from .stats import router as stats_router
+from .subscriptions import router as subscriptions_router
+from .system import router as system_router
+from .templates import router as templates_router
+from .translation import router as translation_router
+from .users import router as users_router
 from .vpngate import router as vpngate_router
 
 # Create main API router
@@ -80,4 +83,4 @@ api_router.include_router(node_pools_router, prefix="/api/node-pools", tags=["no
 # VPN Gate dynamic source endpoints (/api/vpngate/*)
 api_router.include_router(vpngate_router, prefix="/api/vpngate", tags=["vpngate"])
 
-__all__ = ['api_router']
+__all__ = ["api_router"]

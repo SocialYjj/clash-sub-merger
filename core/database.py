@@ -20,9 +20,10 @@ from fastapi import HTTPException
 from filelock import FileLock, Timeout
 
 from logger_config import get_logger
-from .config import AppConfig, CONFIG_FILE
-from .proxy_compat import normalize_config_nodes
+
 from . import storage
+from .config import CONFIG_FILE, AppConfig
+from .proxy_compat import normalize_config_nodes
 
 logger = get_logger(__name__)
 
@@ -219,6 +220,7 @@ def update_config(mutator: Callable[[dict], T]) -> T:
 
 def update_subscription_fields(sub_id: str, updates: dict) -> Optional[dict]:
     """Atomically merge updates into one subscription record."""
+
     def apply(config: dict) -> Optional[dict]:
         subscription = find_subscription_by_id(config, sub_id)
         if not subscription:

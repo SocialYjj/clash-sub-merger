@@ -8,7 +8,6 @@ from fastapi import HTTPException
 from core.database import update_subscription_fields
 from logger_config import SensitiveDataFilter, get_logger
 
-
 logger = get_logger(__name__)
 
 

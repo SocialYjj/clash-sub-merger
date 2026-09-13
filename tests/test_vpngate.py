@@ -11,21 +11,20 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services.node_metadata import strip_node_metadata
 from services.node_manager import find_vpngate_node
+from services.node_metadata import strip_node_metadata
 from services.proxy_filter import ProxyFilter
 from services.subscription_output import create_subscription_output_router
 from services.vpngate import (
     VpnGateRefreshError,
     _merge_nodes_with_previous_cache,
-    parse_vpngate_csv,
-    parse_vpngate_record,
     list_vpngate_nodes,
     list_vpngate_pools,
+    parse_vpngate_csv,
+    parse_vpngate_record,
     public_vpngate_node,
     update_vpngate_node_test_metadata,
 )
-
 
 OPENVPN_PROFILE = """client
 dev tun
@@ -66,22 +65,29 @@ def _record(**overrides):
 
 class VpnGateParsingTests(unittest.TestCase):
     def test_csv_parser_ignores_comments_and_malformed_rows(self):
-        content = "\n".join([
-            "#comment",
-            "#HostName,IP,CountryShort,OpenVPN_ConfigData_Base64",
-            "vpngate.example,198.51.100.10,US,encoded",
-            "broken,198.51.100.11,US",
-            "* end",
-        ])
+        content = "\n".join(
+            [
+                "#comment",
+                "#HostName,IP,CountryShort,OpenVPN_ConfigData_Base64",
+                "vpngate.example,198.51.100.10,US,encoded",
+                "broken,198.51.100.11,US",
+                "* end",
+            ]
+        )
 
         records = parse_vpngate_csv(content)
 
-        self.assertEqual(records, [{
-            "HostName": "vpngate.example",
-            "IP": "198.51.100.10",
-            "CountryShort": "US",
-            "OpenVPN_ConfigData_Base64": "encoded",
-        }])
+        self.assertEqual(
+            records,
+            [
+                {
+                    "HostName": "vpngate.example",
+                    "IP": "198.51.100.10",
+                    "CountryShort": "US",
+                    "OpenVPN_ConfigData_Base64": "encoded",
+                }
+            ],
+        )
 
     def test_record_becomes_mihomo_openvpn_and_public_metadata_is_safe(self):
         proxy = parse_vpngate_record(_record())
@@ -108,17 +114,21 @@ class VpnGateParsingTests(unittest.TestCase):
     def test_id_does_not_change_when_server_rotates_credentials(self):
         first = parse_vpngate_record(_record())
         rotated_profile = OPENVPN_PROFILE.replace("KEY DATA", "ROTATED KEY")
-        second = parse_vpngate_record(_record(
-            OpenVPN_ConfigData_Base64=base64.b64encode(rotated_profile.encode()).decode(),
-        ))
+        second = parse_vpngate_record(
+            _record(
+                OpenVPN_ConfigData_Base64=base64.b64encode(rotated_profile.encode()).decode(),
+            )
+        )
 
         self.assertEqual(first["id"], second["id"])
 
     def test_invalid_profile_is_rejected(self):
         with self.assertRaises(ValueError):
-            parse_vpngate_record(_record(
-                OpenVPN_ConfigData_Base64=base64.b64encode(b"client\nremote 198.51.100.10 1194\n").decode(),
-            ))
+            parse_vpngate_record(
+                _record(
+                    OpenVPN_ConfigData_Base64=base64.b64encode(b"client\nremote 198.51.100.10 1194\n").decode(),
+                )
+            )
 
 
 class VpnGateCacheTests(unittest.TestCase):
@@ -151,11 +161,16 @@ class VpnGateCacheTests(unittest.TestCase):
             patch("services.vpngate._get_cache_payload", return_value=copy.deepcopy(payload)),
             patch("services.vpngate._write_cache_payload", side_effect=written.append),
         ):
-            self.assertTrue(update_vpngate_node_test_metadata(node["id"], {
-                "last_latency": 123,
-                "exit_ip": "203.0.113.10",
-                "ip_profile": {"fraud_score": 4},
-            }))
+            self.assertTrue(
+                update_vpngate_node_test_metadata(
+                    node["id"],
+                    {
+                        "last_latency": 123,
+                        "exit_ip": "203.0.113.10",
+                        "ip_profile": {"fraud_score": 4},
+                    },
+                )
+            )
             public = public_vpngate_node(written[-1]["nodes"][0])
 
         self.assertEqual(written[-1]["nodes"][0]["last_latency"], 123)
@@ -258,18 +273,22 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
             "admin_tokens": [],
             "templates": [],
             "source_order": ["custom_nodes"],
-            "proxy_chains": [{
-                "id": "chain-vpngate",
-                "name": "VPN Gate chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row-1",
-                    "nodes": [
-                        {"type": "node", "sub_id": "custom", "node_id": front["id"]},
-                        {"type": "node", "sub_id": "vpngate", "node_id": landing["id"]},
+            "proxy_chains": [
+                {
+                    "id": "chain-vpngate",
+                    "name": "VPN Gate chain",
+                    "enabled": True,
+                    "rows": [
+                        {
+                            "row_id": "row-1",
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+                                {"type": "node", "sub_id": "vpngate", "node_id": landing["id"]},
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         app = FastAPI()
@@ -280,19 +299,23 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         def update_config(mutator):
             return mutator(config)
 
-        app.include_router(create_subscription_output_router(
-            yaml_source_dir="/tmp/vpngate-chain-tests",
-            output_file="/tmp/vpngate-chain-tests/config.yaml",
-            load_config=load_config,
-            update_config=update_config,
-            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
-            find_node_by_reference=resolve_node,
-            is_name_allocated=lambda *args, **kwargs: False,
-            filter_underscore_fields=strip_node_metadata,
-            extract_country_from_name=lambda *args, **kwargs: None,
-            split_template=lambda content: (content, ""),
-            logger=logging.getLogger("test.vpngate.subscription_output"),
-        ))
+        app.include_router(
+            create_subscription_output_router(
+                yaml_source_dir="/tmp/vpngate-chain-tests",
+                output_file="/tmp/vpngate-chain-tests/config.yaml",
+                load_config=load_config,
+                update_config=update_config,
+                fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("fetch should not run")
+                ),
+                find_node_by_reference=resolve_node,
+                is_name_allocated=lambda *args, **kwargs: False,
+                filter_underscore_fields=strip_node_metadata,
+                extract_country_from_name=lambda *args, **kwargs: None,
+                split_template=lambda content: (content, ""),
+                logger=logging.getLogger("test.vpngate.subscription_output"),
+            )
+        )
 
         with tempfile.TemporaryDirectory():
             response = TestClient(app).get("/sub?token=admin-token&format=clash")
@@ -330,24 +353,28 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
             "admin_tokens": [],
             "templates": [],
             "source_order": ["custom_nodes"],
-            "proxy_chains": [{
-                "id": "chain-vpngate-pool",
-                "name": "VPN Gate pool chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row-1",
-                    "nodes": [
-                        {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+            "proxy_chains": [
+                {
+                    "id": "chain-vpngate-pool",
+                    "name": "VPN Gate pool chain",
+                    "enabled": True,
+                    "rows": [
                         {
-                            "type": "group",
-                            "group_id": "pool-1",
-                            "group_name": "VPN Gate 动态池",
-                            "group_source": "vpngate",
-                            "group_strategy": "url-test",
-                        },
+                            "row_id": "row-1",
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+                                {
+                                    "type": "group",
+                                    "group_id": "pool-1",
+                                    "group_name": "VPN Gate 动态池",
+                                    "group_source": "vpngate",
+                                    "group_strategy": "url-test",
+                                },
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         app = FastAPI()
@@ -358,19 +385,23 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         def update_config(mutator):
             return mutator(config)
 
-        app.include_router(create_subscription_output_router(
-            yaml_source_dir="/tmp/vpngate-pool-chain-tests",
-            output_file="/tmp/vpngate-pool-chain-tests/config.yaml",
-            load_config=load_config,
-            update_config=update_config,
-            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
-            find_node_by_reference=resolve_node,
-            is_name_allocated=lambda *args, **kwargs: False,
-            filter_underscore_fields=strip_node_metadata,
-            extract_country_from_name=lambda *args, **kwargs: None,
-            split_template=lambda content: (content, ""),
-            logger=logging.getLogger("test.vpngate.dynamic-pool"),
-        ))
+        app.include_router(
+            create_subscription_output_router(
+                yaml_source_dir="/tmp/vpngate-pool-chain-tests",
+                output_file="/tmp/vpngate-pool-chain-tests/config.yaml",
+                load_config=load_config,
+                update_config=update_config,
+                fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("fetch should not run")
+                ),
+                find_node_by_reference=resolve_node,
+                is_name_allocated=lambda *args, **kwargs: False,
+                filter_underscore_fields=strip_node_metadata,
+                extract_country_from_name=lambda *args, **kwargs: None,
+                split_template=lambda content: (content, ""),
+                logger=logging.getLogger("test.vpngate.dynamic-pool"),
+            )
+        )
 
         with patch("services.subscription_output.list_vpngate_nodes", return_value=[landing]):
             with tempfile.TemporaryDirectory():
@@ -379,14 +410,10 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
         pool = next(
-            group for group in rendered["proxy-groups"]
-            if group.get("name", "").startswith("🔀 VPN Gate 动态池")
+            group for group in rendered["proxy-groups"] if group.get("name", "").startswith("🔀 VPN Gate 动态池")
         )
         self.assertTrue(pool["proxies"])
-        generated_proxy = next(
-            proxy for proxy in rendered["proxies"]
-            if proxy.get("type") == "openvpn"
-        )
+        generated_proxy = next(proxy for proxy in rendered["proxies"] if proxy.get("type") == "openvpn")
         self.assertEqual(generated_proxy["server"], "198.51.100.10")
         self.assertTrue(generated_proxy.get("dialer-proxy"))
 
@@ -398,16 +425,20 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
             "server": "front.example",
             "port": 8080,
         }
-        japan = parse_vpngate_record(_record(
-            IP="198.51.100.20",
-            HostName="jp.example",
-            CountryShort="JP",
-        ))
-        united_states = parse_vpngate_record(_record(
-            IP="198.51.100.21",
-            HostName="us.example",
-            CountryShort="US",
-        ))
+        japan = parse_vpngate_record(
+            _record(
+                IP="198.51.100.20",
+                HostName="jp.example",
+                CountryShort="JP",
+            )
+        )
+        united_states = parse_vpngate_record(
+            _record(
+                IP="198.51.100.21",
+                HostName="us.example",
+                CountryShort="US",
+            )
+        )
         resolved_nodes = {
             ("custom", front["id"]): front,
             ("vpngate", japan["id"]): japan,
@@ -426,25 +457,29 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
             "admin_tokens": [],
             "templates": [],
             "source_order": ["custom_nodes"],
-            "proxy_chains": [{
-                "id": "chain-vpngate-jp-pool",
-                "name": "VPN Gate Japan pool chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row-1",
-                    "nodes": [
-                        {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+            "proxy_chains": [
+                {
+                    "id": "chain-vpngate-jp-pool",
+                    "name": "VPN Gate Japan pool chain",
+                    "enabled": True,
+                    "rows": [
                         {
-                            "type": "group",
-                            "group_id": "pool-jp",
-                            "group_name": "VPN Gate 日本池",
-                            "group_source": "vpngate",
-                            "vpngate_country_code": "JP",
-                            "group_strategy": "url-test",
-                        },
+                            "row_id": "row-1",
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": front["id"]},
+                                {
+                                    "type": "group",
+                                    "group_id": "pool-jp",
+                                    "group_name": "VPN Gate 日本池",
+                                    "group_source": "vpngate",
+                                    "vpngate_country_code": "JP",
+                                    "group_strategy": "url-test",
+                                },
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         app = FastAPI()
@@ -455,19 +490,23 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         def update_config(mutator):
             return mutator(config)
 
-        app.include_router(create_subscription_output_router(
-            yaml_source_dir="/tmp/vpngate-country-pool-chain-tests",
-            output_file="/tmp/vpngate-country-pool-chain-tests/config.yaml",
-            load_config=load_config,
-            update_config=update_config,
-            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
-            find_node_by_reference=resolve_node,
-            is_name_allocated=lambda *args, **kwargs: False,
-            filter_underscore_fields=strip_node_metadata,
-            extract_country_from_name=lambda *args, **kwargs: None,
-            split_template=lambda content: (content, ""),
-            logger=logging.getLogger("test.vpngate.country-pool"),
-        ))
+        app.include_router(
+            create_subscription_output_router(
+                yaml_source_dir="/tmp/vpngate-country-pool-chain-tests",
+                output_file="/tmp/vpngate-country-pool-chain-tests/config.yaml",
+                load_config=load_config,
+                update_config=update_config,
+                fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("fetch should not run")
+                ),
+                find_node_by_reference=resolve_node,
+                is_name_allocated=lambda *args, **kwargs: False,
+                filter_underscore_fields=strip_node_metadata,
+                extract_country_from_name=lambda *args, **kwargs: None,
+                split_template=lambda content: (content, ""),
+                logger=logging.getLogger("test.vpngate.country-pool"),
+            )
+        )
 
         def list_nodes(*, country_code=None):
             if country_code == "JP":
@@ -484,7 +523,9 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         self.assertTrue(openvpn_nodes)
         self.assertTrue(all("jp.example" in proxy["name"] for proxy in openvpn_nodes))
         self.assertFalse(any("us.example" in proxy["name"] for proxy in openvpn_nodes))
-        pool = next(group for group in rendered["proxy-groups"] if group.get("name", "").startswith("🔀 VPN Gate 日本池"))
+        pool = next(
+            group for group in rendered["proxy-groups"] if group.get("name", "").startswith("🔀 VPN Gate 日本池")
+        )
         self.assertEqual(len(pool["proxies"]), 1)
 
 

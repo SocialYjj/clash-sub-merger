@@ -44,12 +44,14 @@ class ServerBugfixTests(unittest.TestCase):
 
     def test_subscription_list_does_not_return_persisted_count_when_yaml_is_unavailable(self):
         config = {
-            "subscriptions": [{
-                "id": "sub_missing",
-                "name": "Missing",
-                "enabled": True,
-                "node_count": 54,
-            }],
+            "subscriptions": [
+                {
+                    "id": "sub_missing",
+                    "name": "Missing",
+                    "enabled": True,
+                    "node_count": 54,
+                }
+            ],
         }
 
         with (
@@ -206,12 +208,15 @@ class ServerBugfixTests(unittest.TestCase):
 
         cleaned = server.filter_underscore_fields(node)
 
-        self.assertEqual(cleaned, {
-            "name": "🇯🇵 Node",
-            "type": "http",
-            "server": "example.com",
-            "port": 8080,
-        })
+        self.assertEqual(
+            cleaned,
+            {
+                "name": "🇯🇵 Node",
+                "type": "http",
+                "server": "example.com",
+                "port": 8080,
+            },
+        )
 
     def test_base64_padding_adds_only_missing_padding(self):
         self.assertEqual(server._pad_base64("abcd"), "abcd")
@@ -237,16 +242,22 @@ class ServerBugfixTests(unittest.TestCase):
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch("services.node_manager.load_config", return_value={
-                    "custom_nodes": [],
-                    "subscriptions": [{"id": "my_sub_name", "name": "Provider"}],
-                }),
-                patch("services.node_manager.load_subscription_yaml", return_value={
-                    "proxies": [
-                        {"name": "first", "type": "http", "server": "first.example.com", "port": 8080},
-                        expected_node,
-                    ]
-                }),
+                patch(
+                    "services.node_manager.load_config",
+                    return_value={
+                        "custom_nodes": [],
+                        "subscriptions": [{"id": "my_sub_name", "name": "Provider"}],
+                    },
+                ),
+                patch(
+                    "services.node_manager.load_subscription_yaml",
+                    return_value={
+                        "proxies": [
+                            {"name": "first", "type": "http", "server": "first.example.com", "port": 8080},
+                            expected_node,
+                        ]
+                    },
+                ),
             ):
                 node = get_proxy_node_by_id(
                     subscription_node_id("my_sub_name", expected_node),
@@ -265,9 +276,12 @@ class ServerBugfixTests(unittest.TestCase):
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch("services.node_manager.load_config", return_value={
-                    "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
-                }),
+                patch(
+                    "services.node_manager.load_config",
+                    return_value={
+                        "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
+                    },
+                ),
                 patch("services.node_manager.load_subscription_yaml", return_value={"proxies": nodes}),
             ):
                 node = find_subscription_node(
@@ -292,9 +306,12 @@ class ServerBugfixTests(unittest.TestCase):
             sub_file.write_text("proxies: []\n", encoding="utf-8")
 
             with (
-                patch("services.node_manager.load_config", return_value={
-                    "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
-                }),
+                patch(
+                    "services.node_manager.load_config",
+                    return_value={
+                        "subscriptions": [{"id": "my_sub_1", "name": "Provider"}],
+                    },
+                ),
                 patch("services.node_manager.load_subscription_yaml", return_value={"proxies": nodes}),
             ):
                 node = find_subscription_node(

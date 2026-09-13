@@ -27,15 +27,9 @@ logger = get_logger(__name__)
 
 TRANSLATION_CACHE_FILE = os.path.join(DATA_DIR, "translation_cache.json")
 _DEFAULT_TRANSLATION_CACHE_FILE = TRANSLATION_CACHE_FILE
-TRANSLATION_CACHE_TTL_SECONDS = env_int(
-    "TRANSLATION_CACHE_TTL_SECONDS", 30 * 24 * 3600, minimum=60
-)
-TRANSLATION_TIMEOUT_SECONDS = env_int(
-    "TRANSLATION_TIMEOUT_SECONDS", 8, minimum=1, maximum=60
-)
-TRANSLATION_MAX_CONCURRENCY = env_int(
-    "TRANSLATION_MAX_CONCURRENCY", 4, minimum=1, maximum=32
-)
+TRANSLATION_CACHE_TTL_SECONDS = env_int("TRANSLATION_CACHE_TTL_SECONDS", 30 * 24 * 3600, minimum=60)
+TRANSLATION_TIMEOUT_SECONDS = env_int("TRANSLATION_TIMEOUT_SECONDS", 8, minimum=1, maximum=60)
+TRANSLATION_MAX_CONCURRENCY = env_int("TRANSLATION_MAX_CONCURRENCY", 4, minimum=1, maximum=32)
 TRANSLATION_TARGET_LANGUAGE = "zh-CN"
 
 TRANSLATION_PROVIDER_IDS = (
@@ -134,15 +128,11 @@ def _default_provider_config(provider_id: str) -> dict[str, Any]:
 
 def _build_default_runtime_config() -> dict[str, Any]:
     return {
-        "preferred_provider": os.environ.get("TRANSLATION_DEFAULT_PROVIDER", "google").strip()
-        or "google",
+        "preferred_provider": os.environ.get("TRANSLATION_DEFAULT_PROVIDER", "google").strip() or "google",
         "provider_order": _parse_provider_order(
             os.environ.get("TRANSLATION_PROVIDER_ORDER", ",".join(_DEFAULT_PROVIDER_ORDER))
         ),
-        "providers": {
-            provider_id: _default_provider_config(provider_id)
-            for provider_id in TRANSLATION_PROVIDER_IDS
-        },
+        "providers": {provider_id: _default_provider_config(provider_id) for provider_id in TRANSLATION_PROVIDER_IDS},
     }
 
 
@@ -233,14 +223,14 @@ def apply_translation_runtime_config(application_config: dict | None) -> dict:
         for provider_id, provider_values in persisted_providers.items():
             if provider_id not in merged_providers or not isinstance(provider_values, dict):
                 continue
-            for field_name in ("enabled", * _PROVIDER_DEFINITIONS[provider_id]["fields"]):
+            for field_name in ("enabled", *_PROVIDER_DEFINITIONS[provider_id]["fields"]):
                 if field_name in provider_values:
                     merged_providers[provider_id][field_name] = provider_values[field_name]
 
     provider_order = _parse_provider_order(persisted.get("provider_order", default_config["provider_order"]))
-    preferred_provider = str(
-        persisted.get("preferred_provider") or default_config["preferred_provider"]
-    ).strip().lower()
+    preferred_provider = (
+        str(persisted.get("preferred_provider") or default_config["preferred_provider"]).strip().lower()
+    )
     if preferred_provider not in TRANSLATION_PROVIDER_IDS:
         preferred_provider = provider_order[0]
 
@@ -271,15 +261,10 @@ def get_translation_provider_definitions() -> list[dict[str, Any]]:
             "fields": list(definition["fields"]),
             "enabled": bool(provider_config.get("enabled", False)),
             "configured": _provider_is_configured(provider_id, provider_config),
-            "has_credentials": any(
-                bool(provider_config.get(field_name))
-                for field_name in definition["secret_fields"]
-            ),
+            "has_credentials": any(bool(provider_config.get(field_name)) for field_name in definition["secret_fields"]),
         }
         if "endpoint" in definition["fields"]:
-            public_provider["endpoint"] = provider_config.get(
-                "endpoint", definition["default_endpoint"]
-            )
+            public_provider["endpoint"] = provider_config.get("endpoint", definition["default_endpoint"])
         if "region" in definition["fields"]:
             public_provider["region"] = provider_config.get("region", "")
         if "model" in definition["fields"]:
@@ -398,9 +383,7 @@ async def translate_to_simplified_chinese(source_text: str, context: str = "loca
             continue
         try:
             async with _translation_semaphore:
-                translated_text = await _translate_with_provider(
-                    provider_id, normalized_text, context, provider_config
-                )
+                translated_text = await _translate_with_provider(provider_id, normalized_text, context, provider_config)
         except Exception as exc:
             logger.debug(
                 "Translation provider %s failed for %r: %s",
@@ -450,8 +433,12 @@ async def translate_location_fields(
         normalized_country = _country_code_to_english_name(normalized_country)
 
     translated_country, translated_region, translated_city = await asyncio.gather(
-        translate_to_simplified_chinese(normalized_country, "country") if normalized_country else asyncio.sleep(0, result=""),
-        translate_to_simplified_chinese(normalized_region, "region") if normalized_region else asyncio.sleep(0, result=""),
+        translate_to_simplified_chinese(normalized_country, "country")
+        if normalized_country
+        else asyncio.sleep(0, result=""),
+        translate_to_simplified_chinese(normalized_region, "region")
+        if normalized_region
+        else asyncio.sleep(0, result=""),
         translate_to_simplified_chinese(normalized_city, "city") if normalized_city else asyncio.sleep(0, result=""),
     )
     return {
@@ -491,10 +478,9 @@ async def _translate_with_provider(
 
 
 def _get_google_translate_endpoint(provider_config: dict[str, Any]) -> str:
-    endpoint = str(
-        provider_config.get("endpoint")
-        or _PROVIDER_DEFINITIONS["google"]["default_endpoint"]
-    ).strip().rstrip("/")
+    endpoint = (
+        str(provider_config.get("endpoint") or _PROVIDER_DEFINITIONS["google"]["default_endpoint"]).strip().rstrip("/")
+    )
     if not endpoint.endswith("/translate_a/single"):
         endpoint = f"{endpoint}/translate_a/single"
     return endpoint
@@ -518,16 +504,16 @@ async def _translate_google(source_text: str, provider_config: dict[str, Any]) -
 
 
 MICROSOFT_WEB_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 
 def _get_microsoft_translate_endpoint(provider_config: dict[str, Any]) -> str:
-    endpoint = str(
-        provider_config.get("endpoint")
-        or _PROVIDER_DEFINITIONS["microsoft"]["default_endpoint"]
-    ).strip().rstrip("/")
+    endpoint = (
+        str(provider_config.get("endpoint") or _PROVIDER_DEFINITIONS["microsoft"]["default_endpoint"])
+        .strip()
+        .rstrip("/")
+    )
     if not endpoint.endswith("/translatetext"):
         endpoint = f"{endpoint}/translatetext"
     return endpoint
@@ -581,9 +567,7 @@ async def _translate_tencent(source_text: str, provider_config: dict[str, Any]) 
     hashed_body = hashlib.sha256(serialized_body.encode("utf-8")).hexdigest()
     canonical_headers = f"content-type:application/json; charset=utf-8\nhost:{host}\n"
     signed_headers = "content-type;host"
-    canonical_request = (
-        f"POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_body}"
-    )
+    canonical_request = f"POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_body}"
     credential_scope = f"{date_value}/{service}/tc3_request"
     string_to_sign = (
         "TC3-HMAC-SHA256\n"
@@ -593,9 +577,7 @@ async def _translate_tencent(source_text: str, provider_config: dict[str, Any]) 
     secret_date = _hmac_sha256("TC3" + provider_config["secret_key"], date_value)
     secret_service = _hmac_sha256(secret_date, service)
     secret_signing = _hmac_sha256(secret_service, "tc3_request")
-    signature = hmac.new(
-        secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
     authorization = (
         f"TC3-HMAC-SHA256 Credential={provider_config['secret_id']}/{credential_scope},"
         f"SignedHeaders={signed_headers},Signature={signature}"
@@ -617,10 +599,9 @@ async def _translate_tencent(source_text: str, provider_config: dict[str, Any]) 
 
 
 def _openai_endpoint(provider_config: dict[str, Any]) -> str:
-    endpoint = str(
-        provider_config.get("endpoint")
-        or _PROVIDER_DEFINITIONS["openai"]["default_endpoint"]
-    ).strip().rstrip("/")
+    endpoint = (
+        str(provider_config.get("endpoint") or _PROVIDER_DEFINITIONS["openai"]["default_endpoint"]).strip().rstrip("/")
+    )
     if not endpoint:
         raise ValueError("OpenAI endpoint is required")
     if not endpoint.lower().endswith("/chat/completions"):
@@ -693,9 +674,7 @@ async def test_translation_provider(provider_id: str, sample_text: str = "Mounta
     provider_config = runtime_config["providers"].get(provider_id, {})
     if not _provider_is_configured(provider_id, provider_config):
         raise ValueError("Translation provider credentials are incomplete")
-    translated_text = await _translate_with_provider(
-        provider_id, sample_text, "city", provider_config
-    )
+    translated_text = await _translate_with_provider(provider_id, sample_text, "city", provider_config)
     return {
         "provider_id": provider_id,
         "source": sample_text,

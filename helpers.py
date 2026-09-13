@@ -1,32 +1,35 @@
 """
 Helper functions and utilities
 """
+
+import json
 import os
-import yaml
-import time
+import secrets
 import tempfile
 import threading
-import secrets
-from copy import deepcopy
-from pathlib import Path
+import time
 from contextlib import contextmanager
+from copy import deepcopy
+from functools import wraps
+from pathlib import Path
 from typing import Dict, Optional
-from fastapi import HTTPException
+
+import yaml
 from dotenv import load_dotenv
-from logger_config import get_logger
+from fastapi import HTTPException
+
+from core import cache_hits_total, cache_misses_total, file_operation_duration_seconds, file_operations_total
+from core.config import YAML_SOURCE_DIR as DEFAULT_YAML_SOURCE_DIR
+from core.config import AppConfig, env_int
 from core.proxy_compat import normalize_subscription_data
-from core.config import AppConfig, YAML_SOURCE_DIR as DEFAULT_YAML_SOURCE_DIR, env_int
-from core import (
-    cache_hits_total, cache_misses_total,
-    file_operations_total, file_operation_duration_seconds
-)
 from core.storage import (
     delete_stored_file,
     has_stored_file,
-    read_stored_file,
     list_stored_files,
+    read_stored_file,
     write_stored_file,
 )
+from logger_config import get_logger
 
 # Load environment variables from .env file
 load_dotenv()
@@ -39,49 +42,54 @@ _DEFAULT_YAML_SOURCE_PATH = Path(DEFAULT_YAML_SOURCE_DIR).resolve()
 # Never use yaml.Loader/CLoader here: subscription YAML can come from remote
 # providers and user uploads, and unsafe loaders can instantiate Python objects.
 try:
-    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
+    from yaml import CSafeDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader
+
     logger.info("Using C-accelerated safe YAML loader")
 except ImportError:
-    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
+    from yaml import SafeDumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader
+
     logger.warning("C-accelerated safe YAML loader not available, using pure Python")
 
 # ==================== Constants ====================
 
+
 class Constants:
     """Application constants"""
-    
+
     # File extensions
-    YAML_EXT = '.yaml'
-    JSON_EXT = '.json'
-    BACKUP_EXT = '.backup'
-    
+    YAML_EXT = ".yaml"
+    JSON_EXT = ".json"
+    BACKUP_EXT = ".backup"
+
     # Node types
-    NODE_TYPE_SUBSCRIPTION = 'subscription'
-    NODE_TYPE_CUSTOM = 'custom'
-    NODE_TYPE_CHAIN = 'chain'
-    
+    NODE_TYPE_SUBSCRIPTION = "subscription"
+    NODE_TYPE_CUSTOM = "custom"
+    NODE_TYPE_CHAIN = "chain"
+
     # Status codes
-    STATUS_SUCCESS = 'success'
-    STATUS_FAILED = 'failed'
-    STATUS_TIMEOUT = 'timeout'
-    
+    STATUS_SUCCESS = "success"
+    STATUS_FAILED = "failed"
+    STATUS_TIMEOUT = "timeout"
+
     # Limits
     MAX_SUBSCRIPTION_NAME_LENGTH = 100
     MAX_NODE_NAME_LENGTH = 200
     MIN_CHAIN_NODES = 2
     MAX_REQUEST_SIZE = AppConfig.MAX_REQUEST_SIZE
-    
+
     # Defaults
     DEFAULT_CACHE_DURATION = AppConfig.YAML_CACHE_DURATION
     DEFAULT_PAGE_SIZE = 50
     SLOW_REQUEST_THRESHOLD = 1.0  # seconds
-    
+
     # Timeouts (seconds) - configurable via .env
-    TIMEOUT_SUBSCRIPTION_FETCH = env_int('DEFAULT_TIMEOUT', 30, minimum=1)
-    TIMEOUT_GEOIP_LOOKUP = env_int('GEOIP_LOOKUP_TIMEOUT', 10, minimum=1)
-    TIMEOUT_SPEEDTEST_PROXY = env_int('SPEEDTEST_TIMEOUT', 10, minimum=1)
+    TIMEOUT_SUBSCRIPTION_FETCH = env_int("DEFAULT_TIMEOUT", 30, minimum=1)
+    TIMEOUT_GEOIP_LOOKUP = env_int("GEOIP_LOOKUP_TIMEOUT", 10, minimum=1)
+    TIMEOUT_SPEEDTEST_PROXY = env_int("SPEEDTEST_TIMEOUT", 10, minimum=1)
     TIMEOUT_PROCESS_TERMINATE = 5
-    
+
     # Default ports
     DEFAULT_PORT_HTTPS = 443
     DEFAULT_PORT_HTTP = 80
@@ -91,9 +99,10 @@ class Constants:
 
 # ==================== YAML Cache ====================
 
+
 class YAMLCache:
     """YAML file cache manager"""
-    
+
     def __init__(self):
         self._cache: Dict[str, tuple[dict, float, tuple[int, int] | None, str | None]] = {}
         self._lock = threading.RLock()
@@ -129,10 +138,7 @@ class YAMLCache:
             if entry is None:
                 return None
             data, cached_at, cached_signature, _ = entry
-            if (
-                time.time() - cached_at > max_age
-                or (source_path is not None and signature != cached_signature)
-            ):
+            if time.time() - cached_at > max_age or (source_path is not None and signature != cached_signature):
                 self._cache.pop(cache_key, None)
                 return None
             return deepcopy(data)
@@ -188,7 +194,7 @@ def _subscription_filepath(sub_id: str, yaml_source_dir: str) -> Path:
     base_dir = Path(yaml_source_dir).resolve()
     target = (base_dir / f"{sub_id}{Constants.YAML_EXT}").resolve()
     if not _is_relative_to(target, base_dir):
-        raise HTTPException(status_code=400, detail="Invalid subscription id")
+        raise HTTPException(status_code=400, detail="Invalid subscription id") from None
     return target
 
 
@@ -217,18 +223,19 @@ def read_subscription_content(sub_id: str, yaml_source_dir: str) -> Optional[str
         # A one-release compatibility window lets the service keep reading
         # legacy uploads until the explicit migration command is run.
         if filepath.is_file():
-            return filepath.read_text(encoding='utf-8')
+            return filepath.read_text(encoding="utf-8")
         return None
     if not filepath.exists():
         return None
-    return filepath.read_text(encoding='utf-8')
+    return filepath.read_text(encoding="utf-8")
 
 
 def subscription_content_exists(sub_id: str, yaml_source_dir: str) -> bool:
     if _uses_database_subscription_storage(yaml_source_dir):
-        return has_stored_file(_subscription_storage_key(sub_id)) or _subscription_filepath(
-            sub_id, yaml_source_dir
-        ).is_file()
+        return (
+            has_stored_file(_subscription_storage_key(sub_id))
+            or _subscription_filepath(sub_id, yaml_source_dir).is_file()
+        )
     return _subscription_filepath(sub_id, yaml_source_dir).is_file()
 
 
@@ -279,13 +286,13 @@ def _get_yaml_file_lock(filepath: Path | str) -> threading.RLock:
 
 def _looks_like_yaml_mapping(content: str) -> bool:
     """Heuristic for rejecting malformed YAML mappings instead of treating them as URI lists."""
-    for line in (content or '').splitlines():
+    for line in (content or "").splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith('#') or stripped.startswith('-'):
+        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
             continue
-        if '://' in stripped:
+        if "://" in stripped:
             return False
-        return ':' in stripped
+        return ":" in stripped
     return False
 
 
@@ -298,7 +305,7 @@ def subscription_yaml_lock(sub_id: str, yaml_source_dir: str):
         yield filepath
 
 
-def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = 'utf-8'):
+def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = "utf-8"):
     """Atomically write text using a same-directory temp file and os.replace()."""
     target = Path(path)
     parent = target.parent
@@ -307,11 +314,11 @@ def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = 'ut
     tmp_name = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode='w',
+            mode="w",
             encoding=encoding,
             dir=str(parent),
             prefix=f".{target.name}.",
-            suffix='.tmp',
+            suffix=".tmp",
             delete=False,
         ) as tmp:
             tmp_name = tmp.name
@@ -333,23 +340,24 @@ def atomic_write_text(path: str | os.PathLike, content: str, encoding: str = 'ut
                 logger.debug("Failed to remove temp file after atomic write failure: %s", tmp_name, exc_info=True)
         raise
 
+
 def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = True) -> dict:
     """
     Load subscription YAML file safely with caching
-    
+
     Args:
         sub_id: Subscription ID
         yaml_source_dir: Directory containing YAML files
         use_cache: Whether to use cache (default: True)
-    
+
     Returns:
         Parsed YAML dict
-    
+
     Raises:
         HTTPException: If file not found or parse error
     """
     start_time = time.time()
-    
+
     filepath = _subscription_filepath(sub_id, yaml_source_dir)
 
     # Check cache first. The absolute source path and mtime are part of the
@@ -363,23 +371,23 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
         )
         if cached is not None:
             logger.debug(f"YAML cache hit for {sub_id}")
-            cache_hits_total.labels(cache_type='yaml').inc()
+            cache_hits_total.labels(cache_type="yaml").inc()
             return cached
-        cache_misses_total.labels(cache_type='yaml').inc()
-    
+        cache_misses_total.labels(cache_type="yaml").inc()
+
     content = read_subscription_content(sub_id, yaml_source_dir)
     if content is None:
-        file_operations_total.labels(operation='read', status='failed').inc()
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    
+        file_operations_total.labels(operation="read", status="failed").inc()
+        raise HTTPException(status_code=404, detail="Subscription not found") from None
+
     try:
         with _get_yaml_file_lock(filepath):
             content = read_subscription_content(sub_id, yaml_source_dir)
             if content is None:
-                file_operations_total.labels(operation='read', status='failed').inc()
-                raise HTTPException(status_code=404, detail="Subscription not found")
+                file_operations_total.labels(operation="read", status="failed").inc()
+                raise HTTPException(status_code=404, detail="Subscription not found") from None
             content = content.strip()
-        
+
         cfg = None
         direct_yaml_error = None
         # Prefer YAML parsing for any mapping-shaped content instead of relying
@@ -393,12 +401,13 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
 
         if not isinstance(cfg, dict):
             if direct_yaml_error and _looks_like_yaml_mapping(content):
-                raise direct_yaml_error
+                raise direct_yaml_error from None
             # Use SubscriptionParser to handle Base64 and node links
             from services.subscription import SubscriptionParser
+
             logger.info(f"Parsing subscription content for {sub_id}")
             cfg = SubscriptionParser.parse_content(content)
-        
+
         # Ensure result is a dict, not a string or other type
         if not isinstance(cfg, dict):
             logger.warning(f"YAML file {sub_id} parsed as {type(cfg)}, not dict. Returning empty dict.")
@@ -409,44 +418,44 @@ def load_subscription_yaml(sub_id: str, yaml_source_dir: str, use_cache: bool = 
         normalized_count = normalize_subscription_data(result)
         if normalized_count:
             logger.info(f"Normalized {normalized_count} legacy xhttp node(s) in subscription {sub_id}")
-        
+
         # Update cache
         if use_cache:
             yaml_cache.set(sub_id, result, source_path=filepath)
             logger.debug(f"YAML cached for {sub_id}")
-        
+
         # Record metrics
         duration = time.time() - start_time
-        file_operations_total.labels(operation='read', status='success').inc()
-        file_operation_duration_seconds.labels(operation='read').observe(duration)
-        
+        file_operations_total.labels(operation="read", status="success").inc()
+        file_operation_duration_seconds.labels(operation="read").observe(duration)
+
         return result
-        
+
     except yaml.YAMLError as e:
         logger.error(f"Failed to parse YAML {sub_id}: {e}")
-        file_operations_total.labels(operation='read', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Invalid YAML format")
+        file_operations_total.labels(operation="read", status="failed").inc()
+        raise HTTPException(status_code=500, detail="Invalid YAML format") from e
     except Exception as e:
         logger.error(f"Failed to load YAML {sub_id}: {e}")
-        file_operations_total.labels(operation='read', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Failed to load subscription")
+        file_operations_total.labels(operation="read", status="failed").inc()
+        raise HTTPException(status_code=500, detail="Failed to load subscription") from e
 
 
 def save_subscription_yaml(sub_id: str, cfg: dict, yaml_source_dir: str):
     """
     Save subscription YAML file safely
-    
+
     Args:
         sub_id: Subscription ID
         cfg: YAML config dict
         yaml_source_dir: Directory containing YAML files
-    
+
     Raises:
         HTTPException: If save fails
     """
     start_time = time.time()
     filepath = _subscription_filepath(sub_id, yaml_source_dir)
-    
+
     try:
         with _get_yaml_file_lock(filepath):
             content = yaml.dump(cfg, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
@@ -454,58 +463,57 @@ def save_subscription_yaml(sub_id: str, cfg: dict, yaml_source_dir: str):
                 write_stored_file(_subscription_storage_key(sub_id), content)
             else:
                 atomic_write_text(filepath, content)
-        
+
         # Invalidate cache
         yaml_cache.invalidate(sub_id)
         logger.debug(f"YAML saved and cache invalidated for {sub_id}")
-        
+
         # Record metrics
         duration = time.time() - start_time
-        file_operations_total.labels(operation='write', status='success').inc()
-        file_operation_duration_seconds.labels(operation='write').observe(duration)
-        
+        file_operations_total.labels(operation="write", status="success").inc()
+        file_operation_duration_seconds.labels(operation="write").observe(duration)
+
     except Exception as e:
         logger.error(f"Failed to save YAML {sub_id}: {e}")
-        file_operations_total.labels(operation='write', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Failed to save subscription")
-
+        file_operations_total.labels(operation="write", status="failed").inc()
+        raise HTTPException(status_code=500, detail="Failed to save subscription") from e
 
 
 def save_subscription_content(sub_id: str, content: str, yaml_source_dir: str):
     """
     Save subscription raw content (already formatted YAML string)
-    
+
     Args:
         sub_id: Subscription ID
         content: Raw YAML content string
         yaml_source_dir: Directory containing YAML files
-    
+
     Raises:
         HTTPException: If save fails
     """
     start_time = time.time()
     filepath = _subscription_filepath(sub_id, yaml_source_dir)
-    
+
     try:
         with _get_yaml_file_lock(filepath):
             if _uses_database_subscription_storage(yaml_source_dir):
                 write_stored_file(_subscription_storage_key(sub_id), content)
             else:
                 atomic_write_text(filepath, content)
-        
+
         # Invalidate cache
         yaml_cache.invalidate(sub_id)
         logger.debug(f"YAML content saved and cache invalidated for {sub_id}")
-        
+
         # Record metrics
         duration = time.time() - start_time
-        file_operations_total.labels(operation='write', status='success').inc()
-        file_operation_duration_seconds.labels(operation='write').observe(duration)
-        
+        file_operations_total.labels(operation="write", status="success").inc()
+        file_operation_duration_seconds.labels(operation="write").observe(duration)
+
     except Exception as e:
         logger.error(f"Failed to save YAML content {sub_id}: {e}")
-        file_operations_total.labels(operation='write', status='failed').inc()
-        raise HTTPException(status_code=500, detail="Failed to save subscription")
+        file_operations_total.labels(operation="write", status="failed").inc()
+        raise HTTPException(status_code=500, detail="Failed to save subscription") from e
 
 
 def update_subscription_yaml(sub_id: str, yaml_source_dir: str, mutator):
@@ -522,13 +530,13 @@ def update_subscription_yaml(sub_id: str, yaml_source_dir: str, mutator):
             return result
 
 
-def generate_timestamp_id(prefix: str = '') -> str:
+def generate_timestamp_id(prefix: str = "") -> str:
     """
     Generate a timestamp-prefixed ID with random entropy.
-    
+
     Args:
         prefix: Optional prefix for the ID (e.g., 'sub_', 'node_', 'chain_')
-    
+
     Returns:
         Timestamp-prefixed ID string that is safe under same-millisecond concurrency.
     """
@@ -538,14 +546,12 @@ def generate_timestamp_id(prefix: str = '') -> str:
     return f"{prefix}{value}" if prefix else value
 
 
-
 # ==================== Error Handler Decorator ====================
 
-from functools import wraps
-import json
 
 def handle_api_errors(func):
     """Decorator to handle common API errors"""
+
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
         try:
@@ -554,20 +560,20 @@ def handle_api_errors(func):
             raise  # Re-raise HTTP exceptions
         except FileNotFoundError as e:
             logger.error(f"File not found: {e}")
-            raise HTTPException(status_code=404, detail="Resource not found")
+            raise HTTPException(status_code=404, detail="Resource not found") from e
         except yaml.YAMLError as e:
             logger.error(f"YAML parse error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid YAML format")
+            raise HTTPException(status_code=400, detail="Invalid YAML format") from e
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid JSON format")
+            raise HTTPException(status_code=400, detail="Invalid JSON format") from e
         except ValueError as e:
             logger.error(f"Validation error: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             logger.error(f"Unexpected error in {func.__name__}: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Internal server error")
-    
+            raise HTTPException(status_code=500, detail="Internal server error") from e
+
     @wraps(func)
     def sync_wrapper(*args, **kwargs):
         try:
@@ -576,22 +582,23 @@ def handle_api_errors(func):
             raise
         except FileNotFoundError as e:
             logger.error(f"File not found: {e}")
-            raise HTTPException(status_code=404, detail="Resource not found")
+            raise HTTPException(status_code=404, detail="Resource not found") from e
         except yaml.YAMLError as e:
             logger.error(f"YAML parse error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid YAML format")
+            raise HTTPException(status_code=400, detail="Invalid YAML format") from e
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid JSON format")
+            raise HTTPException(status_code=400, detail="Invalid JSON format") from e
         except ValueError as e:
             logger.error(f"Validation error: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             logger.error(f"Unexpected error in {func.__name__}: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Internal server error")
-    
+            raise HTTPException(status_code=500, detail="Internal server error") from e
+
     # Return appropriate wrapper based on function type
     import asyncio
+
     if asyncio.iscoroutinefunction(func):
         return async_wrapper
     else:

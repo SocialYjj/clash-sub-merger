@@ -8,7 +8,6 @@ from fastapi import HTTPException
 
 from .security import generate_token
 
-
 MIN_CUSTOM_TOKEN_LENGTH = 8
 MAX_CUSTOM_TOKEN_LENGTH = 200
 CUSTOM_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]+$")

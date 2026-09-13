@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-
 _SCHEMA_VERSION = 2
 _INITIALIZATION_LOCK = threading.RLock()
 _INITIALIZED_DATABASES: set[str] = set()
@@ -51,9 +50,7 @@ def _connect():
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - exercised only without optional dependency
-        raise RuntimeError(
-            "PostgreSQL backend requires psycopg[binary]. Install project requirements first."
-        ) from exc
+        raise RuntimeError("PostgreSQL backend requires psycopg[binary]. Install project requirements first.") from exc
 
     dsn = os.environ.get("POSTGRES_DSN", "").strip()
     if dsn:
@@ -266,10 +263,7 @@ def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
             else:
                 cursor.execute("SELECT file_path, content_text, updated_at FROM stored_files ORDER BY file_path")
             rows = cursor.fetchall()
-        return [
-            {"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])}
-            for row in rows
-        ]
+        return [{"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])} for row in rows]
     finally:
         connection.close()
 

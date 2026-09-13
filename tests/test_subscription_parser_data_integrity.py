@@ -36,19 +36,25 @@ class SubscriptionParserDataIntegrityTests(unittest.TestCase):
 
         self.assertEqual(proxy["name"], "VLESS XHTTP Reality")
         self.assertEqual(proxy["network"], "xhttp")
-        self.assertEqual(proxy["xhttp-opts"], {
-            "mode": "stream-up",
-            "path": "/xhttp",
-            "host": "cdn.example.com",
-        })
+        self.assertEqual(
+            proxy["xhttp-opts"],
+            {
+                "mode": "stream-up",
+                "path": "/xhttp",
+                "host": "cdn.example.com",
+            },
+        )
         self.assertEqual(proxy["servername"], "www.apple.com")
         self.assertEqual(proxy["client-fingerprint"], "chrome")
         self.assertEqual(proxy["alpn"], ["h2", "http/1.1"])
-        self.assertEqual(proxy["reality-opts"], {
-            "public-key": "PUBLICKEY",
-            "short-id": "bb05e72e",
-            "spider-x": "/spider",
-        })
+        self.assertEqual(
+            proxy["reality-opts"],
+            {
+                "public-key": "PUBLICKEY",
+                "short-id": "bb05e72e",
+                "spider-x": "/spider",
+            },
+        )
         self.assertEqual(proxy["flow"], "xtls-rprx-vision")
         self.assertEqual(proxy["encryption"], "none")
         self.assertEqual(proxy["ech"], "ech-config")
@@ -58,9 +64,7 @@ class SubscriptionParserDataIntegrityTests(unittest.TestCase):
         self.assertNotIn("cert-sha", proxy)
 
     def test_trojan_does_not_force_skip_cert_verify(self):
-        parsed = SubscriptionParser.parse_content(
-            "trojan://password@example.com:443?sni=example.com#trojan"
-        )
+        parsed = SubscriptionParser.parse_content("trojan://password@example.com:443?sni=example.com#trojan")
         proxy = parsed["proxies"][0]
 
         self.assertNotIn("skip-cert-verify", proxy)

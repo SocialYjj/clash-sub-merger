@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+
 import api.admin_tokens as admin_tokens_api
 import api.auth as auth_api
 import api.proxy_chains as proxy_chains_api
@@ -21,10 +22,10 @@ import api.scheduler as scheduler_api
 import api.subscriptions as subscriptions_api
 import api.users as users_api
 import server
+import services.subscription_refresh_lock as refresh_lock_service
 from core.dependencies import verify_session
 from services.subscription_fetcher import FetchError, SubscriptionFetcher
 from services.subscription_state import refresh_failure_fields
-import services.subscription_refresh_lock as refresh_lock_service
 
 
 @asynccontextmanager
@@ -79,19 +80,23 @@ class AuthAndRouteRegressionTests(unittest.TestCase):
             "subscriptions": [],
             "custom_nodes": [],
             "templates": [template],
-            "users": [{
-                "id": "user_1",
-                "name": "User",
-                "template_id": "tpl_custom",
-                "allocations": {},
-                "group_config": {"节点选择": ["DIRECT"]},
-            }],
-            "admin_tokens": [{
-                "id": "admin_1",
-                "name": "Admin",
-                "template_id": "tpl_custom",
-                "group_config": {"节点选择": ["REJECT"]},
-            }],
+            "users": [
+                {
+                    "id": "user_1",
+                    "name": "User",
+                    "template_id": "tpl_custom",
+                    "allocations": {},
+                    "group_config": {"节点选择": ["DIRECT"]},
+                }
+            ],
+            "admin_tokens": [
+                {
+                    "id": "admin_1",
+                    "name": "Admin",
+                    "template_id": "tpl_custom",
+                    "group_config": {"节点选择": ["REJECT"]},
+                }
+            ],
         }
 
         app = FastAPI()
@@ -151,13 +156,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
         return httpx.Response(
             200,
             request=httpx.Request("GET", url),
-            text=(
-                "proxies:\n"
-                "  - name: Test Node\n"
-                "    type: http\n"
-                "    server: 127.0.0.1\n"
-                "    port: 8080\n"
-            ),
+            text=("proxies:\n  - name: Test Node\n    type: http\n    server: 127.0.0.1\n    port: 8080\n"),
         )
 
     def test_transient_fetch_retries_without_exposing_subscription_url(self):
@@ -185,9 +184,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
             patch.object(subscriptions_api.AppConfig, "SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS", 0),
             patch("services.subscription_fetcher.logger.warning") as warning_log,
         ):
-            _content, _usage, node_count = asyncio.run(
-                fetcher.fetch(secret_url, "test-agent")
-            )
+            _content, _usage, node_count = asyncio.run(fetcher.fetch(secret_url, "test-agent"))
 
         self.assertEqual(http_client.calls, 2)
         self.assertEqual(node_count, 1)
@@ -221,13 +218,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
 
     def test_valid_base64_response_with_html_content_type_is_accepted(self):
         fetcher = SubscriptionFetcher(Mock())
-        yaml_content = (
-            "proxies:\n"
-            "  - name: Test Node\n"
-            "    type: http\n"
-            "    server: 127.0.0.1\n"
-            "    port: 8080\n"
-        )
+        yaml_content = "proxies:\n  - name: Test Node\n    type: http\n    server: 127.0.0.1\n    port: 8080\n"
         encoded_content = base64.b64encode(yaml_content.encode()).decode()
         response = httpx.Response(
             200,
@@ -253,9 +244,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
                 )
 
         with self.assertRaises(FetchError) as error_context:
-            asyncio.run(
-                SubscriptionFetcher(NotFoundClient()).fetch(secret_url, "test-agent")
-            )
+            asyncio.run(SubscriptionFetcher(NotFoundClient()).fetch(secret_url, "test-agent"))
 
         error_message = str(error_context.exception)
         self.assertIn("HTTP 404", error_message)
@@ -358,14 +347,16 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
 
     def test_disabling_subscription_removes_scheduled_job(self):
         config = {
-            "subscriptions": [{
-                "id": "sub_1",
-                "name": "Provider",
-                "type": "url",
-                "enabled": True,
-                "cron_expr": "0 0 * * *",
-                "next_update": 123,
-            }]
+            "subscriptions": [
+                {
+                    "id": "sub_1",
+                    "name": "Provider",
+                    "type": "url",
+                    "enabled": True,
+                    "cron_expr": "0 0 * * *",
+                    "next_update": 123,
+                }
+            ]
         }
 
         def update_config(mutator):
@@ -378,9 +369,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
             patch.object(subscriptions_api, "invalidate_stats_cache"),
             patch("scheduler_service.get_scheduler", return_value=scheduler),
         ):
-            response = asyncio.run(
-                subscriptions_api.toggle_subscription("sub_1", _=True)
-            )
+            response = asyncio.run(subscriptions_api.toggle_subscription("sub_1", _=True))
 
         self.assertFalse(response["enabled"])
         self.assertFalse(config["subscriptions"][0]["enabled"])
@@ -389,13 +378,15 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
 
     def test_deleting_subscription_removes_yaml_and_scheduled_job(self):
         config = {
-            "subscriptions": [{
-                "id": "sub_1",
-                "name": "Provider",
-                "type": "url",
-                "enabled": True,
-                "cron_expr": "0 0 * * *",
-            }]
+            "subscriptions": [
+                {
+                    "id": "sub_1",
+                    "name": "Provider",
+                    "type": "url",
+                    "enabled": True,
+                    "cron_expr": "0 0 * * *",
+                }
+            ]
         }
 
         def update_config(mutator):
@@ -413,9 +404,7 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
                 patch.object(subscriptions_api, "invalidate_stats_cache"),
                 patch("scheduler_service.get_scheduler", return_value=scheduler),
             ):
-                response = asyncio.run(
-                    subscriptions_api.delete_subscription("sub_1", _=True)
-                )
+                response = asyncio.run(subscriptions_api.delete_subscription("sub_1", _=True))
 
             self.assertFalse(yaml_path.exists())
 
@@ -427,12 +416,14 @@ class SubscriptionRefreshRegressionTests(unittest.TestCase):
 class SchedulerConsistencyRegressionTests(unittest.TestCase):
     def test_failed_job_registration_does_not_persist_new_cron(self):
         config = {
-            "subscriptions": [{
-                "id": "sub_1",
-                "type": "url",
-                "enabled": True,
-                "cron_expr": "0 6 * * *",
-            }]
+            "subscriptions": [
+                {
+                    "id": "sub_1",
+                    "type": "url",
+                    "enabled": True,
+                    "cron_expr": "0 6 * * *",
+                }
+            ]
         }
 
         class FailedScheduler:
@@ -474,14 +465,16 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
 
     def test_startup_persists_failed_schedule_as_not_pending(self):
         config = {
-            "subscriptions": [{
-                "id": "sub_1",
-                "name": "Provider",
-                "type": "url",
-                "enabled": True,
-                "cron_expr": "0 0 * * *",
-                "next_update": 123,
-            }]
+            "subscriptions": [
+                {
+                    "id": "sub_1",
+                    "name": "Provider",
+                    "type": "url",
+                    "enabled": True,
+                    "cron_expr": "0 0 * * *",
+                    "next_update": 123,
+                }
+            ]
         }
         scheduler = Mock()
         scheduler.jobs = {}
@@ -499,9 +492,7 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
         update_fields.assert_called_once_with("sub_1", {"next_update": None})
 
     def test_scheduled_lock_conflict_does_not_persist_refresh_failure(self):
-        lock_conflict = server.SubscriptionRefreshInProgress(
-            "Subscription sub_1 is already being updated"
-        )
+        lock_conflict = server.SubscriptionRefreshInProgress("Subscription sub_1 is already being updated")
         record_failure = Mock()
 
         with (
@@ -552,9 +543,7 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
                 side_effect=lambda value, **_: (value, False),
             ),
         ):
-            _content, _usage, node_count, *_rest = server._fetch_and_process_subscription(
-                subscription
-            )
+            _content, _usage, node_count, *_rest = server._fetch_and_process_subscription(subscription)
 
         self.assertEqual(node_count, 2)
 

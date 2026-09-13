@@ -9,7 +9,6 @@ from core.token_utils import generate_unique_subscription_token
 from helpers import generate_timestamp_id
 from logger_config import get_logger
 
-
 logger = get_logger(__name__)
 
 
@@ -22,8 +21,7 @@ def initialize_administrator() -> bool:
     initial_password = AppConfig.INITIAL_ADMIN_PASSWORD
     if not initial_password:
         raise RuntimeError(
-            "Administrator password is not initialized. Set INITIAL_ADMIN_PASSWORD "
-            "for the first successful startup."
+            "Administrator password is not initialized. Set INITIAL_ADMIN_PASSWORD for the first successful startup."
         )
     validated_password = validate_password_policy(initial_password)
 
@@ -35,17 +33,19 @@ def initialize_administrator() -> bool:
         auth["password_hash"] = hash_password(validated_password)
         auth["sessions"] = {}
         if not latest_config.get("admin_tokens"):
-            latest_config.setdefault("admin_tokens", []).append({
-                "id": generate_timestamp_id("adm_"),
-                "name": "默认",
-                "token": generate_unique_subscription_token(latest_config),
-                "template_id": "builtin",
-                "sub_filename": "",
-                "sub_name": "",
-                "enabled": True,
-                "created_at": int(time.time()),
-                "group_config": {},
-            })
+            latest_config.setdefault("admin_tokens", []).append(
+                {
+                    "id": generate_timestamp_id("adm_"),
+                    "name": "默认",
+                    "token": generate_unique_subscription_token(latest_config),
+                    "template_id": "builtin",
+                    "sub_filename": "",
+                    "sub_name": "",
+                    "enabled": True,
+                    "created_at": int(time.time()),
+                    "group_config": {},
+                }
+            )
         return True
 
     initialized = update_config(initialize)

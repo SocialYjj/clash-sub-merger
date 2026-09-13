@@ -67,12 +67,14 @@ class ProxyChainUtilsTests(unittest.TestCase):
 
     def test_coerce_group_strategy_keeps_url_test_options(self):
         self.assertEqual(
-            coerce_group_strategy({
-                "group_strategy": "url-test",
-                "group_url": "https://example.com/204",
-                "group_interval": "120",
-                "group_tolerance": "20",
-            }),
+            coerce_group_strategy(
+                {
+                    "group_strategy": "url-test",
+                    "group_url": "https://example.com/204",
+                    "group_interval": "120",
+                    "group_tolerance": "20",
+                }
+            ),
             {
                 "type": "url-test",
                 "url": "https://example.com/204",

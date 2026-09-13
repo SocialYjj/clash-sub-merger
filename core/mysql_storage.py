@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-
 _SCHEMA_VERSION = 2
 _INITIALIZATION_LOCK = threading.RLock()
 _INITIALIZED_DATABASES: set[str] = set()
@@ -256,10 +255,7 @@ def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
             else:
                 cursor.execute("SELECT file_path, content_text, updated_at FROM stored_files ORDER BY file_path")
             rows = cursor.fetchall()
-        return [
-            {"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])}
-            for row in rows
-        ]
+        return [{"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])} for row in rows]
     finally:
         connection.close()
 

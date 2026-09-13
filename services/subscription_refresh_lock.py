@@ -5,10 +5,10 @@ import re
 from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import HTTPException
-from filelock import AsyncFileLock, FileLock, Timeout as FileLockTimeout
+from filelock import AsyncFileLock, FileLock
+from filelock import Timeout as FileLockTimeout
 
 from core.config import AppConfig
-
 
 REFRESH_LOCK_DIR = os.path.join(AppConfig.DATA_DIR, "refresh_locks")
 
@@ -54,9 +54,7 @@ async def _try_acquire_async_refresh_lock(
 
 
 def _refresh_in_progress(subscription_id: str) -> SubscriptionRefreshInProgress:
-    return SubscriptionRefreshInProgress(
-        f"Subscription {subscription_id} is already being updated"
-    )
+    return SubscriptionRefreshInProgress(f"Subscription {subscription_id} is already being updated")
 
 
 def _http_refresh_conflict(exc: SubscriptionRefreshInProgress) -> HTTPException:

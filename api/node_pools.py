@@ -14,8 +14,6 @@ from core.dependencies import verify_session
 from helpers import generate_timestamp_id, handle_api_errors
 from services.node_pool_references import (
     NODE_POOL_SOURCE,
-    VALID_NODE_POOL_LOAD_BALANCE_STRATEGIES,
-    VALID_NODE_POOL_STRATEGIES,
     ensure_node_pool_ids,
     list_available_node_catalog,
     list_node_pool_virtual_references,
@@ -23,7 +21,6 @@ from services.node_pool_references import (
     pool_strategy_config,
     reconcile_node_pool_references,
 )
-
 
 router = APIRouter()
 
@@ -163,10 +160,7 @@ def _canonical_nodes(config: dict, nodes: list[NodePoolMember]) -> list[dict]:
 @handle_api_errors
 def list_node_pools(_: bool = Depends(verify_session)):
     config = load_config()
-    references = {
-        reference.pool_id: reference
-        for reference in list_node_pool_virtual_references(config)
-    }
+    references = {reference.pool_id: reference for reference in list_node_pool_virtual_references(config)}
     pools = [
         _pool_payload(pool, references.get(str(pool.get("id"))))
         for pool in config.get("node_pools", [])
@@ -187,10 +181,7 @@ def get_available_node_pool_nodes(_: bool = Depends(verify_session)):
 @handle_api_errors
 def get_node_pool(pool_id: str, _: bool = Depends(verify_session)):
     config = load_config()
-    references = {
-        reference.pool_id: reference
-        for reference in list_node_pool_virtual_references(config)
-    }
+    references = {reference.pool_id: reference for reference in list_node_pool_virtual_references(config)}
     for pool in config.get("node_pools", []):
         if isinstance(pool, dict) and pool.get("id") == pool_id:
             return {"pool": _pool_payload(pool, references.get(pool_id))}
@@ -253,8 +244,7 @@ def update_node_pool(pool_id: str, data: UpdateNodePool, _: bool = Depends(verif
         if pool is None:
             raise HTTPException(status_code=404, detail="节点池不存在")
         if data.name is not None and any(
-            item is not pool
-            and str(item.get("name") or "").casefold() == data.name.casefold()
+            item is not pool and str(item.get("name") or "").casefold() == data.name.casefold()
             for item in pools
             if isinstance(item, dict)
         ):

@@ -30,7 +30,7 @@ def main() -> int:
 
     from core.config import DATA_DIR, DATABASE_FILE
     from core.database import load_config
-    from core.sqlite_storage import read_cache_document, initialize_database
+    from core.sqlite_storage import initialize_database, read_cache_document
 
     initialize_database()
     config = load_config()

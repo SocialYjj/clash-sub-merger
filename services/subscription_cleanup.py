@@ -16,11 +16,7 @@ def cleanup_deleted_subscription(
     """Remove the source record, node references, schedules, and cached state."""
     subscriptions = config.get("subscriptions", [])
     subscription = next(
-        (
-            candidate
-            for candidate in subscriptions
-            if candidate.get("id") == subscription_id
-        ),
+        (candidate for candidate in subscriptions if candidate.get("id") == subscription_id),
         None,
     )
     if subscription is None:
@@ -41,20 +37,13 @@ def cleanup_deleted_subscription(
         allocation_key=subscription_id,
     )
 
-    config["subscriptions"] = [
-        candidate
-        for candidate in subscriptions
-        if candidate.get("id") != subscription_id
-    ]
+    config["subscriptions"] = [candidate for candidate in subscriptions if candidate.get("id") != subscription_id]
     config["source_order"] = [
         source_reference
         for source_reference in config.get("source_order", [])
         if not (
             source_reference == subscription_id
-            or (
-                isinstance(source_reference, dict)
-                and source_reference.get("id") == subscription_id
-            )
+            or (isinstance(source_reference, dict) and source_reference.get("id") == subscription_id)
         )
     ]
 
@@ -71,11 +60,7 @@ def cleanup_deleted_subscription(
             continue
         subscription_ids = profile.get("subscription_ids")
         if isinstance(subscription_ids, list):
-            profile["subscription_ids"] = [
-                stored_id
-                for stored_id in subscription_ids
-                if stored_id != subscription_id
-            ]
+            profile["subscription_ids"] = [stored_id for stored_id in subscription_ids if stored_id != subscription_id]
 
     speedtest_results = config.get("speedtest_results")
     if isinstance(speedtest_results, dict):

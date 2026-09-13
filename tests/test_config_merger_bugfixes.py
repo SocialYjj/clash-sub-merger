@@ -12,11 +12,7 @@ from services.proxy_chain_utils import MAX_PROXY_NAME_LENGTH
 class ConfigMergerBugfixTests(unittest.TestCase):
     def write_yaml(self, folder, filename, node_name):
         Path(folder, filename).write_text(
-            "proxies:\n"
-            f"  - name: {node_name}\n"
-            "    type: http\n"
-            "    server: 127.0.0.1\n"
-            "    port: 8080\n",
+            f"proxies:\n  - name: {node_name}\n    type: http\n    server: 127.0.0.1\n    port: 8080\n",
             encoding="utf-8",
         )
 
@@ -81,18 +77,22 @@ class ConfigMergerBugfixTests(unittest.TestCase):
                 yaml_dir=tempdir,
                 output_file=str(output),
             )
-            merger.save({
-                "proxies": [{
-                    "name": "Node",
-                    "type": "http",
-                    "server": "example.com",
-                    "port": 8080,
-                    "sourceId": "sub_1",
-                    "region": "Tokyo",
-                    "_source_id": "sub_1",
-                }],
-                "proxy-groups": [],
-            })
+            merger.save(
+                {
+                    "proxies": [
+                        {
+                            "name": "Node",
+                            "type": "http",
+                            "server": "example.com",
+                            "port": 8080,
+                            "sourceId": "sub_1",
+                            "region": "Tokyo",
+                            "_source_id": "sub_1",
+                        }
+                    ],
+                    "proxy-groups": [],
+                }
+            )
 
             rendered = output.read_text(encoding="utf-8")
 
@@ -102,10 +102,12 @@ class ConfigMergerBugfixTests(unittest.TestCase):
         self.assertNotIn("_source_id", rendered)
 
     def test_country_group_deduplicates_proxy_names(self):
-        groups = CountryGrouper.group_by_country([
-            {"name": "🇯🇵 Demo JP"},
-            {"name": "🇯🇵 Demo JP"},
-        ])
+        groups = CountryGrouper.group_by_country(
+            [
+                {"name": "🇯🇵 Demo JP"},
+                {"name": "🇯🇵 Demo JP"},
+            ]
+        )
 
         self.assertEqual(groups["🇯🇵 日本"], ["🇯🇵 Demo JP"])
 

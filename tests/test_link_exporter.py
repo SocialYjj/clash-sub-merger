@@ -8,21 +8,23 @@ from services.proxy_filter import ProxyFilter
 
 class LinkExporterTests(unittest.TestCase):
     def test_vless_xhttp_export_uses_xhttp_opts(self):
-        link = proxy_to_link({
-            "name": "xhttp node",
-            "type": "vless",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "xhttp",
-            "tls": True,
-            "servername": "www.apple.com",
-            "xhttp-opts": {
-                "mode": "stream-up",
-                "path": "/xhttp",
-                "host": "www.apple.com",
-            },
-        })
+        link = proxy_to_link(
+            {
+                "name": "xhttp node",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "xhttp",
+                "tls": True,
+                "servername": "www.apple.com",
+                "xhttp-opts": {
+                    "mode": "stream-up",
+                    "path": "/xhttp",
+                    "host": "www.apple.com",
+                },
+            }
+        )
 
         parsed = urlparse(link)
         params = parse_qs(parsed.query)
@@ -35,31 +37,35 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(params["host"], ["www.apple.com"])
 
     def test_vless_ipv6_server_is_bracketed(self):
-        link = proxy_to_link({
-            "name": "ipv6",
-            "type": "vless",
-            "server": "2001:db8::1",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "tcp",
-        })
+        link = proxy_to_link(
+            {
+                "name": "ipv6",
+                "type": "vless",
+                "server": "2001:db8::1",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "tcp",
+            }
+        )
 
         self.assertIn("@[2001:db8::1]:443", link)
 
     def test_vless_reality_query_values_are_url_encoded(self):
-        link = proxy_to_link({
-            "name": "reality",
-            "type": "vless",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "tcp",
-            "tls": True,
-            "reality-opts": {
-                "public-key": "abc+def/ghi=",
-                "short-id": "sid+/=",
-            },
-        })
+        link = proxy_to_link(
+            {
+                "name": "reality",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "tcp",
+                "tls": True,
+                "reality-opts": {
+                    "public-key": "abc+def/ghi=",
+                    "short-id": "sid+/=",
+                },
+            }
+        )
 
         self.assertIn("pbk=abc%2Bdef%2Fghi%3D", link)
         self.assertIn("sid=sid%2B%2F%3D", link)
@@ -68,16 +74,18 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(params["sid"], ["sid+/="])
 
     def test_hysteria2_obfs_password_is_url_encoded(self):
-        link = proxy_to_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "sni": "sni.example.com",
-            "obfs": "salamander",
-            "obfs-password": "pa ss+/=",
-        })
+        link = proxy_to_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "sni": "sni.example.com",
+                "obfs": "salamander",
+                "obfs-password": "pa ss+/=",
+            }
+        )
 
         self.assertIn("obfs-password=pa%20ss%2B%2F%3D", link)
         params = parse_qs(urlparse(link).query)
@@ -106,24 +114,23 @@ class LinkExporterTests(unittest.TestCase):
         self.assertNotIn("allowInsecure", exported_params)
 
     def test_hysteria2_generic_cert_sha_is_rejected_instead_of_reinterpreted(self):
-        exported = export_proxy_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "tls": True,
-            "cert-sha": "not-a-hy2-pin",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "tls": True,
+                "cert-sha": "not-a-hy2-pin",
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_hysteria2_certificate_hash")
 
     def test_hysteria2_base64_certificate_pin_round_trips_after_yaml_normalization(self):
-        original = (
-            "hysteria2://secret@example.com:443?security=tls&pinSHA256=opaque-pin%2B%2F%3D"
-            "&sni=www.bing.com#hy2"
-        )
+        original = "hysteria2://secret@example.com:443?security=tls&pinSHA256=opaque-pin%2B%2F%3D&sni=www.bing.com#hy2"
         parsed = parse_node_link(original)
         normalized = ProxyFilter.sanitize_proxy(parsed)
         exported = export_proxy_link(normalized)
@@ -135,30 +142,34 @@ class LinkExporterTests(unittest.TestCase):
         )
 
     def test_hysteria2_conflicting_pin_aliases_are_rejected(self):
-        exported = export_proxy_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "fingerprint": "primary-pin",
-            "ca-sha256": "different-legacy-pin",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "fingerprint": "primary-pin",
+                "ca-sha256": "different-legacy-pin",
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "conflicting_hysteria2_certificate_pin")
 
     def test_hysteria2_export_preserves_insecure_and_port_hopping(self):
-        exported = proxy_to_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "tls": True,
-            "skip-cert-verify": True,
-            "ports": "20000:30000",
-        })
+        exported = proxy_to_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "tls": True,
+                "skip-cert-verify": True,
+                "ports": "20000:30000",
+            }
+        )
 
         params = parse_qs(urlparse(exported).query)
         self.assertEqual(params["security"], ["tls"])
@@ -167,14 +178,16 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(params["mport"], ["20000-30000"])
 
     def test_hysteria_v1_is_rejected_for_v2rayn_export(self):
-        exported = export_proxy_link({
-            "name": "hy",
-            "type": "hysteria",
-            "server": "example.com",
-            "port": 443,
-            "auth-str": "token+/= space",
-            "sni": "peer.example.com",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy",
+                "type": "hysteria",
+                "server": "example.com",
+                "port": 443,
+                "auth-str": "token+/= space",
+                "sni": "peer.example.com",
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_protocol")
@@ -233,19 +246,21 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(exported.reason, "unsupported_vmess_reality")
 
     def test_vmess_reality_is_rejected_instead_of_becoming_plain_tls(self):
-        exported = export_proxy_link({
-            "name": "vmess reality",
-            "type": "vmess",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "tls": True,
-            "reality-opts": {
-                "public-key": "public-key",
-                "short-id": "abcd",
-                "spider-x": "/spider",
-            },
-        })
+        exported = export_proxy_link(
+            {
+                "name": "vmess reality",
+                "type": "vmess",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "tls": True,
+                "reality-opts": {
+                    "public-key": "public-key",
+                    "short-id": "abcd",
+                    "spider-x": "/spider",
+                },
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_vmess_reality")
@@ -305,66 +320,74 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(reparsed["plugin-opts"], original["plugin-opts"])
 
     def test_hysteria2_bandwidth_is_rejected_instead_of_silently_lost(self):
-        exported = export_proxy_link({
-            "name": "hysteria2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "up": "20",
-            "down": "100",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hysteria2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "up": "20",
+                "down": "100",
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_bandwidth")
 
     def test_tuic_unsupported_udp_relay_mode_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "tuic",
-            "type": "tuic",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "password": "secret",
-            "sni": "www.bing.com",
-            "udp-relay-mode": "native",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "tuic",
+                "type": "tuic",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "password": "secret",
+                "sni": "www.bing.com",
+                "udp-relay-mode": "native",
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_udp_relay_mode")
 
     def test_vmess_with_custom_websocket_headers_is_not_silently_degraded(self):
-        link = proxy_to_link({
-            "name": "vmess custom headers",
-            "type": "vmess",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "ws",
-            "ws-opts": {
-                "path": "/ws",
-                "headers": {
-                    "Host": "cdn.example.com",
-                    "User-Agent": "custom-agent",
+        link = proxy_to_link(
+            {
+                "name": "vmess custom headers",
+                "type": "vmess",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "ws",
+                "ws-opts": {
+                    "path": "/ws",
+                    "headers": {
+                        "Host": "cdn.example.com",
+                        "User-Agent": "custom-agent",
+                    },
                 },
-            },
-        })
+            }
+        )
 
         self.assertEqual(link, "")
 
     def test_trojan_with_custom_websocket_headers_is_not_silently_degraded(self):
-        link = proxy_to_link({
-            "name": "trojan custom headers",
-            "type": "trojan",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "network": "ws",
-            "ws-opts": {
-                "path": "/ws",
-                "headers": {"User-Agent": "custom-agent"},
-            },
-        })
+        link = proxy_to_link(
+            {
+                "name": "trojan custom headers",
+                "type": "trojan",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "network": "ws",
+                "ws-opts": {
+                    "path": "/ws",
+                    "headers": {"User-Agent": "custom-agent"},
+                },
+            }
+        )
 
         self.assertEqual(link, "")
 
@@ -388,14 +411,16 @@ class LinkExporterTests(unittest.TestCase):
     def test_trojan_ws_options_without_network_are_normalized_before_export(self):
         from services.proxy_filter import ProxyFilter
 
-        original = ProxyFilter.sanitize_proxy({
-            "name": "implicit trojan ws",
-            "type": "trojan",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example.com"}},
-        })
+        original = ProxyFilter.sanitize_proxy(
+            {
+                "name": "implicit trojan ws",
+                "type": "trojan",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example.com"}},
+            }
+        )
 
         reparsed = parse_node_link(proxy_to_link(original))
 
@@ -455,14 +480,16 @@ class LinkExporterTests(unittest.TestCase):
         self.assertNotIn("udp-over-tcp", query)
 
     def test_anytls_explicit_udp_over_tcp_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "anytls",
-            "type": "anytls",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "udp-over-tcp": True,
-        })
+        exported = export_proxy_link(
+            {
+                "name": "anytls",
+                "type": "anytls",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "udp-over-tcp": True,
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_udp_over_tcp")
 
@@ -495,12 +522,14 @@ class LinkExporterTests(unittest.TestCase):
     def test_http_and_ssr_are_rejected_for_v2rayn(self):
         for proxy_type in ("http", "ssr"):
             with self.subTest(proxy_type=proxy_type):
-                exported = export_proxy_link({
-                    "name": proxy_type,
-                    "type": proxy_type,
-                    "server": "example.com",
-                    "port": 443,
-                })
+                exported = export_proxy_link(
+                    {
+                        "name": proxy_type,
+                        "type": proxy_type,
+                        "server": "example.com",
+                        "port": 443,
+                    }
+                )
                 self.assertEqual(exported.link, "")
                 self.assertTrue(exported.reason)
 
@@ -621,30 +650,34 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(reparsed["xhttp-opts"], original["xhttp-opts"])
 
     def test_grpc_multi_mode_is_rejected_instead_of_silently_downgraded(self):
-        exported = export_proxy_link({
-            "name": "grpc",
-            "type": "vless",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "grpc",
-            "grpc-opts": {"grpc-service-name": "svc", "grpc-mode": "multi"},
-        })
+        exported = export_proxy_link(
+            {
+                "name": "grpc",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "grpc",
+                "grpc-opts": {"grpc-service-name": "svc", "grpc-mode": "multi"},
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_grpc_mode")
 
     def test_wireguard_uses_v2rayn_query_key_names(self):
-        link = proxy_to_link({
-            "name": "WG",
-            "type": "wireguard",
-            "server": "example.com",
-            "port": 51820,
-            "private-key": "private",
-            "public-key": "public",
-            "preshared-key": "psk",
-            "ip": "10.0.0.2/32",
-        })
+        link = proxy_to_link(
+            {
+                "name": "WG",
+                "type": "wireguard",
+                "server": "example.com",
+                "port": 51820,
+                "private-key": "private",
+                "public-key": "public",
+                "preshared-key": "psk",
+                "ip": "10.0.0.2/32",
+            }
+        )
         params = parse_qs(urlparse(link).query)
 
         self.assertEqual(params["publickey"], ["public"])
@@ -688,15 +721,17 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(exported.reason, "unsupported_websocket_early_data")
 
     def test_vmess_websocket_early_data_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "vmess ws ed",
-            "type": "vmess",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "ws",
-            "ws-opts": {"path": "/", "max-early-data": 2560},
-        })
+        exported = export_proxy_link(
+            {
+                "name": "vmess ws ed",
+                "type": "vmess",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "ws",
+                "ws-opts": {"path": "/", "max-early-data": 2560},
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_websocket_early_data")
@@ -725,23 +760,25 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(proxy_to_link({"type": "unknown"}), "")
 
     def test_anytls_transport_is_rejected_because_v2rayn_clears_network(self):
-        exported = export_proxy_link({
-            "name": "AnyTLS transport",
-            "type": "anytls",
-            "server": "example.com",
-            "port": 443,
-            "password": "pass:word",
-            "tls": True,
-            "servername": "www.apple.com",
-            "client-fingerprint": "chrome",
-            "alpn": ["h2", "http/1.1"],
-            "network": "xhttp",
-            "xhttp-opts": {
-                "mode": "stream-up",
-                "path": "/xhttp",
-                "host": "cdn.example.com",
-            },
-        })
+        exported = export_proxy_link(
+            {
+                "name": "AnyTLS transport",
+                "type": "anytls",
+                "server": "example.com",
+                "port": 443,
+                "password": "pass:word",
+                "tls": True,
+                "servername": "www.apple.com",
+                "client-fingerprint": "chrome",
+                "alpn": ["h2", "http/1.1"],
+                "network": "xhttp",
+                "xhttp-opts": {
+                    "mode": "stream-up",
+                    "path": "/xhttp",
+                    "host": "cdn.example.com",
+                },
+            }
+        )
 
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_anytls_transport")
@@ -768,18 +805,20 @@ class LinkExporterTests(unittest.TestCase):
         self.assertNotIn("network", reparsed)
 
     def test_wireguard_export_does_not_disappear_from_base64_output(self):
-        link = proxy_to_link({
-            "name": "WG",
-            "type": "wireguard",
-            "server": "2001:db8::2",
-            "port": 51820,
-            "private-key": "private/key=",
-            "public-key": "public/key=",
-            "preshared-key": "psk/key=",
-            "reserved": [1, 2, 3],
-            "address": ["10.0.0.2/32", "fd00::2/128"],
-            "mtu": 1280,
-        })
+        link = proxy_to_link(
+            {
+                "name": "WG",
+                "type": "wireguard",
+                "server": "2001:db8::2",
+                "port": 51820,
+                "private-key": "private/key=",
+                "public-key": "public/key=",
+                "preshared-key": "psk/key=",
+                "reserved": [1, 2, 3],
+                "address": ["10.0.0.2/32", "fd00::2/128"],
+                "mtu": 1280,
+            }
+        )
 
         self.assertTrue(link.startswith("wireguard://"))
         self.assertIn("@[2001:db8::2]:51820", link)
@@ -793,32 +832,35 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(parsed["ipv6"], "fd00::2/128")
         self.assertEqual(parsed["mtu"], 1280)
 
-
     def test_shadowsocks_unknown_plugin_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "ss unknown plugin",
-            "type": "ss",
-            "server": "example.com",
-            "port": 443,
-            "cipher": "aes-128-gcm",
-            "password": "secret",
-            "plugin": "shadow-tls",
-            "plugin-opts": {"host": "cdn.example.com", "password": "plugin-secret"},
-        })
+        exported = export_proxy_link(
+            {
+                "name": "ss unknown plugin",
+                "type": "ss",
+                "server": "example.com",
+                "port": 443,
+                "cipher": "aes-128-gcm",
+                "password": "secret",
+                "plugin": "shadow-tls",
+                "plugin-opts": {"host": "cdn.example.com", "password": "plugin-secret"},
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_plugin")
 
     def test_shadowsocks_obfs_rejects_unknown_options(self):
-        exported = export_proxy_link({
-            "name": "ss obfs",
-            "type": "ss",
-            "server": "example.com",
-            "port": 443,
-            "cipher": "aes-128-gcm",
-            "password": "secret",
-            "plugin": "obfs",
-            "plugin-opts": {"mode": "tls", "host": "cdn.example.com", "path": "/lost"},
-        })
+        exported = export_proxy_link(
+            {
+                "name": "ss obfs",
+                "type": "ss",
+                "server": "example.com",
+                "port": 443,
+                "cipher": "aes-128-gcm",
+                "password": "secret",
+                "plugin": "obfs",
+                "plugin-opts": {"mode": "tls", "host": "cdn.example.com", "path": "/lost"},
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_plugin_options")
 
@@ -932,17 +974,19 @@ class LinkExporterTests(unittest.TestCase):
                 self.assertEqual(exported.reason, "unsupported_tuic_option")
 
     def test_hysteria2_gecko_parameters_are_exported(self):
-        exported = export_proxy_link({
-            "name": "hy2 gecko",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "obfs": "gecko",
-            "obfs-password": "mask-secret",
-            "minPacketSize": 600,
-            "maxPacketSize": 1300,
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2 gecko",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "obfs": "gecko",
+                "obfs-password": "mask-secret",
+                "minPacketSize": 600,
+                "maxPacketSize": 1300,
+            }
+        )
         self.assertTrue(exported.link.startswith("hysteria2://"))
         params = parse_qs(urlparse(exported.link).query)
         self.assertEqual(params["obfs"], ["gecko"])
@@ -967,10 +1011,7 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(exported_params["maxPacketSize"], ["1300"])
 
     def test_hysteria2_gecko_link_import_applies_v2rayn_defaults(self):
-        parsed = parse_node_link(
-            "hysteria2://secret@example.com:443?obfs=gecko"
-            "&obfs-password=mask-secret#hy2-gecko"
-        )
+        parsed = parse_node_link("hysteria2://secret@example.com:443?obfs=gecko&obfs-password=mask-secret#hy2-gecko")
 
         self.assertEqual(parsed["minPacketSize"], 512)
         self.assertEqual(parsed["maxPacketSize"], 1200)
@@ -978,31 +1019,35 @@ class LinkExporterTests(unittest.TestCase):
     def test_hysteria2_gecko_invalid_packet_sizes_use_v2rayn_defaults(self):
         from services.proxy_filter import ProxyFilter
 
-        sanitized = ProxyFilter.sanitize_proxy({
-            "name": "hy2 gecko",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "obfs": "gecko",
-            "obfs-password": "mask-secret",
-            "minPacketSize": 1600,
-            "maxPacketSize": 1300,
-        })
+        sanitized = ProxyFilter.sanitize_proxy(
+            {
+                "name": "hy2 gecko",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "obfs": "gecko",
+                "obfs-password": "mask-secret",
+                "minPacketSize": 1600,
+                "maxPacketSize": 1300,
+            }
+        )
 
         self.assertEqual(sanitized["obfs-min-packet-size"], 1600)
         self.assertEqual(sanitized["obfs-max-packet-size"], 1300)
 
     def test_hysteria2_gecko_without_bounds_uses_v2rayn_defaults(self):
-        exported = export_proxy_link({
-            "name": "hy2 gecko",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "obfs": "gecko",
-            "obfs-password": "mask-secret",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2 gecko",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "obfs": "gecko",
+                "obfs-password": "mask-secret",
+            }
+        )
 
         params = parse_qs(urlparse(exported.link).query)
         self.assertEqual(params["minPacketSize"], ["512"])
@@ -1029,27 +1074,31 @@ class LinkExporterTests(unittest.TestCase):
                 self.assertEqual(exported.reason, expected_reason)
 
     def test_hysteria2_obfs_without_password_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "obfs": "salamander",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "obfs": "salamander",
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_hysteria2_obfs")
 
     def test_hysteria2_unknown_obfs_is_rejected(self):
-        exported = export_proxy_link({
-            "name": "hy2",
-            "type": "hysteria2",
-            "server": "example.com",
-            "port": 443,
-            "password": "secret",
-            "obfs": "custom-mask",
-            "obfs-password": "secret",
-        })
+        exported = export_proxy_link(
+            {
+                "name": "hy2",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "obfs": "custom-mask",
+                "obfs-password": "secret",
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_hysteria2_obfs")
 
@@ -1100,25 +1149,29 @@ class LinkExporterTests(unittest.TestCase):
         )
         for protocol_fields in cases:
             with self.subTest(proxy_type=protocol_fields["type"]):
-                exported = export_proxy_link({
-                    "name": "tls material",
-                    "server": "example.com",
-                    "port": 443,
-                    "certificate": "certificate-pem",
-                    **protocol_fields,
-                })
+                exported = export_proxy_link(
+                    {
+                        "name": "tls material",
+                        "server": "example.com",
+                        "port": 443,
+                        "certificate": "certificate-pem",
+                        **protocol_fields,
+                    }
+                )
                 self.assertEqual(exported.reason, "unsupported_tls_material")
 
     def test_grpc_runtime_options_not_supported_by_uri_are_rejected(self):
-        exported = export_proxy_link({
-            "name": "grpc tuning",
-            "type": "vless",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "grpc",
-            "grpc-opts": {"grpc-service-name": "svc", "ping-interval": 10},
-        })
+        exported = export_proxy_link(
+            {
+                "name": "grpc tuning",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "grpc",
+                "grpc-opts": {"grpc-service-name": "svc", "ping-interval": 10},
+            }
+        )
 
         self.assertEqual(exported.reason, "unsupported_grpc_options")
 
@@ -1234,7 +1287,10 @@ class LinkExporterTests(unittest.TestCase):
             ({"reality-opts": {}}, "invalid_reality_options"),
             ({"reality-opts": {"short-id": "abcd"}}, "missing_reality_public_key"),
             ({"tls": False, "reality-opts": {"public-key": "public-key"}}, "reality_without_tls"),
-            ({"reality-opts": {"public-key": "public-key", "support-x25519mlkem768": True}}, "unsupported_reality_option"),
+            (
+                {"reality-opts": {"public-key": "public-key", "support-x25519mlkem768": True}},
+                "unsupported_reality_option",
+            ),
         )
         for fields, expected_reason in cases:
             with self.subTest(fields=fields):

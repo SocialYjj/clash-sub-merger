@@ -2,19 +2,19 @@
 
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from services.config_merger import ConfigMerger
+from services.node_identity import subscription_node_id
 from services.node_visibility import (
     apply_node_visibility_history,
     apply_node_visibility_to_yaml_content,
+    clear_user_subscription_caches,
     filter_enabled_nodes,
     is_node_enabled,
 )
-from services.node_identity import subscription_node_id
-from services.node_visibility import clear_user_subscription_caches
 
 
 class NodeVisibilityTests(unittest.TestCase):
@@ -57,19 +57,23 @@ class NodeVisibilityTests(unittest.TestCase):
         self.assertEqual(filter_enabled_nodes(nodes), [nodes[0]])
 
     def test_disabled_state_is_inherited_on_exact_refresh_match(self):
-        old_nodes = [{
-            "name": "US 01",
-            "type": "vless",
-            "server": "edge.example.com",
-            "port": 443,
-            "enabled": False,
-        }]
-        new_nodes = [{
-            "name": "US 01",
-            "type": "vless",
-            "server": "edge.example.com",
-            "port": 443,
-        }]
+        old_nodes = [
+            {
+                "name": "US 01",
+                "type": "vless",
+                "server": "edge.example.com",
+                "port": 443,
+                "enabled": False,
+            }
+        ]
+        new_nodes = [
+            {
+                "name": "US 01",
+                "type": "vless",
+                "server": "edge.example.com",
+                "port": 443,
+            }
+        ]
 
         inherited = apply_node_visibility_history(new_nodes, old_nodes)
 
@@ -93,12 +97,14 @@ class NodeVisibilityTests(unittest.TestCase):
                 "enabled": True,
             },
         ]
-        new_nodes = [{
-            "name": "US Renamed",
-            "type": "vless",
-            "server": "shared.example.com",
-            "port": 443,
-        }]
+        new_nodes = [
+            {
+                "name": "US Renamed",
+                "type": "vless",
+                "server": "shared.example.com",
+                "port": 443,
+            }
+        ]
 
         inherited = apply_node_visibility_history(new_nodes, old_nodes)
 
@@ -106,20 +112,16 @@ class NodeVisibilityTests(unittest.TestCase):
         self.assertNotIn("enabled", new_nodes[0])
 
     def test_yaml_visibility_inheritance_preserves_disabled_state(self):
-        old_nodes = [{
-            "name": "JP 01",
-            "type": "http",
-            "server": "jp.example.com",
-            "port": 8080,
-            "enabled": False,
-        }]
-        yaml_content = (
-            "proxies:\n"
-            "  - name: JP 01\n"
-            "    type: http\n"
-            "    server: jp.example.com\n"
-            "    port: 8080\n"
-        )
+        old_nodes = [
+            {
+                "name": "JP 01",
+                "type": "http",
+                "server": "jp.example.com",
+                "port": 8080,
+                "enabled": False,
+            }
+        ]
+        yaml_content = "proxies:\n  - name: JP 01\n    type: http\n    server: jp.example.com\n    port: 8080\n"
 
         new_content, inherited = apply_node_visibility_to_yaml_content(yaml_content, old_nodes)
 
@@ -131,28 +133,37 @@ class NodeVisibilityTests(unittest.TestCase):
 
         saved_payloads = []
 
-        with patch("services.custom_node_storage.load_config", return_value={
-            "custom_nodes": [
-                {
-                    "id": "node_1",
-                    "link": "x",
-                    "name": "Disabled",
-                    "type": "http",
-                    "server": "disabled.example.com",
-                    "port": 8080,
-                    "enabled": False,
+        with (
+            patch(
+                "services.custom_node_storage.load_config",
+                return_value={
+                    "custom_nodes": [
+                        {
+                            "id": "node_1",
+                            "link": "x",
+                            "name": "Disabled",
+                            "type": "http",
+                            "server": "disabled.example.com",
+                            "port": 8080,
+                            "enabled": False,
+                        },
+                        {
+                            "id": "node_2",
+                            "link": "x",
+                            "name": "Enabled",
+                            "type": "http",
+                            "server": "enabled.example.com",
+                            "port": 8080,
+                            "enabled": True,
+                        },
+                    ]
                 },
-                {
-                    "id": "node_2",
-                    "link": "x",
-                    "name": "Enabled",
-                    "type": "http",
-                    "server": "enabled.example.com",
-                    "port": 8080,
-                    "enabled": True,
-                },
-            ]
-        }), patch("services.custom_node_storage.save_subscription_yaml", side_effect=lambda *args: saved_payloads.append(args)):
+            ),
+            patch(
+                "services.custom_node_storage.save_subscription_yaml",
+                side_effect=lambda *args: saved_payloads.append(args),
+            ),
+        ):
             server.update_custom_nodes_yaml()
 
         self.assertEqual(saved_payloads[0][0], "custom_nodes")

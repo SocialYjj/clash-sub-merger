@@ -148,17 +148,24 @@ class CoreDatabaseCompatibilityTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 config_file = Path(tmpdir) / "config.json"
-                config_file.write_text(json.dumps({
-                    "auth": {},
-                    "subscriptions": [],
-                    "custom_nodes": [{
-                        "name": "legacy-xhttp",
-                        "type": "vless",
-                        "network": "xhttp",
-                        "xhttp-mode": "stream-up",
-                        "path": "/xhttp",
-                    }],
-                }), encoding="utf-8")
+                config_file.write_text(
+                    json.dumps(
+                        {
+                            "auth": {},
+                            "subscriptions": [],
+                            "custom_nodes": [
+                                {
+                                    "name": "legacy-xhttp",
+                                    "type": "vless",
+                                    "network": "xhttp",
+                                    "xhttp-mode": "stream-up",
+                                    "path": "/xhttp",
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
 
                 database.CONFIG_FILE = str(config_file)
                 database.invalidate_config_cache()

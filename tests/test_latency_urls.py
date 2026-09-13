@@ -5,7 +5,6 @@ from pathlib import Path
 
 import speedtest_service
 
-
 CLOUDFLARE_204_URL = "https://cp.cloudflare.com/generate_204"
 SOURCE_FILES_WITH_LATENCY_DEFAULTS = [
     Path("api/nodes.py"),

@@ -51,9 +51,7 @@ class GeoIPDestinationSecurityTests(unittest.TestCase):
             (2, 1, 6, "", ("10.0.0.8", 443)),
         ]
         with patch("geoip_service.socket.getaddrinfo", return_value=mixed_resolution):
-            allowed = asyncio.run(
-                geoip_service._is_public_custom_api_url("https://geo.example/lookup")
-            )
+            allowed = asyncio.run(geoip_service._is_public_custom_api_url("https://geo.example/lookup"))
 
         self.assertFalse(allowed)
 
@@ -156,13 +154,15 @@ class GeoIPConfigurationSecurityTests(unittest.TestCase):
     def test_custom_api_token_omission_preserves_and_empty_string_clears(self):
         config = {
             "geoip_config": {
-                "custom_apis": [{
-                    "id": "custom_1",
-                    "name": "Provider",
-                    "url": "https://geo.example/{ip}",
-                    "token": "stored-secret-token",
-                    "enabled": True,
-                }],
+                "custom_apis": [
+                    {
+                        "id": "custom_1",
+                        "name": "Provider",
+                        "url": "https://geo.example/{ip}",
+                        "token": "stored-secret-token",
+                        "enabled": True,
+                    }
+                ],
             }
         }
         endpoint = inspect.unwrap(geoip_api.update_custom_api)
@@ -193,12 +193,14 @@ class GeoIPConfigurationSecurityTests(unittest.TestCase):
                     "ipwhois": {"enabled": True},
                     "ipinfo": {"enabled": False},
                 },
-                "custom_apis": [{
-                    "id": "custom_1",
-                    "name": "Provider",
-                    "url": "https://geo.example/{ip}",
-                    "enabled": True,
-                }],
+                "custom_apis": [
+                    {
+                        "id": "custom_1",
+                        "name": "Provider",
+                        "url": "https://geo.example/{ip}",
+                        "enabled": True,
+                    }
+                ],
             }
         }
         with (
@@ -222,10 +224,7 @@ class GeoIPConfigurationSecurityTests(unittest.TestCase):
 
         with patch.object(geoip_service, "lookup_ip_online", side_effect=no_lookup):
             client = TestClient(app)
-            responses = [
-                client.post("/api/geoip/lookup", json={"ip": "8.8.8.8"})
-                for _ in range(31)
-            ]
+            responses = [client.post("/api/geoip/lookup", json={"ip": "8.8.8.8"}) for _ in range(31)]
         geoip_api.limiter.reset()
 
         self.assertEqual([response.status_code for response in responses[:30]], [200] * 30)

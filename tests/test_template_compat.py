@@ -28,13 +28,15 @@ class TemplateCompatRoutesTest(unittest.TestCase):
             result = mutator(config)
             return result
 
-        app.include_router(create_template_router(
-            yaml_source_dir=tempdir.name,
-            output_file=output_file,
-            load_config=load_config,
-            update_config=update_config,
-            logger=logging.getLogger("test.template_compat"),
-        ))
+        app.include_router(
+            create_template_router(
+                yaml_source_dir=tempdir.name,
+                output_file=output_file,
+                load_config=load_config,
+                update_config=update_config,
+                logger=logging.getLogger("test.template_compat"),
+            )
+        )
         client = TestClient(app)
         client.output_file = output_file
         return client, config
@@ -85,9 +87,10 @@ class TemplateCompatRoutesTest(unittest.TestCase):
     def test_save_template_updates_config(self):
         client, config = self.make_client({"auth": {}, "subscriptions": [], "custom_nodes": []})
 
-        response = client.post("/api/template/save", json={
-            "content": "mixed-port: 7890\n\nproxies: []\n\nproxy-groups: []\n\nrules:\n  - MATCH,DIRECT"
-        })
+        response = client.post(
+            "/api/template/save",
+            json={"content": "mixed-port: 7890\n\nproxies: []\n\nproxy-groups: []\n\nrules:\n  - MATCH,DIRECT"},
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
@@ -97,19 +100,25 @@ class TemplateCompatRoutesTest(unittest.TestCase):
     def test_save_content_rejects_arbitrary_server_path(self):
         client, _ = self.make_client({"auth": {}, "subscriptions": [], "custom_nodes": []})
 
-        response = client.post("/api/save_content", json={
-            "content": "mixed-port: 7890\n",
-            "save_path": "../config.json",
-        })
+        response = client.post(
+            "/api/save_content",
+            json={
+                "content": "mixed-port: 7890\n",
+                "save_path": "../config.json",
+            },
+        )
 
         self.assertEqual(response.status_code, 400)
 
     def test_save_content_writes_only_configured_output_file(self):
         client, _ = self.make_client({"auth": {}, "subscriptions": [], "custom_nodes": []})
 
-        response = client.post("/api/save_content", json={
-            "content": "mixed-port: 7890\n",
-        })
+        response = client.post(
+            "/api/save_content",
+            json={
+                "content": "mixed-port: 7890\n",
+            },
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Path(client.output_file).read_text(encoding="utf-8"), "mixed-port: 7890\n")

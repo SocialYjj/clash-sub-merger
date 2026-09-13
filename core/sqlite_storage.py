@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 _SCHEMA_VERSION = 2
 _init_lock = threading.RLock()
 _initialized_paths: set[str] = set()
@@ -138,18 +137,14 @@ def _migrate_legacy_documents(connection: sqlite3.Connection) -> None:
     }
     with connection:
         for document_name, path in legacy_documents.items():
-            if connection.execute(
-                "SELECT 1 FROM app_documents WHERE document_name = ?", (document_name,)
-            ).fetchone():
+            if connection.execute("SELECT 1 FROM app_documents WHERE document_name = ?", (document_name,)).fetchone():
                 continue
             payload = _read_json_file(path)
             if isinstance(payload, dict):
                 _write_document_row(connection, "app_documents", document_name, payload)
 
         for namespace, path in legacy_caches.items():
-            if connection.execute(
-                "SELECT 1 FROM cache_documents WHERE namespace = ?", (namespace,)
-            ).fetchone():
+            if connection.execute("SELECT 1 FROM cache_documents WHERE namespace = ?", (namespace,)).fetchone():
                 continue
             payload = _read_json_file(path)
             if payload is not None:
@@ -255,9 +250,10 @@ def has_app_document(document_name: str) -> bool:
     initialize_database()
     connection = _connect()
     try:
-        return connection.execute(
-            "SELECT 1 FROM app_documents WHERE document_name = ?", (document_name,)
-        ).fetchone() is not None
+        return (
+            connection.execute("SELECT 1 FROM app_documents WHERE document_name = ?", (document_name,)).fetchone()
+            is not None
+        )
     finally:
         connection.close()
 
@@ -266,9 +262,7 @@ def read_stored_file(file_path: str, default: str | None = None) -> str | None:
     initialize_database()
     connection = _connect()
     try:
-        row = connection.execute(
-            "SELECT content_text FROM stored_files WHERE file_path = ?", (file_path,)
-        ).fetchone()
+        row = connection.execute("SELECT content_text FROM stored_files WHERE file_path = ?", (file_path,)).fetchone()
         return default if row is None else str(row[0])
     finally:
         connection.close()
@@ -325,9 +319,6 @@ def list_stored_files(prefix: str | None = None) -> list[dict[str, Any]]:
             rows = connection.execute(
                 "SELECT file_path, content_text, updated_at FROM stored_files ORDER BY file_path"
             ).fetchall()
-        return [
-            {"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])}
-            for row in rows
-        ]
+        return [{"file_path": str(row[0]), "content": str(row[1]), "updated_at": float(row[2])} for row in rows]
     finally:
         connection.close()

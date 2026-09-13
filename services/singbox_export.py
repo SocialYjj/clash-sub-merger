@@ -126,9 +126,7 @@ def _tls_config(proxy: dict, *, force_enabled: bool = False) -> dict | None:
     has_certificate = certificate not in (None, "", [], {})
     has_private_key = private_key not in (None, "", [], {})
     if has_certificate != has_private_key:
-        raise SingboxExportError(
-            "client certificate and private key must be provided together"
-        )
+        raise SingboxExportError("client certificate and private key must be provided together")
     if not force_enabled and not proxy.get("tls") and not proxy.get("reality-opts"):
         return None
 
@@ -146,9 +144,7 @@ def _tls_config(proxy: dict, *, force_enabled: bool = False) -> dict | None:
         certificate_values = certificate if isinstance(certificate, list) else [certificate]
         private_key_values = private_key if isinstance(private_key, list) else [private_key]
         if not all("-----BEGIN" in str(value) for value in certificate_values + private_key_values):
-            raise SingboxExportError(
-                "client certificate paths cannot be embedded in a portable sing-box export"
-            )
+            raise SingboxExportError("client certificate paths cannot be embedded in a portable sing-box export")
         tls["client_certificate"] = certificate_values
         tls["client_key"] = private_key_values
     # Mihomo's ``fingerprint`` and Hysteria2's ``pinSHA256`` hash the full
@@ -167,9 +163,7 @@ def _tls_config(proxy: dict, *, force_enabled: bool = False) -> dict | None:
             raise SingboxExportError("invalid ECH options")
         ech_config = {"enabled": bool(ech.get("enable", True))}
         if ech.get("config"):
-            ech_config["config"] = (
-                ech["config"] if isinstance(ech["config"], list) else [ech["config"]]
-            )
+            ech_config["config"] = ech["config"] if isinstance(ech["config"], list) else [ech["config"]]
         if ech.get("query-server-name"):
             ech_config["query_server_name"] = ech["query-server-name"]
         tls["ech"] = ech_config
@@ -195,9 +189,17 @@ def _requires_tls(proxy: dict, proxy_type: str) -> bool:
     if any(
         proxy.get(field) not in (None, "", False, [], {})
         for field in (
-            "tls", "reality-opts", "servername", "sni", "skip-cert-verify",
-            "alpn", "client-fingerprint", "certificate", "private-key",
-            "ech-opts", "disable-sni",
+            "tls",
+            "reality-opts",
+            "servername",
+            "sni",
+            "skip-cert-verify",
+            "alpn",
+            "client-fingerprint",
+            "certificate",
+            "private-key",
+            "ech-opts",
+            "disable-sni",
         )
     ):
         return True
@@ -225,11 +227,7 @@ def _transport_config(proxy: dict) -> dict | None:
 
     network = str(proxy.get("network") or "").strip().lower()
     ws_options = proxy.get("ws-opts")
-    if (
-        network == "ws"
-        and isinstance(ws_options, dict)
-        and ws_options.get("v2ray-http-upgrade") is True
-    ):
+    if network == "ws" and isinstance(ws_options, dict) and ws_options.get("v2ray-http-upgrade") is True:
         network = "httpupgrade"
     if not network or network == "tcp":
         return None
@@ -250,16 +248,15 @@ def _transport_config(proxy: dict) -> dict | None:
         if network == "httpupgrade" and any(
             _has_meaningful_value(options.get(field))
             for field in (
-                "max-early-data", "early-data-header-name",
+                "max-early-data",
+                "early-data-header-name",
                 "v2ray-http-upgrade-fast-open",
             )
         ):
             raise SingboxExportError("unsupported HTTP Upgrade extension option")
         if isinstance(headers, dict) and headers:
             normalized_headers = {
-                str(key): _first_value(value)
-                for key, value in headers.items()
-                if _first_value(value) is not None
+                str(key): _first_value(value) for key, value in headers.items() if _first_value(value) is not None
             }
             if normalized_headers:
                 transport["headers"] = normalized_headers
@@ -283,9 +280,7 @@ def _transport_config(proxy: dict) -> dict | None:
         return {"type": "quic"}
 
     if network == "xhttp":
-        raise SingboxExportError(
-            "unsupported XHTTP transport"
-        )
+        raise SingboxExportError("unsupported XHTTP transport")
 
     if network == "grpc":
         options = proxy.get("grpc-opts") or {}
@@ -296,19 +291,19 @@ def _transport_config(proxy: dict) -> dict | None:
         if service_name:
             transport["service_name"] = service_name
         unsupported_runtime_fields = (
-            "grpc-user-agent", "ping-interval", "max-connections",
-            "min-streams", "max-streams", "authority",
+            "grpc-user-agent",
+            "ping-interval",
+            "max-connections",
+            "min-streams",
+            "max-streams",
+            "authority",
         )
         if any(_has_meaningful_value(options.get(field)) for field in unsupported_runtime_fields):
-            raise SingboxExportError(
-                "unsupported gRPC runtime option"
-            )
+            raise SingboxExportError("unsupported gRPC runtime option")
         return transport
 
     if network in {"h2", "http"}:
-        options = (
-            proxy.get("h2-opts") if network == "h2" else proxy.get("http-opts")
-        ) or proxy.get("h2-opts") or {}
+        options = (proxy.get("h2-opts") if network == "h2" else proxy.get("http-opts")) or proxy.get("h2-opts") or {}
         if not isinstance(options, dict):
             options = {}
         transport = {"type": "http"}
@@ -337,9 +332,7 @@ def _transport_config(proxy: dict) -> dict | None:
             transport["host"] = [str(host) for host in normalized_hosts if host]
         return transport
 
-    raise SingboxExportError(
-        "unsupported transport type"
-    )
+    raise SingboxExportError("unsupported transport type")
 
 
 def _network_filter(proxy: dict) -> list[str] | None:
@@ -353,16 +346,12 @@ def _network_filter(proxy: dict) -> list[str] | None:
     elif isinstance(value, (list, tuple, set)):
         values = [str(item).strip().lower() for item in value if str(item).strip()]
     else:
-        raise SingboxExportError(
-            "invalid network filter"
-        )
+        raise SingboxExportError("invalid network filter")
 
     normalized: list[str] = []
     for network in values:
         if network not in {"tcp", "udp"}:
-            raise SingboxExportError(
-                "unsupported network filter value"
-            )
+            raise SingboxExportError("unsupported network filter value")
         if network not in normalized:
             normalized.append(network)
     return normalized or None
@@ -387,35 +376,33 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         "verify-peer-cert-by-name": proxy.get("verify-peer-cert-by-name"),
     }
     unsupported_tls_fields = [
-        key for key, value in unsupported_tls_extensions.items()
-        if value not in (None, "", False, [], {})
+        key for key, value in unsupported_tls_extensions.items() if value not in (None, "", False, [], {})
     ]
     if unsupported_tls_fields:
-        raise SingboxExportError(
-            f"unsupported TLS fields: {', '.join(unsupported_tls_fields)}"
-        )
+        raise SingboxExportError(f"unsupported TLS fields: {', '.join(unsupported_tls_fields)}")
 
     if proxy.get("ech") not in (None, "", [], {}):
-        raise SingboxExportError(
-            "share-link ECH field cannot be mapped losslessly"
-        )
+        raise SingboxExportError("share-link ECH field cannot be mapped losslessly")
 
     certificate_pin_fields = (
-        "fingerprint", "ca-sha256", "cert-sha", "pinSHA256",
+        "fingerprint",
+        "ca-sha256",
+        "cert-sha",
+        "pinSHA256",
         "_v2rayn-certificate-pin",
     )
     if any(proxy.get(field) not in (None, "", [], {}) for field in certificate_pin_fields):
-        raise SingboxExportError(
-            "full-certificate SHA-256 pin is unsupported by sing-box"
-        )
+        raise SingboxExportError("full-certificate SHA-256 pin is unsupported by sing-box")
 
     if proxy_type == "vmess":
-        outbound.update({
-            "type": "vmess",
-            "uuid": proxy.get("uuid", ""),
-            "security": proxy.get("cipher") or "auto",
-            "alter_id": _as_int(proxy.get("alterId")),
-        })
+        outbound.update(
+            {
+                "type": "vmess",
+                "uuid": proxy.get("uuid", ""),
+                "security": proxy.get("cipher") or "auto",
+                "alter_id": _as_int(proxy.get("alterId")),
+            }
+        )
         for source, target in (
             ("global-padding", "global_padding"),
             ("authenticated-length", "authenticated_length"),
@@ -444,52 +431,41 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         # field. X25519MLKEM values are currently not representable here.
         encryption = str(proxy.get("encryption") or "").strip().lower()
         if encryption not in {"", "none"}:
-            raise SingboxExportError(
-                "unsupported VLESS encryption field"
-            )
-        packet_encoding = str(
-            proxy.get("packet-encoding") or proxy.get("packet_encoding") or ""
-        ).strip().lower()
+            raise SingboxExportError("unsupported VLESS encryption field")
+        packet_encoding = str(proxy.get("packet-encoding") or proxy.get("packet_encoding") or "").strip().lower()
         if packet_encoding in {"xudp", "packetaddr"}:
             outbound["packet_encoding"] = packet_encoding
         elif packet_encoding not in {"", "none"}:
-            raise SingboxExportError(
-                "unsupported VLESS packet encoding"
-            )
+            raise SingboxExportError("unsupported VLESS packet encoding")
     elif proxy_type == "trojan":
         outbound["type"] = "trojan"
         outbound["password"] = proxy.get("password", "")
     elif proxy_type in {"ss", "shadowsocks"}:
-        outbound.update({
-            "type": "shadowsocks",
-            "method": proxy.get("cipher", ""),
-            "password": proxy.get("password", ""),
-        })
+        outbound.update(
+            {
+                "type": "shadowsocks",
+                "method": proxy.get("cipher", ""),
+                "password": proxy.get("password", ""),
+            }
+        )
         plugin = proxy.get("plugin")
         plugin_options = proxy.get("plugin-opts")
         if plugin:
             if plugin not in {"obfs", "obfs-local", "simple-obfs", "v2ray-plugin"}:
-                raise SingboxExportError(
-                    "unsupported Shadowsocks plugin type"
-                )
+                raise SingboxExportError("unsupported Shadowsocks plugin type")
             if not isinstance(plugin_options, dict):
-                raise SingboxExportError(
-                    "invalid Shadowsocks plugin options"
-                )
+                raise SingboxExportError("invalid Shadowsocks plugin options")
             if plugin in {"obfs", "obfs-local", "simple-obfs"}:
                 mode = str(plugin_options.get("mode") or "").lower()
                 if mode not in {"http", "tls"}:
-                    raise SingboxExportError(
-                        "unsupported simple-obfs mode"
-                    )
+                    raise SingboxExportError("unsupported simple-obfs mode")
                 extra_keys = {
-                    key for key, value in plugin_options.items()
+                    key
+                    for key, value in plugin_options.items()
                     if key not in {"mode", "host"} and value not in (None, "", False, [], {})
                 }
                 if extra_keys:
-                    raise SingboxExportError(
-                        "unsupported simple-obfs options"
-                    )
+                    raise SingboxExportError("unsupported simple-obfs options")
                 outbound["plugin"] = "obfs-local"
                 parts = [f"obfs={mode}"]
                 if plugin_options.get("host"):
@@ -498,9 +474,7 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
             else:
                 mode = str(plugin_options.get("mode") or "websocket").lower()
                 if mode != "websocket":
-                    raise SingboxExportError(
-                        "unsupported v2ray-plugin mode"
-                    )
+                    raise SingboxExportError("unsupported v2ray-plugin mode")
                 mux_value = plugin_options.get("mux", True)
                 if isinstance(mux_value, str):
                     mux_enabled = mux_value.strip().lower() in {"1", "true", "yes", "on"}
@@ -508,13 +482,12 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
                     mux_enabled = bool(mux_value)
                 supported_keys = {"mode", "host", "path", "tls", "mux"}
                 extra_keys = {
-                    key for key, value in plugin_options.items()
+                    key
+                    for key, value in plugin_options.items()
                     if key not in supported_keys and value not in (None, "", False, [], {})
                 }
                 if extra_keys:
-                    raise SingboxExportError(
-                        "unsupported v2ray-plugin options"
-                    )
+                    raise SingboxExportError("unsupported v2ray-plugin options")
                 outbound["plugin"] = "v2ray-plugin"
                 parts = ["mode=websocket"]
                 if plugin_options.get("host"):
@@ -528,9 +501,7 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         if proxy.get("udp-over-tcp") is True:
             version = _as_int(proxy.get("udp-over-tcp-version"), 2)
             if version not in {1, 2}:
-                raise SingboxExportError(
-                    "unsupported UDP-over-TCP version"
-                )
+                raise SingboxExportError("unsupported UDP-over-TCP version")
             outbound["udp_over_tcp"] = {"enabled": True, "version": version}
     elif proxy_type in {"socks5", "socks"}:
         outbound["type"] = "socks"
@@ -555,9 +526,7 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
                 outbound["server_ports"] = _singbox_server_ports(ports)
                 outbound.pop("server_port", None)
             if proxy.get("hop-interval") not in (None, ""):
-                outbound["hop_interval"] = _singbox_hop_interval(
-                    proxy["hop-interval"], "Hysteria"
-                )
+                outbound["hop_interval"] = _singbox_hop_interval(proxy["hop-interval"], "Hysteria")
             for source, target in (("up", "up_mbps"), ("down", "down_mbps")):
                 if proxy.get(source) is not None:
                     mbps = _as_mbps(proxy[source])
@@ -583,39 +552,30 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
                 outbound["server_ports"] = _singbox_server_ports(ports)
                 outbound.pop("server_port", None)
             if proxy.get("hop-interval") not in (None, ""):
-                outbound["hop_interval"] = _singbox_hop_interval(
-                    proxy["hop-interval"], "Hysteria2"
-                )
+                outbound["hop_interval"] = _singbox_hop_interval(proxy["hop-interval"], "Hysteria2")
             for source, target in (("up", "up_mbps"), ("down", "down_mbps")):
                 if proxy.get(source) not in (None, ""):
                     mbps = _as_mbps(proxy[source])
                     if mbps is None:
-                        raise SingboxExportError(
-                            f"unsupported Hysteria2 {source} rate"
-                        )
+                        raise SingboxExportError(f"unsupported Hysteria2 {source} rate")
                     outbound[target] = mbps
             unsupported_hysteria2_tuning = (
-                "cwnd", "bbr-profile", "udp-mtu",
-                "initial-stream-receive-window", "max-stream-receive-window",
-                "initial-connection-receive-window", "max-connection-receive-window",
+                "cwnd",
+                "bbr-profile",
+                "udp-mtu",
+                "initial-stream-receive-window",
+                "max-stream-receive-window",
+                "initial-connection-receive-window",
+                "max-connection-receive-window",
             )
-            if any(
-                proxy.get(field) not in (None, "", 0, False, [], {})
-                for field in unsupported_hysteria2_tuning
-            ):
-                raise SingboxExportError(
-                    "Hysteria2 tuning fields are unsupported by sing-box"
-                )
+            if any(proxy.get(field) not in (None, "", 0, False, [], {}) for field in unsupported_hysteria2_tuning):
+                raise SingboxExportError("Hysteria2 tuning fields are unsupported by sing-box")
             if proxy.get("obfs"):
                 obfs_type = str(proxy["obfs"]).lower()
                 if obfs_type not in {"salamander", "gecko"}:
-                    raise SingboxExportError(
-                        "unsupported Hysteria2 obfuscation type"
-                    )
+                    raise SingboxExportError("unsupported Hysteria2 obfuscation type")
                 if not proxy.get("obfs-password"):
-                    raise SingboxExportError(
-                        "missing Hysteria2 obfuscation password"
-                    )
+                    raise SingboxExportError("missing Hysteria2 obfuscation password")
                 outbound["obfs"] = {
                     "type": obfs_type,
                     "password": proxy["obfs-password"],
@@ -628,56 +588,50 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
                         proxy.get("obfs-max-packet-size", proxy.get("maxPacketSize", 1200)), 1200
                     )
         elif proxy_type == "tuic":
-            outbound.update({
-                "uuid": proxy.get("uuid", ""),
-                "password": proxy.get("password", ""),
-            })
+            outbound.update(
+                {
+                    "uuid": proxy.get("uuid", ""),
+                    "password": proxy.get("password", ""),
+                }
+            )
             if proxy.get("token") not in (None, ""):
-                raise SingboxExportError(
-                    "legacy TUIC token authentication is unsupported by sing-box"
-                )
+                raise SingboxExportError("legacy TUIC token authentication is unsupported by sing-box")
             if proxy.get("ip") not in (None, ""):
                 raise SingboxExportError("TUIC IP override is unsupported by sing-box")
             if proxy.get("congestion-controller"):
                 congestion_control = str(proxy["congestion-controller"]).strip().lower()
                 if congestion_control not in {"cubic", "new_reno", "bbr"}:
-                    raise SingboxExportError(
-                        "unsupported TUIC congestion controller"
-                    )
+                    raise SingboxExportError("unsupported TUIC congestion controller")
                 outbound["congestion_control"] = congestion_control
             if proxy.get("udp-relay-mode"):
                 udp_relay_mode = str(proxy["udp-relay-mode"]).strip().lower()
                 if udp_relay_mode not in {"native", "quic"}:
-                    raise SingboxExportError(
-                        "unsupported TUIC UDP relay mode"
-                    )
+                    raise SingboxExportError("unsupported TUIC UDP relay mode")
                 outbound["udp_relay_mode"] = udp_relay_mode
             if proxy.get("udp-over-stream") is True:
                 if proxy.get("udp-relay-mode") not in (None, ""):
-                    raise SingboxExportError(
-                        "TUIC UDP-over-stream conflicts with UDP relay mode"
-                    )
+                    raise SingboxExportError("TUIC UDP-over-stream conflicts with UDP relay mode")
                 outbound["udp_over_stream"] = True
             if proxy.get("reduce-rtt") is True:
                 outbound["zero_rtt_handshake"] = True
             if proxy.get("heartbeat-interval") not in (None, ""):
                 heartbeat = str(proxy["heartbeat-interval"]).strip()
-                outbound["heartbeat"] = (
-                    heartbeat if any(ch.isalpha() for ch in heartbeat) else f"{heartbeat}ms"
-                )
+                outbound["heartbeat"] = heartbeat if any(ch.isalpha() for ch in heartbeat) else f"{heartbeat}ms"
             unsupported_tuic_tuning = (
-                "request-timeout", "max-udp-relay-packet-size", "fast-open",
-                "max-open-streams", "cwnd", "bbr-profile", "recv-window-conn",
-                "recv-window", "disable-mtu-discovery", "max-datagram-frame-size",
+                "request-timeout",
+                "max-udp-relay-packet-size",
+                "fast-open",
+                "max-open-streams",
+                "cwnd",
+                "bbr-profile",
+                "recv-window-conn",
+                "recv-window",
+                "disable-mtu-discovery",
+                "max-datagram-frame-size",
                 "udp-over-stream-version",
             )
-            if any(
-                proxy.get(field) not in (None, "", 0, False, [], {})
-                for field in unsupported_tuic_tuning
-            ):
-                raise SingboxExportError(
-                    "TUIC tuning fields are unsupported by sing-box"
-                )
+            if any(proxy.get(field) not in (None, "", 0, False, [], {}) for field in unsupported_tuic_tuning):
+                raise SingboxExportError("TUIC tuning fields are unsupported by sing-box")
         elif proxy_type == "wireguard":
             # sing-box 1.13 removed the legacy WireGuard outbound.  Its
             # replacement is an endpoint, which has different routing
@@ -690,15 +644,14 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         elif proxy_type == "anytls":
             outbound["password"] = proxy.get("password", "")
             unsupported_anytls_extensions = (
-                "disable-reuse", "shadow-tls", "shadowtls", "restls", "jls",
+                "disable-reuse",
+                "shadow-tls",
+                "shadowtls",
+                "restls",
+                "jls",
             )
-            if any(
-                proxy.get(field) not in (None, "", False, 0, [], {})
-                for field in unsupported_anytls_extensions
-            ):
-                raise SingboxExportError(
-                    "AnyTLS extension fields are unsupported by sing-box"
-                )
+            if any(proxy.get(field) not in (None, "", False, 0, [], {}) for field in unsupported_anytls_extensions):
+                raise SingboxExportError("AnyTLS extension fields are unsupported by sing-box")
             for source, target in (
                 ("idle-session-check-interval", "idle_session_check_interval"),
                 ("idle-session-timeout", "idle_session_timeout"),
@@ -713,29 +666,42 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
             # supports UDP natively and has no separate switch, so true maps
             # to the protocol's built-in behavior. Reject only malformed data.
             if proxy.get("udp-over-tcp") not in (None, False, True):
-                raise SingboxExportError(
-                    "invalid AnyTLS UDP-over-TCP value"
-                )
+                raise SingboxExportError("invalid AnyTLS UDP-over-TCP value")
     else:
         raise SingboxExportError("unsupported proxy type")
 
     tls_capable_types = {
-        "vmess", "vless", "trojan", "http",
-        "hysteria", "hysteria2", "tuic", "anytls",
+        "vmess",
+        "vless",
+        "trojan",
+        "http",
+        "hysteria",
+        "hysteria2",
+        "tuic",
+        "anytls",
     }
     has_tls_options = any(
         proxy.get(field)
         for field in (
-            "tls", "reality-opts", "servername", "sni",
-            "skip-cert-verify", "alpn", "client-fingerprint",
-            "fingerprint", "ca-sha256", "cert-sha", "pinSHA256",
-            "certificate", "private-key", "ech-opts", "disable-sni",
+            "tls",
+            "reality-opts",
+            "servername",
+            "sni",
+            "skip-cert-verify",
+            "alpn",
+            "client-fingerprint",
+            "fingerprint",
+            "ca-sha256",
+            "cert-sha",
+            "pinSHA256",
+            "certificate",
+            "private-key",
+            "ech-opts",
+            "disable-sni",
         )
     )
     if proxy_type not in tls_capable_types and has_tls_options:
-        raise SingboxExportError(
-            "TLS options are unsupported by this sing-box outbound type"
-        )
+        raise SingboxExportError("TLS options are unsupported by this sing-box outbound type")
 
     # VLESS/VMess/Trojan transport options commonly imply TLS even when the
     # source adapter omitted the boolean tls flag. Preserve that intent for
@@ -750,19 +716,13 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         # A few providers publish plaintext variants. sing-box accepts these
         # for VLESS/VMess, but Trojan and AnyTLS are TLS-only.
         if proxy_type in {"trojan", "anytls"}:
-            raise SingboxExportError(
-                "TLS configuration is required by this protocol"
-            )
+            raise SingboxExportError("TLS configuration is required by this protocol")
     if proxy_type in {"hysteria", "hysteria2", "tuic"} and not tls:
-        raise SingboxExportError(
-            "TLS configuration is required by this protocol"
-        )
+        raise SingboxExportError("TLS configuration is required by this protocol")
     if tls:
         outbound["tls"] = tls
     transport_protocols = {"vmess", "vless", "trojan"}
-    network_filter_protocols = {
-        "ss", "shadowsocks", "socks5", "socks", "hysteria", "hysteria2", "tuic"
-    }
+    network_filter_protocols = {"ss", "shadowsocks", "socks5", "socks", "hysteria", "hysteria2", "tuic"}
     if proxy_type in transport_protocols:
         transport = _transport_config(proxy)
         if transport:
@@ -772,9 +732,7 @@ def proxy_to_singbox_outbound(proxy: dict) -> dict:
         if network_filter:
             outbound["network"] = network_filter
     elif proxy.get("network") not in (None, "", [], {}):
-        raise SingboxExportError(
-            "network option is unsupported by this sing-box outbound type"
-        )
+        raise SingboxExportError("network option is unsupported by this sing-box outbound type")
     return outbound
 
 
@@ -832,7 +790,8 @@ def _group_outbound(
             group_tag_map=group_tag_map,
             direct_tag=direct_tag,
             block_tag=block_tag,
-        ) in available_tags
+        )
+        in available_tags
         and _normalize_group_member(
             member,
             node_tags=node_tags,
@@ -840,7 +799,8 @@ def _group_outbound(
             group_tag_map=group_tag_map,
             direct_tag=direct_tag,
             block_tag=block_tag,
-        ) != output_tag
+        )
+        != output_tag
     ]
     if not members:
         return None
@@ -1064,9 +1024,7 @@ def build_singbox_config_with_diagnostics(
 
     if not converted:
         if skipped:
-            raise SingboxExportError(
-                "No exportable proxy nodes: " + "; ".join(item.reason for item in skipped[:3])
-            )
+            raise SingboxExportError("No exportable proxy nodes: " + "; ".join(item.reason for item in skipped[:3]))
         raise SingboxExportError("No exportable proxy nodes")
 
     # Rename source nodes that use sing-box's generated control tags before
@@ -1099,12 +1057,11 @@ def build_singbox_config_with_diagnostics(
         )
         available_tags = node_tags | {item["tag"] for item in group_outbounds} | {direct_tag, block_tag}
         invalid = [
-            item for item in converted
+            item
+            for item in converted
             if item.get("detour")
-            and (
-                item["detour"] if item["detour"] in node_tags
-                else group_tag_map.get(item["detour"], item["detour"])
-            ) not in available_tags
+            and (item["detour"] if item["detour"] in node_tags else group_tag_map.get(item["detour"], item["detour"]))
+            not in available_tags
         ]
         if not invalid:
             break
@@ -1156,7 +1113,13 @@ def build_singbox_config_with_diagnostics(
         "log": {"level": "info"},
         "outbounds": [
             {"type": "selector", "tag": proxy_tag, "outbounds": [auto_tag, manual_tag]},
-            {"type": "urltest", "tag": auto_tag, "outbounds": node_names, "url": "https://www.gstatic.com/generate_204", "interval": "5m"},
+            {
+                "type": "urltest",
+                "tag": auto_tag,
+                "outbounds": node_names,
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": "5m",
+            },
             {"type": "selector", "tag": manual_tag, "outbounds": node_names},
             {"type": "direct", "tag": direct_tag},
             {"type": "block", "tag": block_tag},

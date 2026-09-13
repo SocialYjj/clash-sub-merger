@@ -4,6 +4,7 @@ The UI can disable individual nodes without deleting them. Disabled nodes
 remain visible/manageable in the admin panel, but they must not be exported in
 aggregated subscription files or offered as selectable nodes for users/chains.
 """
+
 import hashlib
 import json
 import re
@@ -17,9 +18,11 @@ from services.name_transformer import NameTransformer
 logger = get_logger(__name__)
 
 try:
-    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
+    from yaml import CSafeDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader
 except ImportError:
-    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
+    from yaml import SafeDumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader
 
 
 _SPACE_RE = re.compile(r"\s+")
@@ -186,11 +189,7 @@ def apply_node_visibility_history(nodes: Iterable[dict], existing_nodes: Iterabl
 
         endpoint_key = _identity_key(_endpoint_identity(node))
         endpoint_state = endpoints.get(endpoint_key) if endpoint_key else None
-        if (
-            endpoint_state
-            and endpoint_state.get("disabled", 0) > 0
-            and endpoint_state.get("enabled", 0) == 0
-        ):
+        if endpoint_state and endpoint_state.get("disabled", 0) > 0 and endpoint_state.get("enabled", 0) == 0:
             node["enabled"] = False
             applied += 1
 

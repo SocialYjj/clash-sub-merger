@@ -16,11 +16,7 @@ class TemplatePreviewTests(unittest.TestCase):
     def test_preview_uses_merge_and_generate_result(self):
         with tempfile.TemporaryDirectory() as tempdir:
             Path(tempdir, "sub_demo.yaml").write_text(
-                "proxies:\n"
-                "  - name: JP 01\n"
-                "    type: http\n"
-                "    server: 127.0.0.1\n"
-                "    port: 8080\n",
+                "proxies:\n  - name: JP 01\n    type: http\n    server: 127.0.0.1\n    port: 8080\n",
                 encoding="utf-8",
             )
 
@@ -33,10 +29,13 @@ class TemplatePreviewTests(unittest.TestCase):
                 patch.object(templates_api, "YAML_SOURCE_DIR", tempdir),
                 patch.object(templates_api, "OUTPUT_FILE", str(Path(tempdir) / "out.yaml")),
             ):
-                response = client.post("/api/template/preview", json={
-                    "content": "mixed-port: 7890\n",
-                    "file_aliases": {"sub_demo.yaml": "Demo"},
-                })
+                response = client.post(
+                    "/api/template/preview",
+                    json={
+                        "content": "mixed-port: 7890\n",
+                        "file_aliases": {"sub_demo.yaml": "Demo"},
+                    },
+                )
 
         self.assertEqual(response.status_code, 200)
         data = response.json()

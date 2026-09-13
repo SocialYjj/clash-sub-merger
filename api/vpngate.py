@@ -28,7 +28,6 @@ from services.vpngate import (
     refresh_vpngate_cache,
 )
 
-
 router = APIRouter()
 
 

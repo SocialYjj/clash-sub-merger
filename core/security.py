@@ -5,13 +5,13 @@ The project historically stored passwords as plain SHA256 hex digests.  Keep
 verification compatibility for existing installations, but write new/changed
 passwords as salted PBKDF2-SHA256 hashes using only Python's standard library.
 """
+
 import base64
 import hashlib
 import hmac
 import os
 import re
 import secrets
-
 
 PBKDF2_SCHEME = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 260_000

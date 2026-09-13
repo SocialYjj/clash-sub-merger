@@ -13,7 +13,6 @@ import os
 from types import ModuleType
 from typing import Any
 
-
 _BACKEND_MODULES = {
     "sqlite": "core.sqlite_storage",
     "postgres": "core.postgresql_storage",
@@ -25,9 +24,7 @@ _BACKEND_MODULES = {
 def backend_name() -> str:
     value = os.environ.get("STORAGE_BACKEND", "sqlite").strip().lower().replace("-", "_")
     if value not in _BACKEND_MODULES:
-        raise ValueError(
-            f"Unsupported STORAGE_BACKEND={value!r}; expected sqlite, postgresql, or mysql"
-        )
+        raise ValueError(f"Unsupported STORAGE_BACKEND={value!r}; expected sqlite, postgresql, or mysql")
     return value
 
 

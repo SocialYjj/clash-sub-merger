@@ -79,23 +79,25 @@ class NodePoolOutputTests(unittest.TestCase):
     @staticmethod
     def _make_output_client(config, yaml_source_dir):
         app = FastAPI()
-        app.include_router(create_subscription_output_router(
-            yaml_source_dir=yaml_source_dir,
-            output_file=str(Path(yaml_source_dir, "output.yaml")),
-            load_config=lambda: copy.deepcopy(config),
-            update_config=lambda mutator: mutator(config),
-            fetch_subscription=lambda *args, **kwargs: None,
-            find_node_by_reference=lambda *args, **kwargs: None,
-            is_name_allocated=lambda name, allocations, node_id=None: (
-                allocations == ["*"]
-                or (node_id is not None and node_id in (allocations or []))
-                or name in (allocations or [])
-            ),
-            filter_underscore_fields=strip_node_metadata,
-            extract_country_from_name=lambda *args, **kwargs: None,
-            split_template=lambda content: (content, ""),
-            logger=logging.getLogger("test.node_pools"),
-        ))
+        app.include_router(
+            create_subscription_output_router(
+                yaml_source_dir=yaml_source_dir,
+                output_file=str(Path(yaml_source_dir, "output.yaml")),
+                load_config=lambda: copy.deepcopy(config),
+                update_config=lambda mutator: mutator(config),
+                fetch_subscription=lambda *args, **kwargs: None,
+                find_node_by_reference=lambda *args, **kwargs: None,
+                is_name_allocated=lambda name, allocations, node_id=None: (
+                    allocations == ["*"]
+                    or (node_id is not None and node_id in (allocations or []))
+                    or name in (allocations or [])
+                ),
+                filter_underscore_fields=strip_node_metadata,
+                extract_country_from_name=lambda *args, **kwargs: None,
+                split_template=lambda content: (content, ""),
+                logger=logging.getLogger("test.node_pools"),
+            )
+        )
         return TestClient(app)
 
     def test_clash_output_emits_one_pool_group_and_one_listener(self):
@@ -116,25 +118,25 @@ class NodePoolOutputTests(unittest.TestCase):
                 "templates": [],
                 "source_order": ["sub_1"],
                 "proxy_chains": [],
-                "node_pools": [{
-                    "id": "pool_1",
-                    "name": "Direct Pool",
-                    "enabled": True,
-                    "nodes": [
-                        {"sub_id": "sub_1", "node_id": node_ids[0]},
-                        {"sub_id": "sub_1", "node_id": node_ids[1]},
-                    ],
-                    "group_strategy": "load-balance",
-                    "lb_strategy": "consistent-hashing",
-                }],
+                "node_pools": [
+                    {
+                        "id": "pool_1",
+                        "name": "Direct Pool",
+                        "enabled": True,
+                        "nodes": [
+                            {"sub_id": "sub_1", "node_id": node_ids[0]},
+                            {"sub_id": "sub_1", "node_id": node_ids[1]},
+                        ],
+                        "group_strategy": "load-balance",
+                        "lb_strategy": "consistent-hashing",
+                    }
+                ],
                 "port_mappings": {
                     node_pool_virtual_node_id("pool_1"): 42000,
                 },
             }
 
-            response = self._make_output_client(config, tempdir).get(
-                "/sub?token=admin-token&format=clash"
-            )
+            response = self._make_output_client(config, tempdir).get("/sub?token=admin-token&format=clash")
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
@@ -151,11 +153,7 @@ class NodePoolOutputTests(unittest.TestCase):
         group_names = [group["name"] for group in rendered["proxy-groups"]]
         pool_position = group_names.index(pool_name)
         fallback_position = group_names.index("🔯 故障转移")
-        country_positions = [
-            position
-            for position, name in enumerate(group_names)
-            if name in {"🇺🇸 美国", "🔰 其他"}
-        ]
+        country_positions = [position for position, name in enumerate(group_names) if name in {"🇺🇸 美国", "🔰 其他"}]
         self.assertEqual(pool_position, fallback_position + 1)
         self.assertTrue(country_positions)
         self.assertLess(pool_position, min(country_positions))
@@ -175,43 +173,39 @@ class NodePoolOutputTests(unittest.TestCase):
                 "auth": {"sub_token": "admin-token"},
                 "subscriptions": [{"id": "sub_1", "name": "Demo", "enabled": True}],
                 "custom_nodes": [],
-                "users": [{
-                    "token": "user-token",
-                    "name": "Pool user",
-                    "enabled": True,
-                    "allocations": {"node_pools": [pool_virtual_id]},
-                }],
+                "users": [
+                    {
+                        "token": "user-token",
+                        "name": "Pool user",
+                        "enabled": True,
+                        "allocations": {"node_pools": [pool_virtual_id]},
+                    }
+                ],
                 "admin_tokens": [],
                 "templates": [],
                 "source_order": ["sub_1"],
                 "proxy_chains": [],
-                "node_pools": [{
-                    "id": pool_id,
-                    "name": "User Pool",
-                    "enabled": True,
-                    "nodes": [{"sub_id": "sub_1", "node_id": node_ids[0]}],
-                    "group_strategy": "select",
-                }],
+                "node_pools": [
+                    {
+                        "id": pool_id,
+                        "name": "User Pool",
+                        "enabled": True,
+                        "nodes": [{"sub_id": "sub_1", "node_id": node_ids[0]}],
+                        "group_strategy": "select",
+                    }
+                ],
                 "port_mappings": {pool_virtual_id: 42001},
             }
 
-            response = self._make_output_client(config, tempdir).get(
-                "/sub?token=user-token&format=clash"
-            )
+            response = self._make_output_client(config, tempdir).get("/sub?token=user-token&format=clash")
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
         self.assertEqual({proxy["server"] for proxy in rendered["proxies"]}, {"a.example"})
-        pool_groups = [
-            group for group in rendered["proxy-groups"]
-            if "User Pool" in group.get("name", "")
-        ]
+        pool_groups = [group for group in rendered["proxy-groups"] if "User Pool" in group.get("name", "")]
         self.assertEqual(len(pool_groups), 1)
         pool_name = pool_groups[0]["name"]
-        listeners = [
-            listener for listener in rendered.get("listeners", [])
-            if listener.get("proxy") == pool_name
-        ]
+        listeners = [listener for listener in rendered.get("listeners", []) if listener.get("proxy") == pool_name]
         self.assertEqual(len(listeners), 1)
         self.assertEqual(listeners[0]["port"], 42001)
 
@@ -234,19 +228,19 @@ class NodePoolOutputTests(unittest.TestCase):
                 "templates": [],
                 "source_order": ["sub_1"],
                 "proxy_chains": [],
-                "node_pools": [{
-                    "id": pool_id,
-                    "name": "Disabled Pool",
-                    "enabled": False,
-                    "nodes": [{"sub_id": "sub_1", "node_id": subscription_node_ids("sub_1", nodes)[0]}],
-                    "group_strategy": "select",
-                }],
+                "node_pools": [
+                    {
+                        "id": pool_id,
+                        "name": "Disabled Pool",
+                        "enabled": False,
+                        "nodes": [{"sub_id": "sub_1", "node_id": subscription_node_ids("sub_1", nodes)[0]}],
+                        "group_strategy": "select",
+                    }
+                ],
                 "port_mappings": {pool_virtual_id: 42002},
             }
 
-            response = self._make_output_client(config, tempdir).get(
-                "/sub?token=admin-token&format=clash"
-            )
+            response = self._make_output_client(config, tempdir).get("/sub?token=admin-token&format=clash")
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)

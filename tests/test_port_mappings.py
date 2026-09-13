@@ -85,15 +85,19 @@ class PortMappingsRoutesTest(unittest.TestCase):
         config = {
             "subscriptions": [],
             "custom_nodes": [],
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [{"node_name": "A"}, {"node_name": "B"}],
-                }],
-            }],
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "enabled": True,
+                    "rows": [
+                        {
+                            "row_id": "row_1",
+                            "nodes": [{"node_name": "A"}, {"node_name": "B"}],
+                        }
+                    ],
+                }
+            ],
             "port_mappings": {},
         }
         client, load_config_patch = self.make_client(config)

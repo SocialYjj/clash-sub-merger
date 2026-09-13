@@ -2,7 +2,9 @@
 System API
 System management, backup, import/export, logging endpoints
 """
+
 import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
@@ -10,17 +12,29 @@ from pydantic import BaseModel, ConfigDict
 from core.config import AppConfig
 from core.database import load_config
 from core.dependencies import verify_session
+from logger_config import get_current_log_level, get_logger, list_all_loggers, set_log_level
 from services.backup import (
     create_backup as backup_create,
-    list_backups as backup_list,
-    restore_backup as backup_restore,
+)
+from services.backup import (
     delete_backup as backup_delete,
+)
+from services.backup import (
     export_config as config_export,
+)
+from services.backup import (
     import_config as config_import,
+)
+from services.backup import (
+    list_backups as backup_list,
+)
+from services.backup import (
+    restore_backup as backup_restore,
+)
+from services.backup import (
     restore_config_snapshot,
 )
 from services.key_rotation import check_key_rotation_needed
-from logger_config import get_logger, set_log_level, get_current_log_level, list_all_loggers
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -57,12 +71,13 @@ def _reload_or_restore(previous_config: dict, operation: str) -> None:
 
 # ==================== Data Models ====================
 
+
 class LogLevelRequest(BaseModel):
     level: str  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 
 class ImportRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
     data: dict
     merge: bool = False
@@ -70,13 +85,14 @@ class ImportRequest(BaseModel):
 
 # ==================== Logging API ====================
 
+
 @router.get("/log-level", tags=["system"])
 def get_log_level(_: bool = Depends(verify_session)):
     """Get current log level"""
     return {
         "current_level": get_current_log_level(),
         "available_levels": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        "loggers": list_all_loggers()
+        "loggers": list_all_loggers(),
     }
 
 
@@ -88,23 +104,21 @@ def update_log_level(data: LogLevelRequest, _: bool = Depends(verify_session)):
         return {
             "status": "success",
             "message": f"Log level changed to {data.level}",
-            "current_level": get_current_log_level()
+            "current_level": get_current_log_level(),
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/loggers", tags=["system"])
 def list_loggers(_: bool = Depends(verify_session)):
     """List all registered loggers and their levels"""
     loggers = list_all_loggers()
-    return {
-        "loggers": loggers,
-        "count": len(loggers)
-    }
+    return {"loggers": loggers, "count": len(loggers)}
 
 
 # ==================== Backup API ====================
+
 
 @router.get("/backups", tags=["system"])
 def list_backups(_: bool = Depends(verify_session)):
@@ -116,10 +130,10 @@ def list_backups(_: bool = Depends(verify_session)):
 @router.post("/backups", tags=["system"])
 def create_manual_backup(_: bool = Depends(verify_session)):
     """Create a manual backup"""
-    filename = backup_create('manual')
+    filename = backup_create("manual")
     if filename:
         return {"status": "success", "filename": filename}
-    raise HTTPException(status_code=500, detail="Failed to create backup")
+    raise HTTPException(status_code=500, detail="Failed to create backup") from None
 
 
 @router.post("/backups/{filename}/restore", tags=["system"])
@@ -131,14 +145,14 @@ def restore_from_backup(filename: str, _: bool = Depends(verify_session)):
         _reload_or_restore(previous_config, "Backup restore")
         return {"status": "success", "message": f"Restored from {filename}"}
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Backup not found")
+        raise HTTPException(status_code=404, detail="Backup not found") from None
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except TimeoutError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as exc:
         logger.error("Failed to restore backup: %s", type(exc).__name__)
-        raise HTTPException(status_code=500, detail="Failed to restore backup")
+        raise HTTPException(status_code=500, detail="Failed to restore backup") from exc
 
 
 @router.delete("/backups/{filename}", tags=["system"])
@@ -148,20 +162,22 @@ def delete_backup_file(filename: str, _: bool = Depends(verify_session)):
         backup_delete(filename)
         return {"status": "success"}
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Backup not found")
+        raise HTTPException(status_code=404, detail="Backup not found") from None
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Failed to delete backup: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete backup")
+        raise HTTPException(status_code=500, detail="Failed to delete backup") from e
 
 
 # ==================== Import/Export API ====================
+
 
 @router.get("/export", tags=["system"])
 def export_configuration(_: bool = Depends(verify_session)):
     """Export full configuration for migration"""
     import time
+
     try:
         export_data = config_export()
         return Response(
@@ -171,11 +187,11 @@ def export_configuration(_: bool = Depends(verify_session)):
                 "Content-Disposition": f'attachment; filename="submerger_export_{int(time.time())}.json"',
                 "Cache-Control": "no-store",
                 "Pragma": "no-cache",
-            }
+            },
         )
     except Exception as exc:
         logger.error("Failed to export config: %s", type(exc).__name__)
-        raise HTTPException(status_code=500, detail="Failed to export configuration")
+        raise HTTPException(status_code=500, detail="Failed to export configuration") from exc
 
 
 @router.post("/import", tags=["system"])
@@ -187,15 +203,16 @@ def import_configuration(req: ImportRequest, _: bool = Depends(verify_session)):
         _reload_or_restore(previous_config, "Configuration import")
         return {"status": "success", "mode": mode}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except TimeoutError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Failed to import config: %s", type(exc).__name__)
-        raise HTTPException(status_code=500, detail="Failed to import configuration")
+        raise HTTPException(status_code=500, detail="Failed to import configuration") from exc
 
 
 # ==================== Key Rotation API ====================
+
 
 @router.get("/key-rotation", tags=["system"])
 def get_key_rotation_status(_: bool = Depends(verify_session)):
@@ -205,5 +222,5 @@ def get_key_rotation_status(_: bool = Depends(verify_session)):
         "rotation_threshold_days": AppConfig.KEY_ROTATION_DAYS,
         "keys_needing_rotation": result,
         "count": len(result),
-        "check_enabled": AppConfig.KEY_ROTATION_CHECK_ENABLED
+        "check_enabled": AppConfig.KEY_ROTATION_CHECK_ENABLED,
     }

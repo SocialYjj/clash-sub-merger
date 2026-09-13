@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from core.config import AppConfig, DATA_DIR, env_int
+from core.config import DATA_DIR, AppConfig, env_int
 from core.storage import read_cache_document, write_cache_document
 from logger_config import get_logger
 
@@ -57,9 +57,9 @@ def apply_cloudflare_radar_runtime_config(config: Optional[dict]) -> None:
     """Apply the admin-configured token without exposing it to API callers."""
     global _configured_radar_token
     geoip_config = config.get("geoip_config", {}) if isinstance(config, dict) else {}
-    _configured_radar_token = str(
-        geoip_config.get("cloudflare_radar_token") or ""
-    ).strip() if isinstance(geoip_config, dict) else ""
+    _configured_radar_token = (
+        str(geoip_config.get("cloudflare_radar_token") or "").strip() if isinstance(geoip_config, dict) else ""
+    )
 
 
 def is_radar_enabled() -> bool:
@@ -121,8 +121,9 @@ def _find_ratio(payload: Any, aliases: set[str]) -> Optional[float]:
     return None
 
 
-def parse_radar_bot_class_response(payload: Any, *, checked_at: Optional[float] = None,
-                                   date_range: Any = None) -> Optional[Dict[str, Any]]:
+def parse_radar_bot_class_response(
+    payload: Any, *, checked_at: Optional[float] = None, date_range: Any = None
+) -> Optional[Dict[str, Any]]:
     """Normalize Cloudflare's bot-class summary response.
 
     Cloudflare has returned both ``human``/``bot`` and
@@ -136,8 +137,7 @@ def parse_radar_bot_class_response(payload: Any, *, checked_at: Optional[float] 
     candidates = [result]
     if isinstance(result, dict):
         candidates.extend(
-            value for key in ("summary_0", "summary", "data")
-            if isinstance((value := result.get(key)), dict)
+            value for key in ("summary_0", "summary", "data") if isinstance((value := result.get(key)), dict)
         )
 
     human = bot = None
@@ -232,8 +232,7 @@ def load_radar_cache_from_disk() -> None:
             entries = payload
         if not isinstance(entries, dict):
             return
-        valid = {key: value for key, value in entries.items()
-                 if isinstance(value, dict) and _cache_is_fresh(value)}
+        valid = {key: value for key, value in entries.items() if isinstance(value, dict) and _cache_is_fresh(value)}
         with _radar_cache_lock:
             _radar_cache = valid
     except (OSError, ValueError, TypeError) as exc:
@@ -304,8 +303,9 @@ async def _fetch_radar(asn: str, date_range: str, timeout: int) -> Optional[Dict
         return None
 
 
-async def lookup_radar_for_asn(asn: Any, *, timeout: Optional[int] = None,
-                               date_range: Any = None) -> Optional[Dict[str, Any]]:
+async def lookup_radar_for_asn(
+    asn: Any, *, timeout: Optional[int] = None, date_range: Any = None
+) -> Optional[Dict[str, Any]]:
     """Get a cached ASN-level bot ratio, deduplicating concurrent lookups."""
     normalized_asn = normalize_radar_asn(asn)
     if not normalized_asn or not is_radar_enabled():

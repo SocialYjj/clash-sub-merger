@@ -5,15 +5,17 @@ from geoip_service import _build_provider_result, _extract_provider_metadata, no
 
 class IPProfileNormalizationTests(unittest.TestCase):
     def test_extracts_ip_api_network_metadata(self):
-        metadata = _extract_provider_metadata({
-            "as": "AS15169",
-            "asname": "Google LLC",
-            "org": "Google LLC",
-            "isp": "Google LLC",
-            "hosting": True,
-            "mobile": False,
-            "proxy": False,
-        })
+        metadata = _extract_provider_metadata(
+            {
+                "as": "AS15169",
+                "asname": "Google LLC",
+                "org": "Google LLC",
+                "isp": "Google LLC",
+                "hosting": True,
+                "mobile": False,
+                "proxy": False,
+            }
+        )
 
         self.assertEqual(metadata["asn"], "AS15169")
         self.assertEqual(metadata["asn_org"], "Google LLC")
@@ -23,23 +25,27 @@ class IPProfileNormalizationTests(unittest.TestCase):
         self.assertFalse(metadata["is_proxy"])
 
     def test_extracts_ipinfo_asn_from_org_string(self):
-        metadata = _extract_provider_metadata({
-            "org": "AS15169 Google LLC",
-            "is_hosting": True,
-            "is_mobile": False,
-        })
+        metadata = _extract_provider_metadata(
+            {
+                "org": "AS15169 Google LLC",
+                "is_hosting": True,
+                "is_mobile": False,
+            }
+        )
 
         self.assertEqual(metadata["asn"], "AS15169")
         self.assertEqual(metadata["asn_org"], "Google LLC")
         self.assertTrue(metadata["is_hosting"])
 
     def test_normalizes_ippure_broadcast_and_residential_flags(self):
-        profile = normalize_ippure_profile({
-            "ip": "203.0.113.10",
-            "isBroadcast": False,
-            "isResidential": True,
-            "fraudScore": 12,
-        })
+        profile = normalize_ippure_profile(
+            {
+                "ip": "203.0.113.10",
+                "isBroadcast": False,
+                "isResidential": True,
+                "fraudScore": 12,
+            }
+        )
 
         self.assertEqual(profile["ip"], "203.0.113.10")
         self.assertFalse(profile["is_broadcast"])

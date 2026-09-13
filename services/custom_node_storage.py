@@ -8,9 +8,9 @@ from typing import Callable, TypeVar
 from core.config import AppConfig
 from core.database import load_config, update_config
 from helpers import save_subscription_yaml
+from services.node_metadata import NODE_METADATA_FIELDS
 from services.node_reference_updates import reconcile_custom_node_references
 from services.node_visibility import clear_user_subscription_caches, is_node_enabled
-from services.node_metadata import NODE_METADATA_FIELDS
 from services.proxy_filter import ProxyFilter
 from services.subscription_refresh_lock import subscription_write_slot
 from services.subscription_storage import (
@@ -18,8 +18,8 @@ from services.subscription_storage import (
     snapshot_subscription_content,
 )
 
-
 T = TypeVar("T")
+
 
 def write_custom_nodes_yaml(nodes: list[dict]) -> None:
     """Rebuild the generated custom-node source from persisted configuration."""
@@ -59,6 +59,7 @@ def update_custom_nodes(mutator: Callable[[dict], T]) -> T:
         )
 
         try:
+
             def apply_custom_node_update(config: dict) -> T:
                 old_nodes = deepcopy(config.get("custom_nodes", []))
                 mutation_response = mutator(config)

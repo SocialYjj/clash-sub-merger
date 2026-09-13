@@ -1,7 +1,7 @@
 """Tests for the extracted subscription output router."""
 
-import copy
 import base64
+import copy
 import json
 import logging
 import tempfile
@@ -16,10 +16,10 @@ from fastapi.testclient import TestClient
 
 from services.name_transformer import NameTransformer
 from services.node_identity import proxy_chain_virtual_node_id
-from services.subscription_output import create_subscription_output_router
+from services.node_metadata import strip_node_metadata
 from services.singbox_export import build_singbox_config_with_diagnostics
 from services.socks_export import SocksExportError, build_socks_config
-from services.node_metadata import strip_node_metadata
+from services.subscription_output import create_subscription_output_router
 
 
 class SubscriptionOutputRouterTest(unittest.TestCase):
@@ -40,30 +40,36 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             result = mutator(config)
             return result
 
-        app.include_router(create_subscription_output_router(
-            yaml_source_dir=yaml_source_dir,
-            output_file=str(Path(yaml_source_dir) / "config.yaml"),
-            load_config=load_config,
-            update_config=update_config,
-            fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetch should not run")),
-            find_node_by_reference=find_node_by_reference or (lambda *args, **kwargs: None),
-            is_name_allocated=lambda *args, **kwargs: False,
-            filter_underscore_fields=strip_node_metadata,
-            extract_country_from_name=lambda *args, **kwargs: None,
-            split_template=lambda content: (content, ""),
-            logger=logging.getLogger("test.subscription_output"),
-            fetch_subscription_async=fetch_subscription_async,
-        ))
+        app.include_router(
+            create_subscription_output_router(
+                yaml_source_dir=yaml_source_dir,
+                output_file=str(Path(yaml_source_dir) / "config.yaml"),
+                load_config=load_config,
+                update_config=update_config,
+                fetch_subscription=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("fetch should not run")
+                ),
+                find_node_by_reference=find_node_by_reference or (lambda *args, **kwargs: None),
+                is_name_allocated=lambda *args, **kwargs: False,
+                filter_underscore_fields=strip_node_metadata,
+                extract_country_from_name=lambda *args, **kwargs: None,
+                split_template=lambda content: (content, ""),
+                logger=logging.getLogger("test.subscription_output"),
+                fetch_subscription_async=fetch_subscription_async,
+            )
+        )
         return TestClient(app)
 
     def test_rejects_invalid_subscription_token(self):
-        client = self.make_client({
-            "auth": {"sub_token": "admin-token"},
-            "subscriptions": [],
-            "custom_nodes": [],
-            "users": [],
-            "admin_tokens": [],
-        })
+        client = self.make_client(
+            {
+                "auth": {"sub_token": "admin-token"},
+                "subscriptions": [],
+                "custom_nodes": [],
+                "users": [],
+                "admin_tokens": [],
+            }
+        )
 
         response = client.get("/sub?token=bad-token")
 
@@ -71,13 +77,15 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Invalid subscription token")
 
     def test_registers_legacy_admin_subscription_route(self):
-        client = self.make_client({
-            "auth": {"sub_token": "admin-token"},
-            "subscriptions": [],
-            "custom_nodes": [],
-            "users": [],
-            "admin_tokens": [],
-        })
+        client = self.make_client(
+            {
+                "auth": {"sub_token": "admin-token"},
+                "subscriptions": [],
+                "custom_nodes": [],
+                "users": [],
+                "admin_tokens": [],
+            }
+        )
 
         response = client.get("/sub?token=admin-token")
 
@@ -90,11 +98,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         async def async_fetch(url, proxy_node=None, force_proxy=False):
             calls.append((url, proxy_node, force_proxy))
             return (
-                "proxies:\n"
-                "  - name: Test Node\n"
-                "    type: http\n"
-                "    server: 127.0.0.1\n"
-                "    port: 8080\n",
+                "proxies:\n  - name: Test Node\n    type: http\n    server: 127.0.0.1\n    port: 8080\n",
                 {"upload": 1, "download": 2, "total": 3, "expire": 4},
                 1,
             )
@@ -102,12 +106,14 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             config = {
                 "auth": {"sub_token": "admin-token", "sub_name": "Aggregated"},
-                "subscriptions": [{
-                    "id": "sub_demo",
-                    "name": "Demo",
-                    "url": "https://example.test/sub",
-                    "enabled": True,
-                }],
+                "subscriptions": [
+                    {
+                        "id": "sub_demo",
+                        "name": "Demo",
+                        "url": "https://example.test/sub",
+                        "enabled": True,
+                    }
+                ],
                 "custom_nodes": [],
                 "users": [],
                 "admin_tokens": [],
@@ -145,15 +151,17 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "auth": {},
                 "subscriptions": [],
                 "custom_nodes": [node],
-                "users": [{
-                    "id": "u1",
-                    "name": "User",
-                    "token": "user-token",
-                    "enabled": True,
-                    "allocations": {"custom_nodes": ["*"]},
-                    "template_id": "builtin",
-                    "sub_cache": copy.deepcopy(stale_cache),
-                }],
+                "users": [
+                    {
+                        "id": "u1",
+                        "name": "User",
+                        "token": "user-token",
+                        "enabled": True,
+                        "allocations": {"custom_nodes": ["*"]},
+                        "template_id": "builtin",
+                        "sub_cache": copy.deepcopy(stale_cache),
+                    }
+                ],
                 "admin_tokens": [],
                 "templates": [],
                 "source_order": ["custom_nodes"],
@@ -198,20 +206,20 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "subscriptions": [],
                 "custom_nodes": [leaf, chain],
                 "users": [],
-                "admin_tokens": [{
-                    "id": "admin_1",
-                    "name": "Admin",
-                    "token": "admin-token",
-                    "enabled": True,
-                    "template_id": "builtin",
-                }],
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                        "template_id": "builtin",
+                    }
+                ],
                 "templates": [],
                 "source_order": ["custom_nodes"],
                 "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=v2ray"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=v2ray")
 
         self.assertEqual(response.status_code, 200)
         decoded = base64.b64decode(response.text).decode()
@@ -242,11 +250,11 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "source_order": ["custom_nodes"],
                 "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=base64"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=base64")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("vless://11111111-1111-1111-1111-111111111111@example.com:443", base64.b64decode(response.text).decode())
+        self.assertIn(
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443", base64.b64decode(response.text).decode()
+        )
 
     def test_protocol_path_returns_same_payload_as_format_query(self):
         node = {
@@ -263,9 +271,14 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": [node], "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": [node],
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
             client = self.make_client(config, yaml_source_dir=tempdir)
             query_response = client.get("/sub?token=admin-token&format=v2ray")
@@ -297,13 +310,16 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=v2ray"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=v2ray")
 
         self.assertEqual(response.status_code, 200)
         decoded = base64.b64decode(response.text).decode()
@@ -327,13 +343,16 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": [unsupported], "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": [unsupported],
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=v2ray"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=v2ray")
 
         self.assertEqual(response.status_code, 422)
         detail = response.json()["detail"]
@@ -359,13 +378,16 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": [node], "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": [node],
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=v2ray"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=v2ray")
 
         self.assertEqual(response.status_code, 200)
         decoded = base64.b64decode(response.text).decode()
@@ -384,9 +406,14 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 yaml.safe_dump({"proxies": nodes}, sort_keys=False), encoding="utf-8"
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
             response = self.make_client(config, yaml_source_dir=tempdir).get(
                 "/sub?token=admin-token&format=socks&start_port=42000&exclude_ports=42002"
@@ -423,20 +450,30 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
     def test_singbox_export_returns_json_with_vless_and_socks_auth(self):
         nodes = [
             {"name": "VLESS", "type": "vless", "server": "example.com", "port": 443, "uuid": "u", "tls": True},
-            {"name": "SOCKS", "type": "socks5", "server": "127.0.0.1", "port": 1080, "username": "user", "password": "pass"},
+            {
+                "name": "SOCKS",
+                "type": "socks5",
+                "server": "127.0.0.1",
+                "port": 1080,
+                "username": "user",
+                "password": "pass",
+            },
         ]
         with tempfile.TemporaryDirectory() as tempdir:
             Path(tempdir, "custom_nodes.yaml").write_text(
                 yaml.safe_dump({"proxies": nodes}, sort_keys=False), encoding="utf-8"
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=singbox"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=singbox")
         self.assertEqual(response.status_code, 200)
         rendered = json.loads(response.text)
         outbounds = {item["tag"]: item for item in rendered["outbounds"] if "tag" in item}
@@ -445,32 +482,37 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         self.assertEqual(socks_outbound["password"], "pass")
 
     def test_singbox_export_preserves_http_headers_and_uses_current_route_schema(self):
-        nodes = [{
-            "name": "HTTP VLESS",
-            "type": "vless",
-            "server": "example.com",
-            "port": 443,
-            "uuid": "11111111-1111-1111-1111-111111111111",
-            "network": "http",
-            "http-opts": {
-                "path": "/proxy",
-                "headers": {"Host": ["cdn.example.com"], "X-Test": ["enabled"]},
-            },
-            "tls": True,
-        }]
+        nodes = [
+            {
+                "name": "HTTP VLESS",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "http",
+                "http-opts": {
+                    "path": "/proxy",
+                    "headers": {"Host": ["cdn.example.com"], "X-Test": ["enabled"]},
+                },
+                "tls": True,
+            }
+        ]
         with tempfile.TemporaryDirectory() as tempdir:
             Path(tempdir, "custom_nodes.yaml").write_text(
                 yaml.safe_dump({"proxies": nodes}, sort_keys=False),
                 encoding="utf-8",
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=singbox"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=singbox")
 
         self.assertEqual(response.status_code, 200)
         rendered = json.loads(response.text)
@@ -651,24 +693,26 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
 
     def test_singbox_export_preserves_shadowsocks_plugin_and_udp_over_tcp(self):
         rendered, skipped = build_singbox_config_with_diagnostics(
-            [{
-                "name": "SS plugin",
-                "type": "ss",
-                "server": "example.com",
-                "port": 443,
-                "cipher": "aes-128-gcm",
-                "password": "secret",
-                "plugin": "v2ray-plugin",
-                "plugin-opts": {
-                    "mode": "websocket",
-                    "host": "cdn.example.com",
-                    "path": "/proxy",
-                    "tls": True,
-                    "mux": False,
-                },
-                "udp-over-tcp": True,
-                "udp-over-tcp-version": 2,
-            }],
+            [
+                {
+                    "name": "SS plugin",
+                    "type": "ss",
+                    "server": "example.com",
+                    "port": 443,
+                    "cipher": "aes-128-gcm",
+                    "password": "secret",
+                    "plugin": "v2ray-plugin",
+                    "plugin-opts": {
+                        "mode": "websocket",
+                        "host": "cdn.example.com",
+                        "path": "/proxy",
+                        "tls": True,
+                        "mux": False,
+                    },
+                    "udp-over-tcp": True,
+                    "udp-over-tcp-version": 2,
+                }
+            ],
             [],
         )
         self.assertEqual(skipped, ())
@@ -695,9 +739,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             "udp-over-stream": True,
             "udp-relay-mode": "quic",
         }
-        rendered, skipped = build_singbox_config_with_diagnostics(
-            [supported, conflict], []
-        )
+        rendered, skipped = build_singbox_config_with_diagnostics([supported, conflict], [])
         outbound = next(item for item in rendered["outbounds"] if item.get("tag") == "TUIC")
         self.assertTrue(outbound["tls"]["disable_sni"])
         self.assertTrue(outbound["zero_rtt_handshake"])
@@ -725,12 +767,15 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         rendered, skipped = build_singbox_config_with_diagnostics([supported, gecko], [])
         self.assertEqual(skipped, ())
         hy2 = next(item for item in rendered["outbounds"] if item.get("tag") == "HY2 gecko")
-        self.assertEqual(hy2["obfs"], {
-            "type": "gecko",
-            "password": "secret",
-            "min_packet_size": 512,
-            "max_packet_size": 1200,
-        })
+        self.assertEqual(
+            hy2["obfs"],
+            {
+                "type": "gecko",
+                "password": "secret",
+                "min_packet_size": 512,
+                "max_packet_size": 1200,
+            },
+        )
 
     def test_singbox_export_rejects_unrepresentable_tls_extensions(self):
         supported = {
@@ -744,9 +789,11 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         rejected = [
             {**supported, "name": "PQV", "pqv": "verification-key"},
             {**supported, "name": "FinalMask", "finalmask": "{}"},
-            {**supported, "name": "Reality spider", "reality-opts": {
-                "public-key": "key", "short-id": "abcd", "spider-x": "/spider"
-            }},
+            {
+                **supported,
+                "name": "Reality spider",
+                "reality-opts": {"public-key": "key", "short-id": "abcd", "spider-x": "/spider"},
+            },
         ]
         rendered, skipped = build_singbox_config_with_diagnostics([supported, *rejected], [])
         self.assertIn("Supported", {item.get("tag") for item in rendered["outbounds"]})
@@ -875,13 +922,16 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 yaml.safe_dump({"proxies": nodes}, sort_keys=False), encoding="utf-8"
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=singbox"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=singbox")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["x-singbox-skipped-nodes"], "1")
@@ -915,13 +965,16 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 yaml.safe_dump({"proxies": nodes}, sort_keys=False), encoding="utf-8"
             )
             config = {
-                "auth": {}, "subscriptions": [], "custom_nodes": nodes, "users": [],
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": nodes,
+                "users": [],
                 "admin_tokens": [{"id": "admin_1", "name": "Admin", "token": "admin-token", "enabled": True}],
-                "templates": [], "source_order": ["custom_nodes"], "proxy_chains": [],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=singbox"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=singbox")
 
         self.assertEqual(response.status_code, 200)
         decoded = unquote(response.headers["x-singbox-export-diagnostics"])
@@ -1054,25 +1107,31 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "subscriptions": [],
                 "custom_nodes": [node_a, node_b],
                 "users": [],
-                "admin_tokens": [{
-                    "id": "admin_1",
-                    "name": "Admin",
-                    "token": "admin-token",
-                    "enabled": True,
-                    "template_id": "tpl_custom",
-                    "group_config": {"Manual": [selected_name]},
-                }],
-                "templates": [{
-                    "id": "tpl_custom",
-                    "name": "Custom",
-                    "header": "mixed-port: 7890\n",
-                    "suffix": "",
-                    "proxy_groups": [{
-                        "name": "Manual",
-                        "type": "select",
-                        "proxies": [],
-                    }],
-                }],
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                        "template_id": "tpl_custom",
+                        "group_config": {"Manual": [selected_name]},
+                    }
+                ],
+                "templates": [
+                    {
+                        "id": "tpl_custom",
+                        "name": "Custom",
+                        "header": "mixed-port: 7890\n",
+                        "suffix": "",
+                        "proxy_groups": [
+                            {
+                                "name": "Manual",
+                                "type": "select",
+                                "proxies": [],
+                            }
+                        ],
+                    }
+                ],
                 "source_order": ["custom_nodes"],
                 "proxy_chains": [],
             }
@@ -1082,10 +1141,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
-        manual_group = next(
-            group for group in rendered["proxy-groups"]
-            if group["name"] == "Manual"
-        )
+        manual_group = next(group for group in rendered["proxy-groups"] if group["name"] == "Manual")
         self.assertEqual(manual_group["proxies"], [selected_name])
 
     def test_builtin_group_configuration_targets_the_groups_in_generated_yaml(self):
@@ -1113,28 +1169,25 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "subscriptions": [],
                 "custom_nodes": [node_a, node_b],
                 "users": [],
-                "admin_tokens": [{
-                    "id": "admin_1",
-                    "name": "Admin",
-                    "token": "admin-token",
-                    "enabled": True,
-                    "template_id": "builtin",
-                    "group_config": {"🚀 手动选择": [selected_name]},
-                }],
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                        "template_id": "builtin",
+                        "group_config": {"🚀 手动选择": [selected_name]},
+                    }
+                ],
                 "templates": [],
                 "source_order": ["custom_nodes"],
                 "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=clash"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=clash")
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
-        manual_group = next(
-            group for group in rendered["proxy-groups"]
-            if group["name"] == "🚀 手动选择"
-        )
+        manual_group = next(group for group in rendered["proxy-groups"] if group["name"] == "🚀 手动选择")
         self.assertEqual(manual_group["proxies"], [selected_name])
 
     def test_clash_export_omits_traffic_summary_pseudo_nodes(self):
@@ -1152,30 +1205,32 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             )
             config = {
                 "auth": {"sub_name": "Aggregated"},
-                "subscriptions": [{
-                    "id": "sub_demo",
-                    "name": "Demo",
-                    "enabled": True,
-                    "upload": 1024,
-                    "download": 2048,
-                    "total": 10240,
-                    "expire": 0,
-                }],
+                "subscriptions": [
+                    {
+                        "id": "sub_demo",
+                        "name": "Demo",
+                        "enabled": True,
+                        "upload": 1024,
+                        "download": 2048,
+                        "total": 10240,
+                        "expire": 0,
+                    }
+                ],
                 "custom_nodes": [],
                 "users": [],
-                "admin_tokens": [{
-                    "id": "admin_1",
-                    "name": "Admin",
-                    "token": "admin-token",
-                    "enabled": True,
-                }],
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                    }
+                ],
                 "templates": [],
                 "source_order": ["sub_demo"],
                 "proxy_chains": [],
             }
-            response = self.make_client(config, yaml_source_dir=tempdir).get(
-                "/sub?token=admin-token&format=clash"
-            )
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=clash")
 
         self.assertEqual(response.status_code, 200)
         rendered = yaml.safe_load(response.text)
@@ -1184,10 +1239,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         self.assertIn("Demo Real Node", proxy_names[0])
         self.assertTrue(all(not name.startswith("📊") for name in proxy_names))
         for group in rendered["proxy-groups"]:
-            self.assertTrue(all(
-                not str(name).startswith("📊")
-                for name in group.get("proxies", [])
-            ))
+            self.assertTrue(all(not str(name).startswith("📊") for name in group.get("proxies", [])))
         self.assertIn("upload=1024; download=2048; total=10240; expire=0", response.headers["subscription-userinfo"])
 
     def test_stable_chain_pool_reference_survives_template_name_collision(self):
@@ -1205,10 +1257,7 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             "server": "127.0.0.2",
             "port": 8081,
         }
-        transformed_nodes = {
-            node["id"]: NameTransformer.transform_name(node, "Custom")
-            for node in (node_a, node_b)
-        }
+        transformed_nodes = {node["id"]: NameTransformer.transform_name(node, "Custom") for node in (node_a, node_b)}
         pool_reference_id = proxy_chain_virtual_node_id(
             "chain_pools",
             "chain_1",
@@ -1229,52 +1278,62 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                 "subscriptions": [],
                 "custom_nodes": [node_a, node_b],
                 "users": [],
-                "admin_tokens": [{
-                    "id": "admin_1",
-                    "name": "Admin",
-                    "token": "admin-token",
-                    "enabled": True,
-                    "template_id": "tpl_custom",
-                    "group_config": {"Manual": [pool_reference_id]},
-                }],
-                "templates": [{
-                    "id": "tpl_custom",
-                    "name": "Custom",
-                    "header": "mixed-port: 7890\n",
-                    "suffix": "",
-                    "proxy_groups": [
-                        {"name": "Manual", "type": "select", "proxies": []},
-                        {"name": "🔀 Exit Pool", "type": "select", "proxies": ["DIRECT"]},
-                    ],
-                }],
-                "source_order": ["custom_nodes"],
-                "proxy_chains": [{
-                    "id": "chain_1",
-                    "name": "Chain",
-                    "enabled": True,
-                    "rows": [{
-                        "row_id": "row_1",
-                        "nodes": [
-                            {
-                                "type": "node",
-                                "sub_id": "custom",
-                                "node_id": "custom_a",
-                                "node_name": "Node A",
-                            },
-                            {
-                                "type": "group",
-                                "group_id": "grp_pool_abcd",
-                                "group_name": "Exit Pool",
-                                "group_nodes": [{
-                                    "type": "node",
-                                    "sub_id": "custom",
-                                    "node_id": "custom_b",
-                                    "node_name": "Node B",
-                                }],
-                            },
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                        "template_id": "tpl_custom",
+                        "group_config": {"Manual": [pool_reference_id]},
+                    }
+                ],
+                "templates": [
+                    {
+                        "id": "tpl_custom",
+                        "name": "Custom",
+                        "header": "mixed-port: 7890\n",
+                        "suffix": "",
+                        "proxy_groups": [
+                            {"name": "Manual", "type": "select", "proxies": []},
+                            {"name": "🔀 Exit Pool", "type": "select", "proxies": ["DIRECT"]},
                         ],
-                    }],
-                }],
+                    }
+                ],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [
+                    {
+                        "id": "chain_1",
+                        "name": "Chain",
+                        "enabled": True,
+                        "rows": [
+                            {
+                                "row_id": "row_1",
+                                "nodes": [
+                                    {
+                                        "type": "node",
+                                        "sub_id": "custom",
+                                        "node_id": "custom_a",
+                                        "node_name": "Node A",
+                                    },
+                                    {
+                                        "type": "group",
+                                        "group_id": "grp_pool_abcd",
+                                        "group_name": "Exit Pool",
+                                        "group_nodes": [
+                                            {
+                                                "type": "node",
+                                                "sub_id": "custom",
+                                                "node_id": "custom_b",
+                                                "node_name": "Node B",
+                                            }
+                                        ],
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
                 "port_mappings": {pool_reference_id: 42000},
             }
             response = self.make_client(
@@ -1310,22 +1369,26 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         allowed_chain_id = proxy_chain_virtual_node_id("chain_nodes", "chain_allowed", "row_allowed")
 
         def find_node(_source_id, _node_index, _node_name, *, node_id=None):
-            return copy.deepcopy({
-                "custom_a": node_a,
-                "custom_b": node_b,
-            }.get(node_id))
+            return copy.deepcopy(
+                {
+                    "custom_a": node_a,
+                    "custom_b": node_b,
+                }.get(node_id)
+            )
 
         config = {
             "auth": {},
             "subscriptions": [],
             "custom_nodes": [node_a, node_b],
-            "users": [{
-                "id": "user_1",
-                "name": "User",
-                "token": "user-token",
-                "enabled": True,
-                "allocations": {"chain_nodes": [allowed_chain_id]},
-            }],
+            "users": [
+                {
+                    "id": "user_1",
+                    "name": "User",
+                    "token": "user-token",
+                    "enabled": True,
+                    "allocations": {"chain_nodes": [allowed_chain_id]},
+                }
+            ],
             "admin_tokens": [],
             "templates": [],
             "source_order": [],
@@ -1334,25 +1397,29 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
                     "id": "chain_allowed",
                     "name": "Allowed",
                     "enabled": True,
-                    "rows": [{
-                        "row_id": "row_allowed",
-                        "nodes": [
-                            {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
-                            {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
-                        ],
-                    }],
+                    "rows": [
+                        {
+                            "row_id": "row_allowed",
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
+                            ],
+                        }
+                    ],
                 },
                 {
                     "id": "chain_hidden",
                     "name": "Hidden",
                     "enabled": True,
-                    "rows": [{
-                        "row_id": "row_hidden",
-                        "nodes": [
-                            {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
-                            {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
-                        ],
-                    }],
+                    "rows": [
+                        {
+                            "row_id": "row_hidden",
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
+                            ],
+                        }
+                    ],
                 },
             ],
         }
@@ -1397,28 +1464,34 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
             "auth": {},
             "subscriptions": [],
             "custom_nodes": [],
-            "users": [{
-                "id": "user_1",
-                "name": "User",
-                "token": "user-token",
-                "enabled": True,
-                "allocations": {"chain_nodes": [allowed_chain_id]},
-            }],
+            "users": [
+                {
+                    "id": "user_1",
+                    "name": "User",
+                    "token": "user-token",
+                    "enabled": True,
+                    "allocations": {"chain_nodes": [allowed_chain_id]},
+                }
+            ],
             "admin_tokens": [],
             "templates": [],
             "source_order": [],
-            "proxy_chains": [{
-                "id": chain_id,
-                "name": "Private",
-                "enabled": True,
-                "rows": [{
-                    "row_id": row_id,
-                    "nodes": [
-                        {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
-                        {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
+            "proxy_chains": [
+                {
+                    "id": chain_id,
+                    "name": "Private",
+                    "enabled": True,
+                    "rows": [
+                        {
+                            "row_id": row_id,
+                            "nodes": [
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_a"},
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_b"},
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         with tempfile.TemporaryDirectory() as tempdir:

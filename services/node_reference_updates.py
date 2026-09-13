@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from core.config import AppConfig
 from core.database import update_config
-from helpers import YAMLLoader, YAMLDumper, load_subscription_yaml
+from helpers import YAMLDumper, YAMLLoader, load_subscription_yaml
 from services.name_transformer import NameTransformer
 from services.node_identity import (
     custom_node_id,
@@ -21,7 +21,6 @@ from services.node_identity import (
     virtual_node_id,
 )
 from services.node_visibility import clear_user_subscription_caches
-from services.proxy_filter import ProxyFilter
 from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_refresh_lock import subscription_write_slot
 from services.subscription_storage import persist_subscription_content_and_record
@@ -64,9 +63,7 @@ def _describe_nodes(
             continue
         original_name = str(node.get("name") or "").strip()
         transformed = NameTransformer.transform_name(node, source_name)
-        display_name = str(
-            transformed.get("name") if isinstance(transformed, dict) else original_name
-        ).strip()
+        display_name = str(transformed.get("name") if isinstance(transformed, dict) else original_name).strip()
         descriptions.append(
             _NodeDescription(
                 position=position,
@@ -89,11 +86,7 @@ def _unique_descriptions(
         lookup_key = key_builder(description)
         if lookup_key:
             grouped.setdefault(lookup_key, []).append(description)
-    return {
-        lookup_key: matches[0]
-        for lookup_key, matches in grouped.items()
-        if len(matches) == 1
-    }
+    return {lookup_key: matches[0] for lookup_key, matches in grouped.items() if len(matches) == 1}
 
 
 def _single_target_map(associations: dict[str, set]) -> dict:
@@ -155,12 +148,8 @@ def _build_transition_plan(
     # itself is unchanged.  Match unpaired single base identities before the
     # more permissive name fallback so allocations and chain references survive
     # such a rename without guessing between different endpoints.
-    unmatched_old = [
-        item for item in old_descriptions if item.position not in matched_nodes
-    ]
-    unmatched_new = [
-        item for item in new_descriptions if item.position not in matched_new_positions
-    ]
+    unmatched_old = [item for item in old_descriptions if item.position not in matched_nodes]
+    unmatched_new = [item for item in new_descriptions if item.position not in matched_new_positions]
     unique_old_base_ids = _unique_descriptions(unmatched_old, lambda item: item.base_id)
     unique_new_base_ids = _unique_descriptions(unmatched_new, lambda item: item.base_id)
     for base_id, old_description in unique_old_base_ids.items():
@@ -173,12 +162,8 @@ def _build_transition_plan(
     # Providers sometimes rotate credentials or endpoints while retaining the
     # logical node name. Only unique names are accepted as a fallback so a
     # duplicate provider label can never redirect a reference to the wrong node.
-    unmatched_old = [
-        item for item in old_descriptions if item.position not in matched_nodes
-    ]
-    unmatched_new = [
-        item for item in new_descriptions if item.position not in matched_new_positions
-    ]
+    unmatched_old = [item for item in old_descriptions if item.position not in matched_nodes]
+    unmatched_new = [item for item in new_descriptions if item.position not in matched_new_positions]
     unique_old_names = _unique_descriptions(unmatched_old, lambda item: item.normalized_name)
     unique_new_names = _unique_descriptions(unmatched_new, lambda item: item.normalized_name)
     for normalized_name, old_description in unique_old_names.items():
@@ -193,12 +178,8 @@ def _build_transition_plan(
     # only deterministic fallback when all duplicate labels changed at once;
     # the technical base identity guarantees that no different endpoint is
     # redirected.
-    unmatched_old = [
-        item for item in old_descriptions if item.position not in matched_nodes
-    ]
-    unmatched_new = [
-        item for item in new_descriptions if item.position not in matched_new_positions
-    ]
+    unmatched_old = [item for item in old_descriptions if item.position not in matched_nodes]
+    unmatched_new = [item for item in new_descriptions if item.position not in matched_new_positions]
     old_base_groups: dict[str, list[_NodeDescription]] = {}
     new_base_groups: dict[str, list[_NodeDescription]] = {}
     for description in unmatched_old:
@@ -214,6 +195,7 @@ def _build_transition_plan(
         for old_description, new_description in zip(
             sorted(old_group, key=lambda item: item.position),
             sorted(new_group, key=lambda item: item.position),
+            strict=False,
         ):
             matched_nodes[old_description.position] = new_description
             matched_new_positions.add(new_description.position)
@@ -242,9 +224,7 @@ def _build_transition_plan(
     new_id_name_associations: dict[str, set[str]] = {}
     for description in new_descriptions:
         if description.node_id and description.display_name:
-            new_id_name_associations.setdefault(description.node_id, set()).add(
-                description.display_name
-            )
+            new_id_name_associations.setdefault(description.node_id, set()).add(description.display_name)
 
     return _ReferenceTransitionPlan(
         source_aliases=frozenset(source_aliases),
@@ -558,8 +538,7 @@ def _apply_transition_plan(config: dict, plan: _ReferenceTransitionPlan) -> None
                     allocations[chain_key] = [
                         stored_value
                         for stored_value in chain_values
-                        if stored_value not in invalidated_chain_ids
-                        and stored_value not in invalidated_chain_names
+                        if stored_value not in invalidated_chain_ids and stored_value not in invalidated_chain_names
                     ]
         user.pop("sub_cache", None)
         _replace_subject_group_names(user, combined_name_targets)
@@ -644,11 +623,7 @@ def remove_explicit_source_references(
                     and str(reference.get("group_source") or "nodes").strip() == VPNGATE_SOURCE_ID
                 ):
                     continue
-                candidates = (
-                    reference.get("group_nodes", []) or []
-                    if reference.get("type") == "group"
-                    else [reference]
-                )
+                candidates = reference.get("group_nodes", []) or [] if reference.get("type") == "group" else [reference]
                 for candidate in candidates:
                     if not isinstance(candidate, dict) or candidate.get("sub_id") not in source_aliases:
                         continue
@@ -718,11 +693,7 @@ def update_subscription_yaml_with_references(
 
         def update_node_references(config: dict) -> dict:
             subscription = next(
-                (
-                    candidate
-                    for candidate in config.get("subscriptions", [])
-                    if candidate.get("id") == subscription_id
-                ),
+                (candidate for candidate in config.get("subscriptions", []) if candidate.get("id") == subscription_id),
                 None,
             )
             if subscription is None:

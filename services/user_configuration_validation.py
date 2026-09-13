@@ -12,9 +12,8 @@ from logger_config import get_logger
 from services.group_config_builder import build_group_config_view
 from services.name_transformer import NameTransformer
 from services.node_identity import custom_node_id, subscription_node_ids
-from services.proxy_chain_references import list_proxy_chain_virtual_references
 from services.node_pool_references import NODE_POOL_SOURCE, list_node_pool_virtual_references
-
+from services.proxy_chain_references import list_proxy_chain_virtual_references
 
 logger = get_logger(__name__)
 MAX_ALLOCATION_SOURCES = 500
@@ -131,10 +130,7 @@ def normalize_user_allocations(
             normalized_allocations[source_id] = ["*"]
             continue
 
-        existing_values = {
-            value for value in existing_allocations.get(source_id, [])
-            if isinstance(value, str)
-        }
+        existing_values = {value for value in existing_allocations.get(source_id, []) if isinstance(value, str)}
         normalized_values: list[str] = []
         seen_values: set[str] = set()
         for raw_value in values:

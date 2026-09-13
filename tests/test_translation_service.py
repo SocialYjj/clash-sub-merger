@@ -33,12 +33,8 @@ class TranslationServiceTests(unittest.TestCase):
                 ) as google_call,
                 patch.object(translation_service, "_save_translation_cache"),
             ):
-                first_translation = await translation_service.translate_to_simplified_chinese(
-                    "Mountain View"
-                )
-                second_translation = await translation_service.translate_to_simplified_chinese(
-                    "Mountain View"
-                )
+                first_translation = await translation_service.translate_to_simplified_chinese("Mountain View")
+                second_translation = await translation_service.translate_to_simplified_chinese("Mountain View")
                 return first_translation, second_translation, google_call.await_count
 
         first_translation, second_translation, call_count = asyncio.run(run_test())
@@ -48,9 +44,7 @@ class TranslationServiceTests(unittest.TestCase):
 
     def test_google_endpoint_accepts_base_url_or_full_translate_path(self):
         self.assertEqual(
-            translation_service._get_google_translate_endpoint(
-                {"endpoint": "https://translate.googleapis.com/"}
-            ),
+            translation_service._get_google_translate_endpoint({"endpoint": "https://translate.googleapis.com/"}),
             "https://translate.googleapis.com/translate_a/single",
         )
         self.assertEqual(
@@ -62,23 +56,17 @@ class TranslationServiceTests(unittest.TestCase):
 
     def test_microsoft_endpoint_accepts_base_url_or_full_web_path(self):
         self.assertEqual(
-            translation_service._get_microsoft_translate_endpoint(
-                {"endpoint": "https://edge.microsoft.com/translate"}
-            ),
+            translation_service._get_microsoft_translate_endpoint({"endpoint": "https://edge.microsoft.com/translate"}),
             "https://edge.microsoft.com/translate/translatetext",
         )
 
     def test_openai_endpoint_accepts_base_url_or_full_chat_path(self):
         self.assertEqual(
-            translation_service._openai_endpoint(
-                {"endpoint": "https://api.openai.com/v1"}
-            ),
+            translation_service._openai_endpoint({"endpoint": "https://api.openai.com/v1"}),
             "https://api.openai.com/v1/chat/completions",
         )
         self.assertEqual(
-            translation_service._openai_endpoint(
-                {"endpoint": "https://gateway.example/v1/chat/completions"}
-            ),
+            translation_service._openai_endpoint({"endpoint": "https://gateway.example/v1/chat/completions"}),
             "https://gateway.example/v1/chat/completions",
         )
         self.assertEqual(
@@ -128,7 +116,7 @@ class TranslationServiceTests(unittest.TestCase):
                     "enabled": True,
                     "api_key": "openai-private-key",
                     "model": "gpt-4o-mini",
-                }
+                },
             }
         )
 
@@ -201,7 +189,7 @@ class TranslationServiceTests(unittest.TestCase):
                 return FakeResponse(payload)
 
         provider_cases = {
-            "google": ({"endpoint": "https://translation.test"}, [[['阿什本']]]),
+            "google": ({"endpoint": "https://translation.test"}, [[["阿什本"]]]),
             "microsoft": ({"endpoint": "https://translation.test"}, [{"translations": [{"text": "微软"}]}]),
             "tencent": ({"secret_id": "id", "secret_key": "secret"}, {"Response": {"TargetText": "腾讯"}}),
             "openai": (
@@ -239,9 +227,7 @@ class TranslationServiceTests(unittest.TestCase):
                 "openai": "OpenAI",
             },
         )
-        microsoft_url, microsoft_options = next(
-            call for call in post_calls if "translatetext" in call[0][0]
-        )
+        microsoft_url, microsoft_options = next(call for call in post_calls if "translatetext" in call[0][0])
         self.assertEqual(microsoft_url, ("https://translation.test/translatetext",))
         self.assertEqual(
             microsoft_options["params"],
@@ -249,9 +235,7 @@ class TranslationServiceTests(unittest.TestCase):
         )
         self.assertEqual(microsoft_options["json"], ["source"])
         self.assertNotIn("Authorization", microsoft_options["headers"])
-        openai_url, openai_options = next(
-            call for call in post_calls if "chat/completions" in call[0][0]
-        )
+        openai_url, openai_options = next(call for call in post_calls if "chat/completions" in call[0][0])
         self.assertEqual(openai_url, ("https://translation.test/chat/completions",))
         self.assertEqual(openai_options["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(openai_options["json"]["model"], "gpt-4o-mini")

@@ -3,19 +3,21 @@ GeoIP Service Module
 Provides IP geolocation functionality using online APIs.
 """
 
+import asyncio
+import ipaddress
+import json
 import os
 import re
-import time
-import json
-import ipaddress
 import socket
-import httpx
-import httpcore
-import asyncio
 import threading
+import time
 from copy import deepcopy
-from typing import Optional, Dict
+from typing import Dict, Optional
 from urllib.parse import urlsplit
+
+import httpcore
+import httpx
+
 from core.config import DATA_DIR, env_int
 from core.storage import delete_cache_document, read_cache_document, write_cache_document
 from logger_config import get_logger
@@ -25,7 +27,7 @@ from translation_service import get_cached_translation, translate_location_field
 logger = get_logger(__name__)
 
 # Persistent cache configuration
-GEOIP_CACHE_FILE = os.path.join(DATA_DIR, 'geoip_cache.json')
+GEOIP_CACHE_FILE = os.path.join(DATA_DIR, "geoip_cache.json")
 _DEFAULT_GEOIP_CACHE_FILE = GEOIP_CACHE_FILE
 GEOIP_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
 # A temporary provider/network failure must not poison lookups for a week.
@@ -35,21 +37,25 @@ GEOIP_CACHE_VERSION = 1
 # Traditional to Simplified Chinese converter
 try:
     from opencc import OpenCC
-    _t2s_converter = OpenCC('t2s')  # Traditional to Simplified
+
+    _t2s_converter = OpenCC("t2s")  # Traditional to Simplified
+
     def convert_to_simplified(text: str) -> str:
         """Convert Traditional Chinese to Simplified Chinese"""
         if not text:
             return text
         return _t2s_converter.convert(text)
 except ImportError:
+
     def convert_to_simplified(text: str) -> str:
         """Fallback: return text as-is if opencc not available"""
         return text
 
+
 # Online GeoIP lookup cache (to avoid repeated requests)
 _online_geoip_cache: Dict[str, Dict] = {}
 _online_geoip_inflight: Dict[str, asyncio.Task] = {}
-_online_geoip_semaphore = asyncio.Semaphore(env_int('GEOIP_MAX_CONCURRENCY', 8, minimum=1))
+_online_geoip_semaphore = asyncio.Semaphore(env_int("GEOIP_MAX_CONCURRENCY", 8, minimum=1))
 _online_geoip_cache_lock = threading.RLock()
 _online_geoip_inflight_lock = asyncio.Lock()
 _online_geoip_save_lock = asyncio.Lock()
@@ -57,33 +63,31 @@ _online_geoip_save_lock = asyncio.Lock()
 
 def _geoip_cache_ttl(entry: dict) -> int:
     """Return the TTL appropriate for a positive or negative cache entry."""
-    return GEOIP_NEGATIVE_CACHE_TTL if entry.get('_negative') else GEOIP_CACHE_TTL
+    return GEOIP_NEGATIVE_CACHE_TTL if entry.get("_negative") else GEOIP_CACHE_TTL
+
 
 def load_geoip_cache_from_disk():
     """Load GeoIP cache from SQLite (or an explicitly overridden legacy file)."""
     global _online_geoip_cache
     try:
         if GEOIP_CACHE_FILE != _DEFAULT_GEOIP_CACHE_FILE:
-            with open(GEOIP_CACHE_FILE, 'r', encoding='utf-8') as f:
+            with open(GEOIP_CACHE_FILE, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
         else:
-            cache_data = read_cache_document('geoip', default=None)
+            cache_data = read_cache_document("geoip", default=None)
             if cache_data is None:
                 return
 
         if not isinstance(cache_data, dict):
             raise ValueError("GeoIP cache root must be an object")
 
-        if 'version' in cache_data or 'entries' in cache_data:
-            if cache_data.get('version') != GEOIP_CACHE_VERSION:
-                logger.info(
-                    "Ignoring GeoIP cache with unsupported version %s",
-                    cache_data.get('version')
-                )
+        if "version" in cache_data or "entries" in cache_data:
+            if cache_data.get("version") != GEOIP_CACHE_VERSION:
+                logger.info("Ignoring GeoIP cache with unsupported version %s", cache_data.get("version"))
                 with _online_geoip_cache_lock:
                     _online_geoip_cache = {}
                 return
-            entries = cache_data.get('entries', {})
+            entries = cache_data.get("entries", {})
             if not isinstance(entries, dict):
                 raise ValueError("GeoIP cache entries must be an object")
         else:
@@ -99,8 +103,8 @@ def load_geoip_cache_from_disk():
             if not isinstance(entry, dict):
                 expired_count += 1
                 continue
-            if 'timestamp' in entry:
-                age = current_time - entry['timestamp']
+            if "timestamp" in entry:
+                age = current_time - entry["timestamp"]
                 if age < _geoip_cache_ttl(entry):
                     valid_cache[key] = entry
                 else:
@@ -111,11 +115,14 @@ def load_geoip_cache_from_disk():
 
         with _online_geoip_cache_lock:
             _online_geoip_cache = valid_cache
-        logger.info(f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)")
+        logger.info(
+            f"Loaded {len(valid_cache)} GeoIP cache entries from disk ({expired_count} expired entries removed)"
+        )
     except Exception as e:
         logger.warning(f"Failed to load GeoIP cache from disk: {e}")
         with _online_geoip_cache_lock:
             _online_geoip_cache = {}
+
 
 async def save_geoip_cache_to_disk():
     """Persist GeoIP cache in SQLite with legacy-file compatibility for tests."""
@@ -128,7 +135,7 @@ async def save_geoip_cache_to_disk():
             payload = {"version": GEOIP_CACHE_VERSION, "entries": cache_snapshot}
             if GEOIP_CACHE_FILE != _DEFAULT_GEOIP_CACHE_FILE:
                 os.makedirs(os.path.dirname(GEOIP_CACHE_FILE), exist_ok=True)
-                with open(tmp_file, 'w', encoding='utf-8') as f:
+                with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(payload, f, ensure_ascii=False, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
@@ -138,7 +145,7 @@ async def save_geoip_cache_to_disk():
                     logger.warning("Could not restrict GeoIP cache file permissions")
                 os.replace(tmp_file, GEOIP_CACHE_FILE)
             else:
-                write_cache_document('geoip', payload)
+                write_cache_document("geoip", payload)
             logger.debug(f"Saved {len(cache_snapshot)} GeoIP cache entries to disk")
         except Exception as exc:
             logger.error("Failed to save GeoIP cache to disk: %s", type(exc).__name__)
@@ -148,6 +155,7 @@ async def save_geoip_cache_to_disk():
                     os.remove(tmp_file)
                 except OSError:
                     logger.debug("Failed to remove GeoIP cache temp file")
+
 
 # Load cache on module import
 load_geoip_cache_from_disk()
@@ -209,11 +217,12 @@ def apply_geoip_runtime_config(config: Dict) -> Dict:
     apply_translation_runtime_config(config)
     return deepcopy(_online_geoip_config)
 
+
 def get_all_geoip_apis() -> list:
     """Get all available GeoIP APIs (builtin + custom)"""
     apis = []
     api_settings = _online_geoip_config.get("api_settings", {})
-    
+
     # Add builtin APIs
     for api in BUILTIN_GEOIP_APIS:
         api_copy = api.copy()
@@ -221,7 +230,7 @@ def get_all_geoip_apis() -> list:
         if api["id"] in api_settings:
             api_copy.update(api_settings[api["id"]])
         apis.append(api_copy)
-    
+
     # Add custom APIs
     for api in _online_geoip_config.get("custom_apis", []):
         api_copy = api.copy()
@@ -231,14 +240,15 @@ def get_all_geoip_apis() -> list:
             api_copy["has_token"] = True
             api_copy["token"] = ""  # Don't expose actual token
         apis.append(api_copy)
-    
+
     return apis
+
 
 def _get_json_path(data: dict, path: str):
     """Get value from nested dict using dot notation path"""
     if not path:
         return None
-    
+
     keys = path.split(".")
     value = data
     for key in keys:
@@ -248,8 +258,9 @@ def _get_json_path(data: dict, path: str):
             return None
     return value
 
+
 CUSTOM_GEOIP_MAX_RESPONSE_BYTES = env_int(
-    'CUSTOM_GEOIP_MAX_RESPONSE_BYTES',
+    "CUSTOM_GEOIP_MAX_RESPONSE_BYTES",
     1024 * 1024,
     minimum=1024,
     maximum=10 * 1024 * 1024,
@@ -261,13 +272,13 @@ async def _resolve_public_custom_api_url(url: str) -> tuple[str, list[str]] | No
     """Resolve and pin a custom API hostname, rejecting local networks."""
     try:
         parsed = urlsplit(url)
-        if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
             return None
         if parsed.username is not None or parsed.password is not None:
             return None
-        port = parsed.port or (443 if parsed.scheme.lower() == 'https' else 80)
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
         host = parsed.hostname
-        if host.lower() == 'localhost':
+        if host.lower() == "localhost":
             return None
         try:
             addresses = {ipaddress.ip_address(host)}
@@ -278,10 +289,7 @@ async def _resolve_public_custom_api_url(url: str) -> tuple[str, list[str]] | No
                 port,
                 type=socket.SOCK_STREAM,
             )
-            addresses = {
-                ipaddress.ip_address(item[4][0].split('%', 1)[0])
-                for item in address_info
-            }
+            addresses = {ipaddress.ip_address(item[4][0].split("%", 1)[0]) for item in address_info}
         if not addresses or not all(address.is_global for address in addresses):
             return None
         return host.lower(), sorted(str(address) for address in addresses)
@@ -331,7 +339,7 @@ class _PinnedHTTPTransport(httpx.AsyncHTTPTransport):
 
 
 async def _read_limited_json_response(response: httpx.Response) -> dict | None:
-    content_length = response.headers.get('content-length')
+    content_length = response.headers.get("content-length")
     if content_length:
         try:
             if int(content_length) > CUSTOM_GEOIP_MAX_RESPONSE_BYTES:
@@ -344,7 +352,7 @@ async def _read_limited_json_response(response: httpx.Response) -> dict | None:
         if len(body) > CUSTOM_GEOIP_MAX_RESPONSE_BYTES:
             return None
     try:
-        decoded = json.loads(body.decode(response.encoding or 'utf-8'))
+        decoded = json.loads(body.decode(response.encoding or "utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     return decoded if isinstance(decoded, dict) else None
@@ -374,11 +382,11 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
                 return None
             resolved = (parsed_url.hostname.lower(), [parsed_url.hostname])
         hostname, addresses = resolved
-        
+
         method = api_config.get("method", "GET").upper()
         headers = api_config.get("headers", {})
-        
-        if method not in {'GET', 'POST'}:
+
+        if method not in {"GET", "POST"}:
             return None
         transport = _PinnedHTTPTransport({hostname: addresses[0]}, timeout)
         async with httpx.AsyncClient(
@@ -393,7 +401,7 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
                 data = await _read_limited_json_response(resp)
                 if data is None:
                     return None
-            
+
             # Check success condition if specified
             success_check = api_config.get("success_check", "")
             if success_check:
@@ -406,13 +414,13 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
                 else:
                     if not _get_json_path(data, success_check):
                         return None
-            
+
             # Get field paths, auto-detect if not specified
             country_code_path = api_config.get("country_code_path", "")
             country_name_path = api_config.get("country_name_path", "")
             region_path = api_config.get("region_path", "")
             city_path = api_config.get("city_path", "")
-            
+
             # Auto-detect paths if not specified
             detected = _auto_detect_json_paths(data)
             if detected:
@@ -424,15 +432,15 @@ async def _lookup_custom_api(ip: str, api_config: dict, timeout: int = 5) -> Opt
                     region_path = detected.get("region_path", "")
                 if not city_path:
                     city_path = detected.get("city_path", "")
-            
+
             country_code = _get_json_path(data, country_code_path) or "" if country_code_path else ""
             country_name = _get_json_path(data, country_name_path) or "" if country_name_path else ""
             region = _get_json_path(data, region_path) or "" if region_path else ""
             city = _get_json_path(data, city_path) or "" if city_path else ""
-            
+
             if not country_code and not country_name:
                 return None
-            
+
             return _build_provider_result(
                 data,
                 country_code,
@@ -451,30 +459,32 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
     """Auto-detect common JSON field paths for GeoIP data"""
     if not isinstance(data, dict):
         return None
-    
+
     result = {}
-    
+
     # Common field names for country code (2-letter ISO code)
     country_code_fields = [
-        "countryCode", "country_code", "country_code2", "countrycode", "cc", 
-        "country_iso", "iso_code", "iso", "code", "country_code3"
-    ]
-    
-    # Common field names for country name
-    country_name_fields = [
-        "country", "country_name", "countryName", "nation"
-    ]
-    
-    # Common field names for city
-    city_fields = [
-        "city", "cityName", "city_name"
+        "countryCode",
+        "country_code",
+        "country_code2",
+        "countrycode",
+        "cc",
+        "country_iso",
+        "iso_code",
+        "iso",
+        "code",
+        "country_code3",
     ]
 
+    # Common field names for country name
+    country_name_fields = ["country", "country_name", "countryName", "nation"]
+
+    # Common field names for city
+    city_fields = ["city", "cityName", "city_name"]
+
     # Common field names for state/province/region
-    region_fields = [
-        "region", "regionName", "region_name", "state", "state_prov", "stateProv"
-    ]
-    
+    region_fields = ["region", "regionName", "region_name", "state", "state_prov", "stateProv"]
+
     def find_field(fields, data, prefix="", check_2letter=False):
         """Recursively search for field in data"""
         for field in fields:
@@ -487,26 +497,26 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
                 else:
                     if isinstance(value, str) and value:
                         return prefix + field if prefix else field
-        
+
         # Check nested objects (skip complex nested like currency, time_zone)
         for key, value in data.items():
-            if isinstance(value, dict) and key not in ['currency', 'time_zone', 'dst_start', 'dst_end']:
+            if isinstance(value, dict) and key not in ["currency", "time_zone", "dst_start", "dst_end"]:
                 new_prefix = f"{prefix}{key}." if prefix else f"{key}."
                 found = find_field(fields, value, new_prefix, check_2letter)
                 if found:
                     return found
         return None
-    
+
     # Find country code (check for 2-3 letter codes)
     code_path = find_field(country_code_fields, data, check_2letter=True)
     if code_path:
         result["country_code_path"] = code_path
-    
+
     # Find country name
     name_path = find_field(country_name_fields, data)
     if name_path:
         result["country_name_path"] = name_path
-    
+
     # Find city
     city_path = find_field(city_fields, data)
     if city_path:
@@ -516,7 +526,7 @@ def _auto_detect_json_paths(data: dict) -> Optional[Dict]:
     region_path = find_field(region_fields, data)
     if region_path:
         result["region_path"] = region_path
-    
+
     return result if result else None
 
 
@@ -564,12 +574,7 @@ def _coerce_optional_number(value):
 def _normalize_asn_value(value) -> Optional[str]:
     """Extract a stable AS number from provider-specific values."""
     if isinstance(value, dict):
-        value = (
-            value.get("asn")
-            or value.get("as_number")
-            or value.get("number")
-            or value.get("name")
-        )
+        value = value.get("asn") or value.get("as_number") or value.get("number") or value.get("name")
     if value is None:
         return None
     text = str(value).strip()
@@ -594,16 +599,39 @@ def _extract_provider_metadata(data: dict) -> Dict:
     if not isinstance(data, dict):
         return {}
 
-    raw_asn = _first_json_value(data, (
-        "asn.as_number", "asn.number", "asn", "as", "asn_number", "network.asn",
-    ))
-    raw_org = _first_json_value(data, (
-        "asn.organization", "asn.org", "asname", "org", "organization",
-        "company.name", "company.organization", "network.organization",
-    ))
-    raw_isp = _first_json_value(data, (
-        "isp", "company.name", "organization", "org",
-    ))
+    raw_asn = _first_json_value(
+        data,
+        (
+            "asn.as_number",
+            "asn.number",
+            "asn",
+            "as",
+            "asn_number",
+            "network.asn",
+        ),
+    )
+    raw_org = _first_json_value(
+        data,
+        (
+            "asn.organization",
+            "asn.org",
+            "asname",
+            "org",
+            "organization",
+            "company.name",
+            "company.organization",
+            "network.organization",
+        ),
+    )
+    raw_isp = _first_json_value(
+        data,
+        (
+            "isp",
+            "company.name",
+            "organization",
+            "org",
+        ),
+    )
 
     asn = _normalize_asn_value(raw_asn)
     if not asn and raw_org is not None:
@@ -612,25 +640,78 @@ def _extract_provider_metadata(data: dict) -> Dict:
         "asn": asn,
         "asn_org": _strip_asn_prefix(str(raw_org)) if raw_org is not None else None,
         "isp": str(raw_isp).strip() if raw_isp not in (None, "") else None,
-        "is_hosting": _coerce_optional_bool(_first_json_value(data, (
-            "hosting", "is_hosting", "isHosting", "is_datacenter", "isDataCenter",
-            "security.is_cloud_provider", "security.isCloudProvider",
-        ))),
-        "is_mobile": _coerce_optional_bool(_first_json_value(data, (
-            "mobile", "is_mobile", "isMobile", "network.is_mobile",
-        ))),
-        "is_proxy": _coerce_optional_bool(_first_json_value(data, (
-            "proxy", "is_proxy", "isProxy", "security.is_proxy", "security.isProxy",
-        ))),
-        "is_vpn": _coerce_optional_bool(_first_json_value(data, (
-            "vpn", "is_vpn", "isVpn", "security.is_vpn", "security.isVpn",
-        ))),
-        "is_tor": _coerce_optional_bool(_first_json_value(data, (
-            "tor", "is_tor", "isTor", "security.is_tor", "security.isTor",
-        ))),
-        "fraud_score": _coerce_optional_number(_first_json_value(data, (
-            "fraudScore", "fraud_score", "security.fraud_score", "security.threat_score",
-        ))),
+        "is_hosting": _coerce_optional_bool(
+            _first_json_value(
+                data,
+                (
+                    "hosting",
+                    "is_hosting",
+                    "isHosting",
+                    "is_datacenter",
+                    "isDataCenter",
+                    "security.is_cloud_provider",
+                    "security.isCloudProvider",
+                ),
+            )
+        ),
+        "is_mobile": _coerce_optional_bool(
+            _first_json_value(
+                data,
+                (
+                    "mobile",
+                    "is_mobile",
+                    "isMobile",
+                    "network.is_mobile",
+                ),
+            )
+        ),
+        "is_proxy": _coerce_optional_bool(
+            _first_json_value(
+                data,
+                (
+                    "proxy",
+                    "is_proxy",
+                    "isProxy",
+                    "security.is_proxy",
+                    "security.isProxy",
+                ),
+            )
+        ),
+        "is_vpn": _coerce_optional_bool(
+            _first_json_value(
+                data,
+                (
+                    "vpn",
+                    "is_vpn",
+                    "isVpn",
+                    "security.is_vpn",
+                    "security.isVpn",
+                ),
+            )
+        ),
+        "is_tor": _coerce_optional_bool(
+            _first_json_value(
+                data,
+                (
+                    "tor",
+                    "is_tor",
+                    "isTor",
+                    "security.is_tor",
+                    "security.isTor",
+                ),
+            )
+        ),
+        "fraud_score": _coerce_optional_number(
+            _first_json_value(
+                data,
+                (
+                    "fraudScore",
+                    "fraud_score",
+                    "security.fraud_score",
+                    "security.threat_score",
+                ),
+            )
+        ),
     }
 
     # Remove empty values so a failed/partial provider cannot overwrite a
@@ -660,15 +741,9 @@ def normalize_ippure_profile(data: dict, exit_ip: Optional[str] = None) -> Optio
     if not isinstance(data, dict):
         return None
 
-    is_broadcast = _coerce_optional_bool(
-        data.get("isBroadcast", data.get("is_broadcast"))
-    )
-    is_residential = _coerce_optional_bool(
-        data.get("isResidential", data.get("is_residential"))
-    )
-    fraud_score = _coerce_optional_number(
-        data.get("fraudScore", data.get("fraud_score"))
-    )
+    is_broadcast = _coerce_optional_bool(data.get("isBroadcast", data.get("is_broadcast")))
+    is_residential = _coerce_optional_bool(data.get("isResidential", data.get("is_residential")))
+    fraud_score = _coerce_optional_number(data.get("fraudScore", data.get("fraud_score")))
     response_ip = str(data.get("ip") or exit_ip or "").strip()
 
     if not response_ip and is_broadcast is None and is_residential is None and fraud_score is None:
@@ -697,7 +772,7 @@ async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
                 "http://ip-api.com/json/"
                 f"{ip}?lang=zh-CN&fields=status,message,query,country,countryCode,"
                 "regionName,city,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting",
-                timeout=timeout
+                timeout=timeout,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -713,14 +788,12 @@ async def _lookup_ip_api_com(ip: str, timeout: int = 5) -> Optional[Dict]:
         logger.debug("ip-api.com lookup error for %s: %s", ip, type(e).__name__)
     return None
 
+
 async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
     """Lookup location and ASN metadata using ipwhois.app."""
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://ipwhois.app/json/{ip}?lang=zh-CN",
-                timeout=timeout
-            )
+            resp = await client.get(f"https://ipwhois.app/json/{ip}?lang=zh-CN", timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("success"):
@@ -736,6 +809,7 @@ async def _lookup_ipwhois(ip: str, timeout: int = 5) -> Optional[Dict]:
         logger.debug("ipwhois.app lookup error for %s: %s", ip, type(e).__name__)
     return None
 
+
 async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None) -> Optional[Dict]:
     """Lookup location and network metadata using ipinfo.io."""
     try:
@@ -744,14 +818,14 @@ async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None)
         url = f"https://ipinfo.io/{ip}/json"
         if token:
             url += f"?token={token}"
-        
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 country_code = data.get("country", "")
                 city = data.get("city", "")
-                
+
                 # ipinfo returns the ISO code as the country field.  The
                 # translation layer resolves it before display.
                 country_name = country_code
@@ -770,6 +844,7 @@ async def _lookup_ipinfo(ip: str, timeout: int = 5, token: Optional[str] = None)
     except Exception as e:
         logger.debug("ipinfo.io lookup error for %s: %s", ip, type(e).__name__)
     return None
+
 
 def normalize_country_name(country_name: str, iso_code: str = "") -> str:
     """Normalize provider output to the canonical Chinese country label."""
@@ -814,12 +889,13 @@ def _normalize_geo_result_fields(iso_code: str, country_name: str, city_name: st
 def _normalize_cached_geo_entry(entry: Dict) -> Dict:
     """Normalize cached translated values without making network requests."""
     normalized = dict(entry)
-    normalized.update(_normalize_geo_result_fields(
-        entry.get("iso_code", ""),
-        entry.get("country_name") or entry.get("country", ""),
-        entry.get("city", "")
-    ))
+    normalized.update(
+        _normalize_geo_result_fields(
+            entry.get("iso_code", ""), entry.get("country_name") or entry.get("country", ""), entry.get("city", "")
+        )
+    )
     return normalized
+
 
 async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Optional[Dict]:
     """
@@ -848,9 +924,9 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
             if not isinstance(entry, dict):
                 return False, None
 
-            ts = entry.get('timestamp')
+            ts = entry.get("timestamp")
             if ts and (time.time() - ts) < _geoip_cache_ttl(entry):
-                if entry.get('_negative'):
+                if entry.get("_negative"):
                     return True, None
                 normalized_entry = _normalize_cached_geo_entry(entry)
                 if normalized_entry != entry:
@@ -941,7 +1017,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
             "region_name": convert_to_simplified(translated_fields["region"]) or None,
             "source": "online",
             "api_id": selected_api_id or target_api,
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
 
     async with _online_geoip_inflight_lock:
@@ -984,6 +1060,7 @@ async def lookup_ip_online(ip: str, timeout: int = 5, api_id: str = None) -> Opt
 
     return result
 
+
 def get_online_geoip_cache_snapshot() -> Dict[str, Dict]:
     """Return a shallow snapshot of the online GeoIP cache for safe iteration."""
     with _online_geoip_cache_lock:
@@ -996,7 +1073,7 @@ def get_online_geoip_cache_stats() -> dict:
     positive = 0
     negative = 0
     for entry in snapshot.values():
-        if isinstance(entry, dict) and entry.get('_negative'):
+        if isinstance(entry, dict) and entry.get("_negative"):
             negative += 1
         else:
             positive += 1
@@ -1022,15 +1099,17 @@ async def clear_online_geoip_cache():
             if os.path.exists(GEOIP_CACHE_FILE):
                 os.remove(GEOIP_CACHE_FILE)
         else:
-            delete_cache_document('geoip')
+            delete_cache_document("geoip")
         logger.info("GeoIP cache cleared")
     except Exception as e:
         logger.error(f"Failed to clear GeoIP cache file: {e}")
+
 
 def translate_city_name(city_name: str) -> str:
     """Normalize a saved city value without making a network request."""
     source_text = str(city_name or "").strip()
     return convert_to_simplified(get_cached_translation(source_text, "city") or source_text)
+
 
 def format_location_display(country_code: str, country_name: str, city_name: str) -> str:
     """
@@ -1038,46 +1117,46 @@ def format_location_display(country_code: str, country_name: str, city_name: str
     Returns: "国家/地区 城市" or just "国家/地区" if city is same as country or empty
     """
     display_country = normalize_country_name(country_name, country_code)
-    
+
     if not city_name:
         return display_country
-    
+
     # Translate city name
     translated_city = translate_city_name(city_name)
-    
+
     # Avoid duplicates: if city name is same as country/region name, just show country
     # e.g., "Hong Kong" city in "Hong Kong" -> just "China Hong Kong"
     # e.g., "Singapore" city in "Singapore" -> just "Singapore"
     if translated_city == country_name or translated_city in display_country:
         return display_country
-    
+
     return f"{display_country} {translated_city}"
 
 
 class GeoIPService:
     """Static utility class for GeoIP-related functions (flag conversion, etc.)"""
-    
+
     @staticmethod
     def iso_to_flag(iso_code: str) -> str:
         """
         Convert ISO 3166-1 alpha-2 country code to flag emoji
         Example: "US" -> "🇺🇸", "CN" -> "🇨🇳"
-        
+
         Uses Unicode Regional Indicator Symbols:
         - 'A' (U+0041) maps to 🇦 (U+1F1E6)
         - 'Z' (U+005A) maps to 🇿 (U+1F1FF)
         """
         if not iso_code or len(iso_code) != 2:
             return "🌐"
-        
+
         try:
             # Convert each letter to regional indicator symbol
             # Regional indicators start at U+1F1E6 for 'A'
             flag = ""
             for char in iso_code.upper():
-                if 'A' <= char <= 'Z':
+                if "A" <= char <= "Z":
                     # Calculate offset from 'A' and add to base regional indicator
-                    flag += chr(0x1F1E6 + ord(char) - ord('A'))
+                    flag += chr(0x1F1E6 + ord(char) - ord("A"))
                 else:
                     return "🌐"
             return flag
@@ -1087,7 +1166,7 @@ class GeoIPService:
         except Exception as e:
             logger.error(f"Error converting ISO to flag: {e}")
             return "🌐"
-    
+
     @staticmethod
     def flag_to_iso(flag: str) -> Optional[str]:
         """
@@ -1096,7 +1175,7 @@ class GeoIPService:
         """
         if not flag or len(flag) < 1:
             return None
-        
+
         try:
             # Each flag emoji is 2 regional indicator symbols
             # Regional indicator 🇦 (U+1F1E6) to 🇿 (U+1F1FF)
@@ -1104,8 +1183,8 @@ class GeoIPService:
             for char in flag:
                 cp = ord(char)
                 if 0x1F1E6 <= cp <= 0x1F1FF:
-                    iso += chr(ord('A') + cp - 0x1F1E6)
-            
+                    iso += chr(ord("A") + cp - 0x1F1E6)
+
             if len(iso) == 2:
                 return iso
             return None

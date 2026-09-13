@@ -15,9 +15,7 @@ from services.proxy_filter import ProxyFilter
 
 class Socks5SupportTests(unittest.TestCase):
     def test_standard_socks5_credentials_are_preserved(self):
-        node = parse_node_link(
-            "socks5://user%40name:p%40ss@example.com:11111#US-NYC"
-        )
+        node = parse_node_link("socks5://user%40name:p%40ss@example.com:11111#US-NYC")
 
         self.assertEqual(node["type"], "socks5")
         self.assertEqual(node["server"], "example.com")
@@ -27,17 +25,13 @@ class Socks5SupportTests(unittest.TestCase):
 
     def test_v2rayn_base64_user_info_is_decoded(self):
         encoded_user_info = base64.urlsafe_b64encode(b"user:pass").decode().rstrip("=")
-        node = parse_node_link(
-            f"socks://{encoded_user_info}@example.com:11111#US-NYC"
-        )
+        node = parse_node_link(f"socks://{encoded_user_info}@example.com:11111#US-NYC")
 
         self.assertEqual(node["username"], "user")
         self.assertEqual(node["password"], "pass")
 
     def test_legacy_v2rayn_base64_authority_is_decoded(self):
-        encoded_authority = base64.urlsafe_b64encode(
-            b"user:pass@example.com:11111"
-        ).decode().rstrip("=")
+        encoded_authority = base64.urlsafe_b64encode(b"user:pass@example.com:11111").decode().rstrip("=")
         node = parse_node_link(f"socks://{encoded_authority}#US-NYC")
 
         self.assertEqual(node["server"], "example.com")
@@ -46,17 +40,13 @@ class Socks5SupportTests(unittest.TestCase):
         self.assertEqual(node["password"], "pass")
 
     def test_percent_encoded_literal_in_username_is_decoded_once(self):
-        node = parse_node_link(
-            "socks5://user%252Fname:p%3A%25%2Fword@example.com:11111#US-NYC"
-        )
+        node = parse_node_link("socks5://user%252Fname:p%3A%25%2Fword@example.com:11111#US-NYC")
 
         self.assertEqual(node["username"], "user%2Fname")
         self.assertEqual(node["password"], "p:%/word")
 
     def test_socks5_query_credentials_are_supported(self):
-        node = parse_node_link(
-            "socks5://example.com:11111?username=user&password=pass#US-NYC"
-        )
+        node = parse_node_link("socks5://example.com:11111?username=user&password=pass#US-NYC")
 
         self.assertEqual(node["username"], "user")
         self.assertEqual(node["password"], "pass")
@@ -68,14 +58,16 @@ class Socks5SupportTests(unittest.TestCase):
         self.assertEqual(node["username"], "user")
         self.assertEqual(node["password"], "pass")
 
-        stored_node = ProxyFilter.sanitize_proxy({
-            "name": "US-NYC",
-            "type": "socks5h",
-            "server": "example.com",
-            "port": 11111,
-            "username": "user",
-            "password": "pass",
-        })
+        stored_node = ProxyFilter.sanitize_proxy(
+            {
+                "name": "US-NYC",
+                "type": "socks5h",
+                "server": "example.com",
+                "port": 11111,
+                "username": "user",
+                "password": "pass",
+            }
+        )
         self.assertEqual(stored_node["type"], "socks5")
 
     def test_socks5_export_round_trips_credentials(self):
@@ -110,9 +102,7 @@ class Socks5SupportTests(unittest.TestCase):
             with patch.object(AppConfig, "YAML_SOURCE_DIR", tempdir):
                 write_custom_nodes_yaml([node])
 
-            exported = yaml.safe_load(
-                Path(tempdir, "custom_nodes.yaml").read_text(encoding="utf-8")
-            )
+            exported = yaml.safe_load(Path(tempdir, "custom_nodes.yaml").read_text(encoding="utf-8"))
 
         self.assertEqual(exported["proxies"][0]["username"], "user")
         self.assertEqual(exported["proxies"][0]["password"], "pass")

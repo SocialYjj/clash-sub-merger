@@ -83,8 +83,15 @@ _XHTTP_SCALAR_FIELDS = set(_CANONICAL_EXTRA_FIELDS) | set(_CANONICAL_BOOLEAN_FIE
 _DOWNLOAD_XHTTP_FIELDS = _XHTTP_SCALAR_FIELDS | {"path", "host", "headers", "reuse-settings"}
 _TOP_LEVEL_KEYS = {"path", "host", "mode", "headers", "reuse-settings", "download-settings"} | _XHTTP_SCALAR_FIELDS
 _DOWNLOAD_KEYS = _DOWNLOAD_XHTTP_FIELDS | {
-    "server", "port", "tls", "alpn", "reality-opts", "skip-cert-verify",
-    "fingerprint", "servername", "client-fingerprint",
+    "server",
+    "port",
+    "tls",
+    "alpn",
+    "reality-opts",
+    "skip-cert-verify",
+    "fingerprint",
+    "servername",
+    "client-fingerprint",
 }
 
 
@@ -177,9 +184,7 @@ def _parse_reuse_settings(value: Any, field: str) -> dict:
             raise XHTTPCompatibilityError(f"{field}.hKeepAlivePeriod must be a non-negative integer")
         reuse["h-keep-alive-period"] = keep_alive
     if _has_value(reuse.get("max-concurrency")) and _has_value(reuse.get("max-connections")):
-        raise XHTTPCompatibilityError(
-            f"{field}.maxConcurrency and {field}.maxConnections cannot both be specified"
-        )
+        raise XHTTPCompatibilityError(f"{field}.maxConcurrency and {field}.maxConnections cannot both be specified")
     return reuse
 
 
@@ -200,9 +205,7 @@ def _export_reuse_settings(value: Any, field: str) -> dict:
             raise XHTTPCompatibilityError(f"{field}.h-keep-alive-period must be a non-negative integer")
         xmux["hKeepAlivePeriod"] = keep_alive
     if _has_value(reuse.get("max-concurrency")) and _has_value(reuse.get("max-connections")):
-        raise XHTTPCompatibilityError(
-            f"{field}.max-concurrency and {field}.max-connections cannot both be specified"
-        )
+        raise XHTTPCompatibilityError(f"{field}.max-concurrency and {field}.max-connections cannot both be specified")
     return xmux
 
 
@@ -223,15 +226,11 @@ def _validate_scalar_combinations(values: dict, field: str, mode: str | None) ->
         if not method.strip():
             raise XHTTPCompatibilityError(f"{field}.uplink-http-method cannot be empty")
         if method.upper() == "GET" and mode != "packet-up":
-            raise XHTTPCompatibilityError(
-                f"{field}.uplink-http-method GET requires packet-up mode"
-            )
+            raise XHTTPCompatibilityError(f"{field}.uplink-http-method GET requires packet-up mode")
 
     data_placement = values.get("uplink-data-placement")
     if data_placement in {"cookie", "header"} and mode != "packet-up":
-        raise XHTTPCompatibilityError(
-            f"{field}.uplink-data-placement {data_placement} requires packet-up mode"
-        )
+        raise XHTTPCompatibilityError(f"{field}.uplink-data-placement {data_placement} requires packet-up mode")
 
 
 def _parse_xhttp_fields(source: dict, target: dict, field: str) -> None:
@@ -336,8 +335,7 @@ def _parse_download_settings(value: Any) -> dict:
         unknown_tls = set(tls_settings) - allowed_tls
         if unknown_tls:
             raise XHTTPCompatibilityError(
-                "extra.downloadSettings.tlsSettings contains unsupported fields: "
-                + ", ".join(sorted(unknown_tls))
+                "extra.downloadSettings.tlsSettings contains unsupported fields: " + ", ".join(sorted(unknown_tls))
             )
         if "serverName" in tls_settings:
             result["servername"] = _require_string(
@@ -393,27 +391,18 @@ def _parse_download_settings(value: Any) -> dict:
         unknown_xhttp = set(xhttp_settings) - allowed_xhttp
         if unknown_xhttp:
             raise XHTTPCompatibilityError(
-                "extra.downloadSettings.xhttpSettings contains unsupported fields: "
-                + ", ".join(sorted(unknown_xhttp))
+                "extra.downloadSettings.xhttpSettings contains unsupported fields: " + ", ".join(sorted(unknown_xhttp))
             )
         if "path" in xhttp_settings:
-            result["path"] = _require_string(
-                xhttp_settings["path"], "extra.downloadSettings.xhttpSettings.path"
-            )
+            result["path"] = _require_string(xhttp_settings["path"], "extra.downloadSettings.xhttpSettings.path")
         if "host" in xhttp_settings:
-            result["host"] = _require_string(
-                xhttp_settings["host"], "extra.downloadSettings.xhttpSettings.host"
-            )
+            result["host"] = _require_string(xhttp_settings["host"], "extra.downloadSettings.xhttpSettings.host")
         direct_fields = {key: value for key, value in xhttp_settings.items() if key not in {"path", "host", "extra"}}
         _parse_xhttp_fields(direct_fields, result, "extra.downloadSettings.xhttpSettings")
         if "extra" in xhttp_settings:
-            nested_extra = _require_mapping(
-                xhttp_settings["extra"], "extra.downloadSettings.xhttpSettings.extra"
-            )
+            nested_extra = _require_mapping(xhttp_settings["extra"], "extra.downloadSettings.xhttpSettings.extra")
             if set(nested_extra) - {"xmux"}:
-                raise XHTTPCompatibilityError(
-                    "extra.downloadSettings.xhttpSettings.extra contains unsupported fields"
-                )
+                raise XHTTPCompatibilityError("extra.downloadSettings.xhttpSettings.extra contains unsupported fields")
             if "xmux" in nested_extra:
                 if "reuse-settings" in result:
                     raise XHTTPCompatibilityError(
@@ -433,9 +422,7 @@ def xhttp_opts_to_extra(xhttp_opts: dict | None) -> dict:
     xhttp_opts = _require_mapping(xhttp_opts, "xhttp-opts")
     unknown = set(xhttp_opts) - _TOP_LEVEL_KEYS
     if unknown:
-        raise XHTTPCompatibilityError(
-            f"xhttp-opts contains unsupported fields: {', '.join(sorted(unknown))}"
-        )
+        raise XHTTPCompatibilityError(f"xhttp-opts contains unsupported fields: {', '.join(sorted(unknown))}")
 
     for key in ("path", "host"):
         if key in xhttp_opts:
@@ -445,14 +432,10 @@ def xhttp_opts_to_extra(xhttp_opts: dict | None) -> dict:
         mode = _require_string_choice(xhttp_opts["mode"], "xhttp-opts.mode", _XHTTP_MODES)
     _validate_scalar_combinations(xhttp_opts, "xhttp-opts", mode)
     if mode == "stream-one" and "download-settings" in xhttp_opts:
-        raise XHTTPCompatibilityError(
-            "xhttp-opts.download-settings cannot be used with stream-one mode"
-        )
+        raise XHTTPCompatibilityError("xhttp-opts.download-settings cannot be used with stream-one mode")
 
     extra_source = {
-        key: value
-        for key, value in xhttp_opts.items()
-        if key not in {"path", "host", "mode", "download-settings"}
+        key: value for key, value in xhttp_opts.items() if key not in {"path", "host", "mode", "download-settings"}
     }
     extra = _export_xhttp_fields(extra_source, "xhttp-opts")
     if "download-settings" in xhttp_opts:
@@ -465,8 +448,7 @@ def _export_download_settings(value: Any) -> dict:
     unknown = set(settings) - _DOWNLOAD_KEYS
     if unknown:
         raise XHTTPCompatibilityError(
-            "xhttp-opts.download-settings contains unsupported fields: "
-            + ", ".join(sorted(unknown))
+            "xhttp-opts.download-settings contains unsupported fields: " + ", ".join(sorted(unknown))
         )
 
     _validate_scalar_combinations(settings, "xhttp-opts.download-settings", None)
@@ -502,9 +484,7 @@ def _export_download_settings(value: Any) -> dict:
     elif settings.get("tls") is True:
         result["security"] = "tls"
 
-    tls_fields = {
-        "servername", "client-fingerprint", "alpn", "skip-cert-verify", "fingerprint"
-    }
+    tls_fields = {"servername", "client-fingerprint", "alpn", "skip-cert-verify", "fingerprint"}
     if any(key in settings for key in tls_fields):
         tls_settings = {}
         if "servername" in settings:
@@ -539,9 +519,7 @@ def _export_download_settings(value: Any) -> dict:
     if "host" in settings:
         xhttp_settings["host"] = _require_string(settings["host"], "xhttp-opts.download-settings.host")
     transport_source = {
-        key: value
-        for key, value in settings.items()
-        if key in _DOWNLOAD_XHTTP_FIELDS and key not in {"path", "host"}
+        key: value for key, value in settings.items() if key in _DOWNLOAD_XHTTP_FIELDS and key not in {"path", "host"}
     }
     xhttp_settings.update(_export_xhttp_fields(transport_source, "xhttp-opts.download-settings"))
     if xhttp_settings:

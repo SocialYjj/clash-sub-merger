@@ -9,12 +9,11 @@ from core.config import AppConfig
 from helpers import load_subscription_yaml
 from logger_config import get_logger
 from services.name_transformer import NameTransformer
-from services.node_visibility import is_node_enabled
-from services.proxy_filter import ProxyFilter
 from services.node_identity import custom_node_id, is_node_allocated, subscription_node_ids
-from services.proxy_chain_references import list_proxy_chain_virtual_references
 from services.node_pool_references import list_node_pool_virtual_references
-
+from services.node_visibility import is_node_enabled
+from services.proxy_chain_references import list_proxy_chain_virtual_references
+from services.proxy_filter import ProxyFilter
 
 logger = get_logger(__name__)
 SPECIAL_PROXY_NAMES = ("DIRECT", "REJECT")
@@ -158,10 +157,7 @@ def build_group_config_view(
         allocations,
         reserved_group_names=reserved_group_names,
     )
-    chain_reference_names = {
-        stable_id: display_name
-        for display_name, stable_id in chain_reference_ids.items()
-    }
+    chain_reference_names = {stable_id: display_name for display_name, stable_id in chain_reference_ids.items()}
     selectable_nodes = [*SPECIAL_PROXY_NAMES, *available_nodes]
     saved_group_config = subject.get("group_config", {})
     groups = []
@@ -176,23 +172,22 @@ def build_group_config_view(
         editable = template_group.get("_editable", True)
         saved_nodes = saved_group_config.get(group_name)
         if isinstance(saved_nodes, list):
-            current_nodes = [
-                chain_reference_names.get(reference, reference)
-                for reference in saved_nodes
-            ]
+            current_nodes = [chain_reference_names.get(reference, reference) for reference in saved_nodes]
         elif editable:
             current_nodes = list(available_nodes)
         else:
             current_nodes = list(template_group.get("proxies", []))
-        groups.append({
-            "name": group_name,
-            "type": template_group.get("type", "select"),
-            "editable": editable,
-            "icon": template_group.get("_icon", ""),
-            "description": template_group.get("_description", ""),
-            "current_nodes": current_nodes,
-            "available_nodes": list(selectable_nodes) if editable else [],
-        })
+        groups.append(
+            {
+                "name": group_name,
+                "type": template_group.get("type", "select"),
+                "editable": editable,
+                "icon": template_group.get("_icon", ""),
+                "description": template_group.get("_description", ""),
+                "current_nodes": current_nodes,
+                "available_nodes": list(selectable_nodes) if editable else [],
+            }
+        )
 
     return {
         "template_id": template_id,

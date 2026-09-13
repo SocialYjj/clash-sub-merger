@@ -1,10 +1,12 @@
 """
 Health check and metrics API
 """
+
 import time
+
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from core.config import AppConfig
 from core.database import ConfigLoadError, load_config
@@ -29,7 +31,7 @@ async def health_check():
     """
     Health check endpoint for Docker/K8s.
     Does not require authentication.
-    
+
     Returns:
         - status: "healthy" or "unhealthy"
         - timestamp: Current Unix timestamp
@@ -44,21 +46,20 @@ async def health_check():
     if speedtest_required and _http_client:
         try:
             response = await _http_client.get(
-                f"{AppConfig.GO_SPEEDTEST_URL}/health",
-                timeout=AppConfig.HEALTH_CHECK_TIMEOUT
+                f"{AppConfig.GO_SPEEDTEST_URL}/health", timeout=AppConfig.HEALTH_CHECK_TIMEOUT
             )
             speedtest_healthy = response.status_code == 200
         except Exception:
             speedtest_healthy = False
-    
+
     # Parse the real configuration. A present but unreadable/corrupt file is
     # unhealthy and must not be mistaken for a ready instance.
     try:
         config = load_config()
-        config_healthy = bool(config.get('auth', {}).get('password_hash'))
+        config_healthy = bool(config.get("auth", {}).get("password_hash"))
     except ConfigLoadError:
         config_healthy = False
-    
+
     is_healthy = config_healthy and speedtest_healthy
 
     payload = {
@@ -69,7 +70,7 @@ async def health_check():
             "config": config_healthy,
             "speedtest": speedtest_healthy,
             "speedtest_enabled": speedtest_required,
-        }
+        },
     }
     return JSONResponse(
         status_code=200 if is_healthy else 503,

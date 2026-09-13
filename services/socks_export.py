@@ -78,16 +78,10 @@ def _select_dialer_proxy_groups(
     nested groups and valid direct members are retained recursively.
     """
     available_proxy_names = {
-        str(proxy.get("name"))
-        for proxy in exportable_proxies
-        if isinstance(proxy, dict) and proxy.get("name")
+        str(proxy.get("name")) for proxy in exportable_proxies if isinstance(proxy, dict) and proxy.get("name")
     }
 
-    source_groups = [
-        group
-        for group in (proxy_groups or [])
-        if isinstance(group, dict) and group.get("name")
-    ]
+    source_groups = [group for group in (proxy_groups or []) if isinstance(group, dict) and group.get("name")]
     groups_by_name: dict[str, dict] = {}
     for group in source_groups:
         group_name = str(group["name"])
@@ -99,17 +93,11 @@ def _select_dialer_proxy_groups(
         if not isinstance(proxy, dict):
             continue
         dialer_proxy = str(proxy.get("dialer-proxy") or "").strip()
-        if (
-            not dialer_proxy
-            or dialer_proxy in available_proxy_names
-            or dialer_proxy in _DIRECT_PROXY_REFERENCES
-        ):
+        if not dialer_proxy or dialer_proxy in available_proxy_names or dialer_proxy in _DIRECT_PROXY_REFERENCES:
             continue
         if dialer_proxy not in groups_by_name:
             proxy_name = str(proxy.get("name") or "unnamed")
-            raise SocksExportError(
-                f"Proxy [{proxy_name}] dialer-proxy [{dialer_proxy}] not found"
-            )
+            raise SocksExportError(f"Proxy [{proxy_name}] dialer-proxy [{dialer_proxy}] not found")
         required_group_names.add(dialer_proxy)
 
     selected_groups: dict[str, dict] = {}
@@ -129,10 +117,7 @@ def _select_dialer_proxy_groups(
             raw_members = []
         for raw_member in raw_members:
             member_name = str(raw_member)
-            if (
-                member_name in available_proxy_names
-                or member_name in _DIRECT_PROXY_REFERENCES
-            ):
+            if member_name in available_proxy_names or member_name in _DIRECT_PROXY_REFERENCES:
                 if member_name not in members:
                     members.append(member_name)
                 continue
@@ -143,19 +128,13 @@ def _select_dialer_proxy_groups(
                     pending_group_names.append(member_name)
 
         if not members:
-            raise SocksExportError(
-                f"Proxy group [{group_name}] has no available members"
-            )
+            raise SocksExportError(f"Proxy group [{group_name}] has no available members")
 
         copied_group = dict(source_group)
         copied_group["proxies"] = members
         selected_groups[group_name] = copied_group
 
-    return [
-        selected_groups[group_name]
-        for group_name in groups_by_name
-        if group_name in selected_groups
-    ]
+    return [selected_groups[group_name] for group_name in groups_by_name if group_name in selected_groups]
 
 
 def build_socks_config(
@@ -193,7 +172,7 @@ def build_socks_config(
             "port": port,
             "proxy": proxy.get("name", ""),
         }
-        for index, (proxy, port) in enumerate(zip(exportable_proxies, listener_ports))
+        for index, (proxy, port) in enumerate(zip(exportable_proxies, listener_ports, strict=False))
     ]
 
     config = {

@@ -9,11 +9,13 @@ from services.country_data import detect_country
 
 class RegionHistoryTests(unittest.TestCase):
     def test_region_normalization_replaces_legacy_hong_kong_alias(self):
-        normalized = region_history._normalize_region({
-            "country_code": "HK",
-            "country": "香港",
-            "flag": "🇭🇰",
-        })
+        normalized = region_history._normalize_region(
+            {
+                "country_code": "HK",
+                "country": "香港",
+                "flag": "🇭🇰",
+            }
+        )
 
         self.assertEqual(normalized["country"], "中国香港")
 
@@ -54,50 +56,50 @@ class CountryDataRegionMappingTests(unittest.TestCase):
 
     def _detect_code(self, name: str):
         result = detect_country(name)
-        return result['country_code'] if result else None
+        return result["country_code"] if result else None
 
     # ---- 用户报告的漏网地名 ----
     def test_falkenstein_maps_to_germany(self):
-        self.assertEqual(self._detect_code('德国 Falkenstein 01'), 'DE')
+        self.assertEqual(self._detect_code("德国 Falkenstein 01"), "DE")
 
     def test_falkenstein_english_only_maps_to_germany(self):
-        self.assertEqual(self._detect_code('Falkenstein 01'), 'DE')
+        self.assertEqual(self._detect_code("Falkenstein 01"), "DE")
 
     def test_mejiro_maps_to_japan(self):
-        self.assertEqual(self._detect_code('日本 Mejiro 01'), 'JP')
+        self.assertEqual(self._detect_code("日本 Mejiro 01"), "JP")
 
     def test_mejiro_english_only_maps_to_japan(self):
-        self.assertEqual(self._detect_code('Mejiro 01'), 'JP')
+        self.assertEqual(self._detect_code("Mejiro 01"), "JP")
 
     # ---- 补充的日本地名 ----
     def test_tokyo_maps_to_japan(self):
-        self.assertEqual(self._detect_code('Tokyo Premium 01'), 'JP')
+        self.assertEqual(self._detect_code("Tokyo Premium 01"), "JP")
 
     def test_osaka_maps_to_japan(self):
-        self.assertEqual(self._detect_code('Osaka 01'), 'JP')
+        self.assertEqual(self._detect_code("Osaka 01"), "JP")
 
     def test_yokohama_maps_to_japan(self):
-        self.assertEqual(self._detect_code('Yokohama IEPL 01'), 'JP')
+        self.assertEqual(self._detect_code("Yokohama IEPL 01"), "JP")
 
     # ---- 补充的德国地名 ----
     def test_berlin_maps_to_germany(self):
-        self.assertEqual(self._detect_code('Berlin 01'), 'DE')
+        self.assertEqual(self._detect_code("Berlin 01"), "DE")
 
     def test_munich_maps_to_germany(self):
-        self.assertEqual(self._detect_code('Munich 01'), 'DE')
+        self.assertEqual(self._detect_code("Munich 01"), "DE")
 
     # ---- 不误伤已有逻辑 ----
     def test_hongkong_still_works(self):
-        self.assertEqual(self._detect_code('香港 01'), 'HK')
+        self.assertEqual(self._detect_code("香港 01"), "HK")
 
     def test_us_still_works(self):
-        self.assertEqual(self._detect_code('Los Angeles 01'), 'US')
+        self.assertEqual(self._detect_code("Los Angeles 01"), "US")
 
     def test_short_code_jp_boundary(self):
         # JP 作为短拉丁码应整体匹配，不被随机子串误伤
-        self.assertEqual(self._detect_code('JP 01'), 'JP')
+        self.assertEqual(self._detect_code("JP 01"), "JP")
         # 但不应误匹配 "ajps" 中的 "jp"
-        self.assertIsNone(self._detect_code('ajps_xyz_node'))
+        self.assertIsNone(self._detect_code("ajps_xyz_node"))
 
 
 if __name__ == "__main__":

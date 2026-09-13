@@ -20,7 +20,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from core import storage
 from core.config import DATA_DIR
 
-
 ROOT_JSON_CACHES = {
     "geoip_cache.json": "geoip",
     "cloudflare_radar_cache.json": "radar",
@@ -61,7 +60,7 @@ def _legacy_config_matches_database(legacy_value: object, database_value: object
     if isinstance(legacy_value, list) and isinstance(database_value, list):
         return len(legacy_value) == len(database_value) and all(
             _legacy_config_matches_database(left, right)
-            for left, right in zip(legacy_value, database_value)
+            for left, right in zip(legacy_value, database_value, strict=False)
         )
     return legacy_value == database_value
 

@@ -7,7 +7,6 @@ from typing import Optional, Sequence
 from core.proxy_compat import normalize_trojan_proxy
 from services.name_transformer import NameTransformer
 
-
 _VOLATILE_NODE_FIELDS = {
     # A display-name edit must not invalidate allocations, proxy chains, or
     # in-flight test result writes. Technical connection fields still define
@@ -77,14 +76,14 @@ def subscription_node_ids(subscription_id: str, nodes: Sequence[dict]) -> list[s
         base_counts[base_id] = base_counts.get(base_id, 0) + 1
 
     duplicate_name_counts: dict[tuple[str, str], int] = {}
-    for base_id, node in zip(base_ids, materialized_nodes):
+    for base_id, node in zip(base_ids, materialized_nodes, strict=False):
         name_key = normalized_node_name(node.get("name", ""))
         key = (base_id, name_key)
         duplicate_name_counts[key] = duplicate_name_counts.get(key, 0) + 1
 
     duplicate_occurrences: dict[tuple[str, str], int] = {}
     identities: list[str] = []
-    for base_id, node in zip(base_ids, materialized_nodes):
+    for base_id, node in zip(base_ids, materialized_nodes, strict=False):
         if base_counts[base_id] == 1:
             identities.append(base_id)
             continue
@@ -189,9 +188,7 @@ def find_subscription_node_index(nodes: list, subscription_id: str, node_id: str
 
     # Accept legacy technical IDs for persisted allocations and references.
     legacy_matches = [
-        index
-        for index, node in enumerate(materialized_nodes)
-        if subscription_node_id(subscription_id, node) == node_id
+        index for index, node in enumerate(materialized_nodes) if subscription_node_id(subscription_id, node) == node_id
     ]
     if len(legacy_matches) > 1:
         raise ValueError("Node identity is ambiguous")

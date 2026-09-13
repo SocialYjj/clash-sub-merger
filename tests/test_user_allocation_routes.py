@@ -21,8 +21,12 @@ class UserAllocationRoutesTest(unittest.TestCase):
             "subscriptions": [],
             "custom_nodes": [
                 {
-                    "name": "US 01", "type": "ss", "server": "example.com",
-                    "port": 443, "cipher": "aes-128-gcm", "password": "secret",
+                    "name": "US 01",
+                    "type": "ss",
+                    "server": "example.com",
+                    "port": 443,
+                    "cipher": "aes-128-gcm",
+                    "password": "secret",
                 },
                 {"name": "US Disabled", "type": "ss", "server": "disabled.example.com", "enabled": False},
                 {"name": "剩余流量 10G", "type": "ss", "server": "info.example.com"},
@@ -31,12 +35,14 @@ class UserAllocationRoutesTest(unittest.TestCase):
         }
         app = FastAPI()
         app.dependency_overrides[verify_session] = lambda: True
-        app.include_router(create_user_allocation_router(
-            yaml_source_dir=tempdir.name,
-            load_config=lambda: copy.deepcopy(config),
-            get_all_final_node_names=lambda: set(),
-            logger=logging.getLogger("test.user_allocation"),
-        ))
+        app.include_router(
+            create_user_allocation_router(
+                yaml_source_dir=tempdir.name,
+                load_config=lambda: copy.deepcopy(config),
+                get_all_final_node_names=lambda: set(),
+                logger=logging.getLogger("test.user_allocation"),
+            )
+        )
         client = TestClient(app)
 
         response = client.get("/api/available-nodes")

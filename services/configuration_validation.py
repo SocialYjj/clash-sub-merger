@@ -3,23 +3,23 @@
 from __future__ import annotations
 
 import base64
-from copy import deepcopy
 import re
+from copy import deepcopy
 from urllib.parse import urlsplit
 
-from services.node_reference_migration import ensure_custom_node_ids
-from services.proxy_chain_references import (
-    CHAIN_NODE_SOURCE,
-    CHAIN_POOL_SOURCE,
-    ensure_proxy_chain_component_ids,
-    list_proxy_chain_virtual_references,
-)
 from services.node_pool_references import (
     NODE_POOL_SOURCE,
     VALID_NODE_POOL_LOAD_BALANCE_STRATEGIES,
     VALID_NODE_POOL_STRATEGIES,
     ensure_node_pool_ids,
     list_node_pool_virtual_references,
+)
+from services.node_reference_migration import ensure_custom_node_ids
+from services.proxy_chain_references import (
+    CHAIN_NODE_SOURCE,
+    CHAIN_POOL_SOURCE,
+    ensure_proxy_chain_component_ids,
+    list_proxy_chain_virtual_references,
 )
 from services.vpngate import (
     VPNGATE_MAX_INTERVAL_MINUTES,
@@ -29,7 +29,6 @@ from services.vpngate import (
     VPNGATE_SOURCE_ID,
     normalize_vpngate_country_code,
 )
-
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
 _COLLECTIONS = (
@@ -122,12 +121,7 @@ def _validate_auth(config: dict) -> None:
         digest = base64.b64decode(digest_b64.encode("ascii"), validate=True)
     except (ValueError, UnicodeEncodeError):
         raise ValueError("Imported administrator password hash is invalid") from None
-    if (
-        scheme != "pbkdf2_sha256"
-        or not 1 <= iterations <= 2_000_000
-        or not 8 <= len(salt) <= 256
-        or len(digest) != 32
-    ):
+    if scheme != "pbkdf2_sha256" or not 1 <= iterations <= 2_000_000 or not 8 <= len(salt) <= 256 or len(digest) != 32:
         raise ValueError("Imported administrator password hash is invalid")
 
 
@@ -225,8 +219,7 @@ def _validate_settings(config: dict) -> None:
         if countries is not None and (
             not isinstance(countries, list)
             or any(
-                not isinstance(country, str)
-                or not re.fullmatch(r"[A-Za-z]{2}", country.strip())
+                not isinstance(country, str) or not re.fullmatch(r"[A-Za-z]{2}", country.strip())
                 for country in countries
             )
         ):
@@ -245,14 +238,15 @@ def _validate_speedtest_profiles(config: dict) -> None:
         for key in ("subscription_ids",):
             values = profile.get(key)
             if values is not None and (
-                not isinstance(values, list)
-                or any(not isinstance(value, str) or len(value) > 200 for value in values)
+                not isinstance(values, list) or any(not isinstance(value, str) or len(value) > 200 for value in values)
             ):
                 raise ValueError("Imported speedtest profile subscriptions are invalid")
             if values is not None:
                 unknown_ids = {
-                    value for value in values
-                    if value not in {
+                    value
+                    for value in values
+                    if value
+                    not in {
                         str(subscription.get("id"))
                         for subscription in config.get("subscriptions", [])
                         if isinstance(subscription, dict) and subscription.get("id")
@@ -461,9 +455,7 @@ def _node_pool_allocation_aliases(config: dict) -> dict[str, set[str]]:
         base_node_names=set(),
         reserved_group_names=set(),
     ):
-        aliases[NODE_POOL_SOURCE].update(
-            {reference.stable_id, reference.legacy_id, reference.name}
-        )
+        aliases[NODE_POOL_SOURCE].update({reference.stable_id, reference.legacy_id, reference.name})
     return aliases
 
 
@@ -490,18 +482,12 @@ def _validate_allocations(
                 raise ValueError("Imported user allocation contains an invalid node reference")
             if source_id in all_virtual_aliases and references != ["*"]:
                 unknown_references = [
-                    reference
-                    for reference in references
-                    if reference not in all_virtual_aliases[source_id]
+                    reference for reference in references if reference not in all_virtual_aliases[source_id]
                 ]
                 if unknown_references:
                     if source_id in chain_aliases:
-                        raise ValueError(
-                            f"Imported {source_id} allocation references an unknown chain component"
-                        )
-                    raise ValueError(
-                        f"Imported {source_id} allocation references an unknown node pool component"
-                    )
+                        raise ValueError(f"Imported {source_id} allocation references an unknown chain component")
+                    raise ValueError(f"Imported {source_id} allocation references an unknown node pool component")
 
 
 def _validate_source_order(config: dict, subscription_ids: set[str]) -> None:
@@ -563,11 +549,7 @@ def remove_legacy_stale_references(config: dict) -> int:
         cleaned_order: list[str] = []
         seen_sources: set[str] = set()
         for source_id in source_order:
-            if (
-                isinstance(source_id, str)
-                and source_id in known_order_sources
-                and source_id not in seen_sources
-            ):
+            if isinstance(source_id, str) and source_id in known_order_sources and source_id not in seen_sources:
                 cleaned_order.append(source_id)
                 seen_sources.add(source_id)
         if cleaned_order != source_order:
@@ -607,8 +589,7 @@ def validate_and_normalize_configuration(config: dict) -> dict:
             raise ValueError("Imported translation configuration must be an object")
         providers = translation_config.get("providers", {})
         if not isinstance(providers, dict) or any(
-            not isinstance(provider_settings, dict)
-            for provider_settings in providers.values()
+            not isinstance(provider_settings, dict) for provider_settings in providers.values()
         ):
             raise ValueError("Imported translation providers must be objects")
     _validate_auth(normalized)
@@ -681,9 +662,7 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         try:
             subscription_yaml = load_subscription_yaml(subscription_id, yaml_source_dir, use_cache=False)
         except Exception as exc:
-            raise ValueError(
-                f"Imported subscription {subscription_id} is missing or has invalid YAML"
-            ) from exc
+            raise ValueError(f"Imported subscription {subscription_id} is missing or has invalid YAML") from exc
         nodes = subscription_yaml.get("proxies") if isinstance(subscription_yaml, dict) else None
         if not isinstance(nodes, list):
             raise ValueError(f"Imported subscription {subscription_id} has no proxy list")
@@ -709,11 +688,13 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         if not isinstance(node, dict):
             continue
         custom_aliases.update(
-            value for value in (
+            value
+            for value in (
                 custom_node_id(node),
                 str(node.get("name") or "").strip(),
                 str(NameTransformer.transform_name(node, "Custom").get("name") or "").strip(),
-            ) if value
+            )
+            if value
         )
     source_aliases["custom_nodes"] = custom_aliases
     all_aliases.update(custom_aliases)
@@ -790,8 +771,7 @@ def validate_configuration_node_references(config: dict, yaml_source_dir: str) -
         if isinstance(group_config, dict):
             for values in group_config.values():
                 if isinstance(values, list) and any(
-                    value not in all_aliases and value not in {"DIRECT", "REJECT"}
-                    for value in values
+                    value not in all_aliases and value not in {"DIRECT", "REJECT"} for value in values
                 ):
                     raise ValueError("Imported proxy-group configuration references a missing node")
 

@@ -44,10 +44,12 @@ class StableNodeReferenceTests(unittest.TestCase):
             "admin_tokens": [],
             "custom_nodes": [],
             "proxy_chains": [],
-            "speedtest_results": {"sub_1": {
-                old_ids[0]: {"latency": 10},
-                old_ids[1]: {"latency": 20},
-            }},
+            "speedtest_results": {
+                "sub_1": {
+                    old_ids[0]: {"latency": 10},
+                    old_ids[1]: {"latency": 20},
+                }
+            },
         }
 
         with patch("services.proxy_chain_references._base_node_names", side_effect=lambda _config: set()):
@@ -76,38 +78,44 @@ class StableNodeReferenceTests(unittest.TestCase):
         config = {
             "subscriptions": [{"id": "sub_1", "name": "Provider", "enabled": True}],
             "custom_nodes": [],
-            "users": [{
-                "allocations": {"sub_1": [old_id]},
-                "group_config": {"Select": [display_name]},
-                "sub_cache": "stale",
-            }],
+            "users": [
+                {
+                    "allocations": {"sub_1": [old_id]},
+                    "group_config": {"Select": [display_name]},
+                    "sub_cache": "stale",
+                }
+            ],
             "admin_tokens": [{"group_config": {"Select": [display_name]}}],
             "settings": {"proxy_node_id": old_id, "proxy_node_name": display_name},
             "speedtest_results": {"sub_1": {old_id: {"latency": 10}}},
             "port_mappings": {display_name: 12000},
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "rows": [
                         {
-                            "type": "node",
-                            "sub_id": "sub_1",
-                            "node_id": old_id,
-                            "node_name": display_name,
-                            "node_index": 0,
-                        },
-                        {
-                            "type": "node",
-                            "sub_id": "custom",
-                            "node_id": "custom_1",
-                            "node_name": "Custom Exit",
-                        },
+                            "row_id": "row_1",
+                            "nodes": [
+                                {
+                                    "type": "node",
+                                    "sub_id": "sub_1",
+                                    "node_id": old_id,
+                                    "node_name": display_name,
+                                    "node_index": 0,
+                                },
+                                {
+                                    "type": "node",
+                                    "sub_id": "custom",
+                                    "node_id": "custom_1",
+                                    "node_name": "Custom Exit",
+                                },
+                            ],
+                        }
                     ],
-                }],
-                "enabled": True,
-            }],
+                    "enabled": True,
+                }
+            ],
         }
 
         with patch("services.proxy_chain_references._base_node_names", side_effect=lambda _config: set()):
@@ -166,27 +174,33 @@ class StableNodeReferenceTests(unittest.TestCase):
             "subscriptions": [{"id": "sub_1", "name": "Provider"}],
             "source_order": ["sub_1"],
             "custom_nodes": [],
-            "users": [{
-                "allocations": {"sub_1": [old_id]},
-                "group_config": {"Select": [display_name]},
-                "sub_cache": "stale",
-            }],
+            "users": [
+                {
+                    "allocations": {"sub_1": [old_id]},
+                    "group_config": {"Select": [display_name]},
+                    "sub_cache": "stale",
+                }
+            ],
             "admin_tokens": [{"group_config": {"Select": [display_name]}}],
             "settings": {"proxy_node_id": old_id, "proxy_node_name": display_name},
             "speedtest_results": {"sub_1": {old_id: {"latency": 10}}},
             "speedtest_profiles": [{"subscription_ids": ["sub_1", "sub_2"]}],
             "port_mappings": {display_name: 12000},
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [
-                        {"type": "node", "sub_id": "sub_1", "node_id": old_id, "node_name": display_name},
-                        {"type": "node", "sub_id": "custom", "node_id": "custom_1", "node_name": "Exit"},
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "rows": [
+                        {
+                            "row_id": "row_1",
+                            "nodes": [
+                                {"type": "node", "sub_id": "sub_1", "node_id": old_id, "node_name": display_name},
+                                {"type": "node", "sub_id": "custom", "node_id": "custom_1", "node_name": "Exit"},
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         with patch("services.proxy_chain_references._base_node_names", side_effect=lambda _config: set()):
@@ -249,15 +263,17 @@ class NodeWriteRollbackTests(unittest.TestCase):
                 raise RuntimeError("commit failed")
 
             def add_node(config):
-                config["custom_nodes"].append({
-                    "id": "custom_1",
-                    "name": "Custom",
-                    "type": "ss",
-                    "server": "custom.example",
-                    "port": 443,
-                    "cipher": "aes-128-gcm",
-                    "password": "test-password",
-                })
+                config["custom_nodes"].append(
+                    {
+                        "id": "custom_1",
+                        "name": "Custom",
+                        "type": "ss",
+                        "server": "custom.example",
+                        "port": 443,
+                        "cipher": "aes-128-gcm",
+                        "password": "test-password",
+                    }
+                )
 
             with (
                 patch("services.custom_node_storage.AppConfig.YAML_SOURCE_DIR", str(uploads)),

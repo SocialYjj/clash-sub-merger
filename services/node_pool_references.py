@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -19,7 +18,6 @@ from services.node_identity import (
 from services.node_visibility import clear_user_subscription_caches, is_node_enabled
 from services.proxy_chain_utils import unique_group_name
 from services.proxy_filter import ProxyFilter
-
 
 logger = get_logger(__name__)
 
@@ -184,7 +182,9 @@ def list_available_node_catalog(config: dict) -> list[dict]:
                 use_cache=True,
             )
         except Exception as exc:
-            logger.warning("Failed to load subscription %s for node pool catalog: %s", subscription_id, type(exc).__name__)
+            logger.warning(
+                "Failed to load subscription %s for node pool catalog: %s", subscription_id, type(exc).__name__
+            )
             continue
         nodes = source_yaml.get("proxies", []) if isinstance(source_yaml, dict) else []
         identities = subscription_node_ids(subscription_id, nodes)
@@ -307,7 +307,9 @@ def _replace_values(values: object, id_targets: dict[str, str | None], name_targ
     return updated
 
 
-def _replace_subject_group_config(subject: dict, id_targets: dict[str, str | None], name_id_targets: dict[str, str | None]) -> None:
+def _replace_subject_group_config(
+    subject: dict, id_targets: dict[str, str | None], name_id_targets: dict[str, str | None]
+) -> None:
     group_config = subject.get("group_config")
     if not isinstance(group_config, dict):
         return
@@ -318,13 +320,9 @@ def _replace_subject_group_config(subject: dict, id_targets: dict[str, str | Non
 def reconcile_node_pool_references(config: dict, previous_config: dict) -> None:
     """Migrate allocations, group selections and listeners after pool edits."""
     old_references = {
-        reference.identity_key: reference
-        for reference in list_node_pool_virtual_references(previous_config)
+        reference.identity_key: reference for reference in list_node_pool_virtual_references(previous_config)
     }
-    new_references = {
-        reference.identity_key: reference
-        for reference in list_node_pool_virtual_references(config)
-    }
+    new_references = {reference.identity_key: reference for reference in list_node_pool_virtual_references(config)}
     id_targets: dict[str, str | None] = {}
     name_targets: dict[str, str | None] = {}
     name_id_targets: dict[str, str | None] = {}
@@ -343,9 +341,7 @@ def reconcile_node_pool_references(config: dict, previous_config: dict) -> None:
             continue
         allocations = user.get("allocations")
         if isinstance(allocations, dict) and NODE_POOL_SOURCE in allocations:
-            allocations[NODE_POOL_SOURCE] = _replace_values(
-                allocations.get(NODE_POOL_SOURCE), id_targets, name_targets
-            )
+            allocations[NODE_POOL_SOURCE] = _replace_values(allocations.get(NODE_POOL_SOURCE), id_targets, name_targets)
         _replace_subject_group_config(user, id_targets, name_id_targets)
         user.pop("sub_cache", None)
 
@@ -394,8 +390,7 @@ def remove_node_pool_members_for_source(config: dict, source_aliases: set[str]) 
         pool["nodes"] = [
             member
             for member in pool["nodes"]
-            if not isinstance(member, dict)
-            or str(member.get("sub_id") or "") not in source_aliases
+            if not isinstance(member, dict) or str(member.get("sub_id") or "") not in source_aliases
         ]
 
 

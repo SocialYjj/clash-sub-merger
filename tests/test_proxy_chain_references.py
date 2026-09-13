@@ -24,15 +24,17 @@ def _two_row_chain_config() -> dict:
     return {
         "subscriptions": [],
         "custom_nodes": [],
-        "proxy_chains": [{
-            "id": "chain_1",
-            "name": "Chain",
-            "enabled": True,
-            "rows": [
-                {"row_id": "row_a", "nodes": [_direct_reference("node_a"), _direct_reference("node_b")]},
-                {"row_id": "row_b", "nodes": [_direct_reference("node_c"), _direct_reference("node_d")]},
-            ],
-        }],
+        "proxy_chains": [
+            {
+                "id": "chain_1",
+                "name": "Chain",
+                "enabled": True,
+                "rows": [
+                    {"row_id": "row_a", "nodes": [_direct_reference("node_a"), _direct_reference("node_b")]},
+                    {"row_id": "row_b", "nodes": [_direct_reference("node_c"), _direct_reference("node_d")]},
+                ],
+            }
+        ],
         "users": [],
         "admin_tokens": [],
         "port_mappings": {},
@@ -51,16 +53,19 @@ class ProxyChainLifecycleTests(unittest.TestCase):
     def test_chain_rename_normalizes_persisted_references_to_stable_ids(self):
         config = _two_row_chain_config()
         old_references = self._references(config)
-        config["users"] = [{
-            "allocations": {"chain_nodes": [reference.stable_id for reference in old_references.values()]},
-            "group_config": {"Select": [reference.name for reference in old_references.values()]},
-        }]
-        config["admin_tokens"] = [{
-            "group_config": {"Select": [reference.name for reference in old_references.values()]},
-        }]
+        config["users"] = [
+            {
+                "allocations": {"chain_nodes": [reference.stable_id for reference in old_references.values()]},
+                "group_config": {"Select": [reference.name for reference in old_references.values()]},
+            }
+        ]
+        config["admin_tokens"] = [
+            {
+                "group_config": {"Select": [reference.name for reference in old_references.values()]},
+            }
+        ]
         config["port_mappings"] = {
-            reference.name: 12000 + index
-            for index, reference in enumerate(old_references.values())
+            reference.name: 12000 + index for index, reference in enumerate(old_references.values())
         }
         previous_config = copy.deepcopy(config)
         config["proxy_chains"][0]["name"] = "Renamed"
@@ -86,10 +91,12 @@ class ProxyChainLifecycleTests(unittest.TestCase):
     def test_deleting_first_row_removes_only_that_rows_references(self):
         config = _two_row_chain_config()
         old_references = self._references(config)
-        config["users"] = [{
-            "allocations": {"chain_nodes": [old_references["row_a"].stable_id, old_references["row_b"].stable_id]},
-            "group_config": {"Select": [old_references["row_a"].name, old_references["row_b"].name]},
-        }]
+        config["users"] = [
+            {
+                "allocations": {"chain_nodes": [old_references["row_a"].stable_id, old_references["row_b"].stable_id]},
+                "group_config": {"Select": [old_references["row_a"].name, old_references["row_b"].name]},
+            }
+        ]
         config["port_mappings"] = {
             old_references["row_a"].name: 12000,
             old_references["row_b"].name: 12001,
@@ -111,10 +118,12 @@ class ProxyChainLifecycleTests(unittest.TestCase):
     def test_row_reorder_keeps_component_ownership_while_migrating_display_names(self):
         config = _two_row_chain_config()
         old_references = self._references(config)
-        config["users"] = [{
-            "allocations": {"chain_nodes": [old_references["row_a"].stable_id]},
-            "group_config": {"Select": [old_references["row_a"].name]},
-        }]
+        config["users"] = [
+            {
+                "allocations": {"chain_nodes": [old_references["row_a"].stable_id]},
+                "group_config": {"Select": [old_references["row_a"].name]},
+            }
+        ]
         previous_config = copy.deepcopy(config)
         config["proxy_chains"][0]["rows"].reverse()
 
@@ -130,23 +139,27 @@ class ProxyChainLifecycleTests(unittest.TestCase):
         config = {
             "subscriptions": [],
             "custom_nodes": [],
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [
-                        _direct_reference("node_a"),
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "enabled": True,
+                    "rows": [
                         {
-                            "type": "group",
-                            "group_id": "group_1",
-                            "group_name": "Old Pool",
-                            "group_nodes": [_direct_reference("node_b")],
-                        },
+                            "row_id": "row_1",
+                            "nodes": [
+                                _direct_reference("node_a"),
+                                {
+                                    "type": "group",
+                                    "group_id": "group_1",
+                                    "group_name": "Old Pool",
+                                    "group_nodes": [_direct_reference("node_b")],
+                                },
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
             "users": [],
             "admin_tokens": [],
             "port_mappings": {},
@@ -154,10 +167,12 @@ class ProxyChainLifecycleTests(unittest.TestCase):
             "speedtest_results": {},
         }
         old_reference = self._references(config)["group_1"]
-        config["users"] = [{
-            "allocations": {"chain_pools": [old_reference.stable_id]},
-            "group_config": {"Select": [old_reference.name]},
-        }]
+        config["users"] = [
+            {
+                "allocations": {"chain_pools": [old_reference.stable_id]},
+                "group_config": {"Select": [old_reference.name]},
+            }
+        ]
         previous_config = copy.deepcopy(config)
         config["proxy_chains"][0]["rows"][0]["nodes"][1]["group_name"] = "New Pool"
 
@@ -173,23 +188,27 @@ class ProxyChainLifecycleTests(unittest.TestCase):
         config = {
             "subscriptions": [],
             "custom_nodes": [],
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [
-                        _direct_reference("node_a"),
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "enabled": True,
+                    "rows": [
                         {
-                            "type": "group",
-                            "group_id": "grp_pool_abcd",
-                            "group_name": "Exit Pool",
-                            "group_nodes": [_direct_reference("node_b")],
-                        },
+                            "row_id": "row_1",
+                            "nodes": [
+                                _direct_reference("node_a"),
+                                {
+                                    "type": "group",
+                                    "group_id": "grp_pool_abcd",
+                                    "group_name": "Exit Pool",
+                                    "group_nodes": [_direct_reference("node_b")],
+                                },
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
         }
 
         reference = list_proxy_chain_virtual_references(
@@ -224,10 +243,12 @@ class ProxyChainSerializationTests(unittest.TestCase):
                 ],
             },
         ]
-        retained_row = ProxyChainRow(nodes=[
-            ProxyChainNode(**existing_rows[1]["nodes"][0]),
-            ProxyChainNode(**existing_rows[1]["nodes"][1]),
-        ])
+        retained_row = ProxyChainRow(
+            nodes=[
+                ProxyChainNode(**existing_rows[1]["nodes"][0]),
+                ProxyChainNode(**existing_rows[1]["nodes"][1]),
+            ]
+        )
 
         serialized_rows = _serialize_chain_rows([retained_row], existing_rows)
 

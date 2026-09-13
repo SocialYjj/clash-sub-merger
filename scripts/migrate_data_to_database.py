@@ -24,7 +24,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 TARGET_MODULES = {
     "postgres": "core.postgresql_storage",
     "postgresql": "core.postgresql_storage",
@@ -60,8 +59,7 @@ def _read_sqlite_documents(source_path: Path) -> tuple[dict[str, Any], dict[str,
 
 def _payload_digest(app_documents: dict[str, Any], cache_documents: dict[str, Any]) -> str:
     cache_payloads = {
-        namespace: record[0] if isinstance(record, tuple) else record
-        for namespace, record in cache_documents.items()
+        namespace: record[0] if isinstance(record, tuple) else record for namespace, record in cache_documents.items()
     }
     normalized = json.dumps(
         {"app_documents": app_documents, "cache_documents": cache_payloads},
@@ -110,25 +108,14 @@ def main() -> int:
     for namespace, (payload, expires_at) in cache_documents.items():
         target_storage.write_cache_document(namespace, payload, expires_at=expires_at)
 
-    migrated_app_documents = {
-        name: target_storage.read_app_document(name)
-        for name in app_documents
-    }
-    migrated_cache_documents = {
-        name: target_storage.read_cache_document_record(name)
-        for name in cache_documents
-    }
-    migrated_cache_payloads = {
-        name: record["payload"]
-        for name, record in migrated_cache_documents.items()
-    }
+    migrated_app_documents = {name: target_storage.read_app_document(name) for name in app_documents}
+    migrated_cache_documents = {name: target_storage.read_cache_document_record(name) for name in cache_documents}
+    migrated_cache_payloads = {name: record["payload"] for name, record in migrated_cache_documents.items()}
 
     source_digest = _payload_digest(app_documents, cache_documents)
     target_digest = _payload_digest(migrated_app_documents, migrated_cache_payloads)
     if source_digest != target_digest:
-        raise RuntimeError(
-            "Migration verification failed: source and target JSON payload digests differ"
-        )
+        raise RuntimeError("Migration verification failed: source and target JSON payload digests differ")
 
     print(f"source_sqlite={source_path}")
     print(f"target_backend={target_backend}")
@@ -137,10 +124,7 @@ def main() -> int:
     print(
         "cache_expirations_preserved="
         + str(
-            all(
-                migrated_cache_documents[name]["expires_at"] == cache_documents[name][1]
-                for name in cache_documents
-            )
+            all(migrated_cache_documents[name]["expires_at"] == cache_documents[name][1] for name in cache_documents)
         ).lower()
     )
     print(f"payload_sha256={source_digest}")

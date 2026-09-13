@@ -2,43 +2,47 @@
 Nodes API
 Custom nodes and subscription nodes management
 """
+
 import json
 import time
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.config import AppConfig
-from core.dependencies import verify_session
 from core.database import load_config
+from core.dependencies import verify_session
 from core.rate_limit import limiter
+from geoip_service import GeoIPService, normalize_country_name, translate_city_name
 from helpers import (
-    handle_api_errors,
     generate_timestamp_id,
+    handle_api_errors,
     load_subscription_yaml,
 )
+from logger_config import SensitiveDataFilter, get_logger
+from services.custom_node_storage import update_custom_nodes
 from services.name_transformer import NameTransformer
-from services.node_visibility import is_node_enabled
-from services.node_parser import parse_node_link
 from services.node_identity import (
     custom_node_id as get_custom_node_id,
+)
+from services.node_identity import (
     find_subscription_node_index,
     subscription_node_ids,
 )
-from services.custom_node_storage import update_custom_nodes
+from services.node_parser import parse_node_link
 from services.node_reference_updates import update_subscription_yaml_with_references
+from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
-from services.vpngate import (
-    get_vpngate_node,
-    update_vpngate_node_test_metadata,
-)
 from services.region_history import (
     NODE_TEST_METADATA_FIELDS,
     inherit_regions_for_nodes,
     remember_nodes_region,
 )
-from geoip_service import GeoIPService, normalize_country_name, translate_city_name
-from logger_config import SensitiveDataFilter, get_logger
+from services.vpngate import (
+    get_vpngate_node,
+    update_vpngate_node_test_metadata,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -53,42 +57,39 @@ def _get_server():
     global _server_module
     if _server_module is None:
         import server as srv
+
         _server_module = srv
     return _server_module
 
 
 def _resolve_region_info(node: dict, transformed: dict) -> dict:
     """Prefer tested/saved region info and fall back to name-derived country info."""
-    derived = transformed.get('_country', {}) if isinstance(transformed, dict) else {}
-    saved = node.get('region', {}) if isinstance(node, dict) else {}
+    derived = transformed.get("_country", {}) if isinstance(transformed, dict) else {}
+    saved = node.get("region", {}) if isinstance(node, dict) else {}
     if not isinstance(saved, dict):
         saved = {}
 
-    country_code = str(saved.get('country_code') or derived.get('country_code') or 'XX').upper()
-    country = saved.get('country') or derived.get('country') or 'Unknown'
-    flag = saved.get('flag') or derived.get('flag')
+    country_code = str(saved.get("country_code") or derived.get("country_code") or "XX").upper()
+    country = saved.get("country") or derived.get("country") or "Unknown"
+    flag = saved.get("flag") or derived.get("flag")
 
     if not flag:
-        flag = GeoIPService.iso_to_flag(country_code) if country_code != 'XX' else '🏳️'
+        flag = GeoIPService.iso_to_flag(country_code) if country_code != "XX" else "🏳️"
 
-    if (not country or country == 'Unknown') and country_code:
-        country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or 'Unknown')
+    if (not country or country == "Unknown") and country_code:
+        country = NameTransformer.ISO_TO_COUNTRY.get(country_code, country or "Unknown")
     else:
         country = normalize_country_name(country, country_code) or country
 
-    return {
-        'country_code': country_code or 'XX',
-        'country': country or 'Unknown',
-        'flag': flag or '🏳️'
-    }
+    return {"country_code": country_code or "XX", "country": country or "Unknown", "flag": flag or "🏳️"}
 
 
 def _resolve_city_name(node: dict) -> str:
     """Normalize saved city names so old English values also display in Chinese."""
     if not isinstance(node, dict):
-        return ''
-    city = str(node.get('city') or '').strip()
-    return translate_city_name(city) if city else ''
+        return ""
+    city = str(node.get("city") or "").strip()
+    return translate_city_name(city) if city else ""
 
 
 async def _lookup_ippure_via_node(
@@ -209,101 +210,114 @@ def _merge_ip_profile(previous: object, current: dict, exit_ip: str) -> dict:
 # ==================== Data Models ====================
 
 _NODE_ADMIN_FIELDS = {
-    'id', 'link', 'enabled', 'display_name', 'index',
-    'last_latency', 'last_latency_time', 'last_speed',
-    'last_peak_speed', 'last_speed_time', 'last_peak_speed_time', 'exit_ip', 'ip_profile', 'geoip',
-    'region', 'city',
+    "id",
+    "link",
+    "enabled",
+    "display_name",
+    "index",
+    "last_latency",
+    "last_latency_time",
+    "last_speed",
+    "last_peak_speed",
+    "last_speed_time",
+    "last_peak_speed_time",
+    "exit_ip",
+    "ip_profile",
+    "geoip",
+    "region",
+    "city",
 }
+
 
 class CustomNode(BaseModel):
     link: str = Field(min_length=1, max_length=2000)
     name: Optional[str] = Field(None, max_length=200)
-    
-    @field_validator('name')
+
+    @field_validator("name")
     @classmethod
     def validate_name(cls, v):
         if v is None:
             return None
         normalized = v.strip()
         if not normalized:
-            raise ValueError('Name cannot be empty')
-        if '/' in normalized or '\\' in normalized or '..' in normalized:
-            raise ValueError('Name contains invalid characters')
+            raise ValueError("Name cannot be empty")
+        if "/" in normalized or "\\" in normalized or ".." in normalized:
+            raise ValueError("Name contains invalid characters")
         return normalized
 
 
 class UpdateNodeName(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    
-    @field_validator('name')
+
+    @field_validator("name")
     @classmethod
     def validate_name(cls, v):
         normalized = v.strip()
         if not normalized:
-            raise ValueError('Name cannot be empty')
-        if '/' in normalized or '\\' in normalized or '..' in normalized:
-            raise ValueError('Name contains invalid characters')
+            raise ValueError("Name cannot be empty")
+        if "/" in normalized or "\\" in normalized or ".." in normalized:
+            raise ValueError("Name contains invalid characters")
         return normalized
 
 
 class UpdateNodeFull(BaseModel):
     node: dict
-    
-    @field_validator('node')
+
+    @field_validator("node")
     @classmethod
     def validate_node(cls, v):
         if not isinstance(v, dict):
-            raise ValueError('Node must be a dictionary')
+            raise ValueError("Node must be a dictionary")
         # Ensure required fields exist
         if any(field in v for field in _NODE_ADMIN_FIELDS):
-            raise ValueError('Node metadata fields cannot be changed')
-        if any(str(key).startswith('_') for key in v):
-            raise ValueError('Internal node fields cannot be changed')
-        if not str(v.get('name') or '').strip():
-            raise ValueError('Node must have a name')
-        if not str(v.get('type') or '').strip():
-            raise ValueError('Node must have a type')
+            raise ValueError("Node metadata fields cannot be changed")
+        if any(str(key).startswith("_") for key in v):
+            raise ValueError("Internal node fields cannot be changed")
+        if not str(v.get("name") or "").strip():
+            raise ValueError("Node must have a name")
+        if not str(v.get("type") or "").strip():
+            raise ValueError("Node must have a type")
         normalized = dict(v)
-        normalized['name'] = str(v['name']).strip()
-        normalized['type'] = str(v['type']).strip().lower()
+        normalized["name"] = str(v["name"]).strip()
+        normalized["type"] = str(v["type"]).strip().lower()
         normalized = ProxyFilter.sanitize_proxy(normalized)
         invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
         if invalid_reason:
-            raise ValueError(f'Invalid node configuration: {invalid_reason}')
+            raise ValueError(f"Invalid node configuration: {invalid_reason}")
         return normalized
 
 
 class UpdateSubNode(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
-    @field_validator('name')
+    @field_validator("name")
     @classmethod
     def normalize_name(cls, value):
         normalized = value.strip()
         if not normalized:
-            raise ValueError('Name cannot be empty')
+            raise ValueError("Name cannot be empty")
         return normalized
 
 
 class UpdateSubNodeFull(BaseModel):
     node: dict
 
-    @field_validator('node')
+    @field_validator("node")
     @classmethod
     def validate_node(cls, value):
-        if not str(value.get('name') or '').strip() or not str(value.get('type') or '').strip():
-            raise ValueError('Node must have a name and type')
+        if not str(value.get("name") or "").strip() or not str(value.get("type") or "").strip():
+            raise ValueError("Node must have a name and type")
         if any(field in value for field in _NODE_ADMIN_FIELDS):
-            raise ValueError('Node metadata fields cannot be changed')
-        if any(str(key).startswith('_') for key in value):
-            raise ValueError('Internal node fields cannot be changed')
+            raise ValueError("Node metadata fields cannot be changed")
+        if any(str(key).startswith("_") for key in value):
+            raise ValueError("Internal node fields cannot be changed")
         normalized = dict(value)
-        normalized['name'] = str(value['name']).strip()
-        normalized['type'] = str(value['type']).strip().lower()
+        normalized["name"] = str(value["name"]).strip()
+        normalized["type"] = str(value["type"]).strip().lower()
         normalized = ProxyFilter.sanitize_proxy(normalized)
         invalid_reason = ProxyFilter.get_structural_invalid_reason(normalized)
         if invalid_reason:
-            raise ValueError(f'Invalid node configuration: {invalid_reason}')
+            raise ValueError(f"Invalid node configuration: {invalid_reason}")
         return normalized
 
 
@@ -336,33 +350,33 @@ def _subscription_node_index(nodes: list, sub_id: str, node_id: str) -> int:
 
 # ==================== Custom Nodes API ====================
 
+
 @router.get("/custom-nodes")
 @handle_api_errors
 def get_custom_nodes(_: bool = Depends(verify_session)):
     """Get all custom nodes with enhanced info"""
     config = load_config()
-    nodes = config.get('custom_nodes', [])
-    
+    nodes = config.get("custom_nodes", [])
+
     enhanced_nodes = []
     for node in nodes:
         enhanced = dict(node)
         # Legacy data may predate persisted custom-node IDs.  Always expose
         # the same deterministic fallback used by save/test endpoints so the
         # frontend never submits an unusable ``undefined`` node ID.
-        enhanced['id'] = get_custom_node_id(node)
-        enhanced['valid'] = ProxyFilter.is_valid_proxy(node)
-        enhanced['invalid_reason'] = (
-            ProxyFilter.get_target_invalid_reason(node, 'clash')
-            if not enhanced['valid'] else None
+        enhanced["id"] = get_custom_node_id(node)
+        enhanced["valid"] = ProxyFilter.is_valid_proxy(node)
+        enhanced["invalid_reason"] = (
+            ProxyFilter.get_target_invalid_reason(node, "clash") if not enhanced["valid"] else None
         )
-        transformed = NameTransformer.transform_name(node, 'Custom')
-        enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
-        enhanced['region'] = _resolve_region_info(node, transformed)
-        enhanced['city'] = _resolve_city_name(node)
-        enhanced['enabled'] = _display_enabled(node)
-        
+        transformed = NameTransformer.transform_name(node, "Custom")
+        enhanced["display_name"] = transformed.get("name", node.get("name", "Unknown"))
+        enhanced["region"] = _resolve_region_info(node, transformed)
+        enhanced["city"] = _resolve_city_name(node)
+        enhanced["enabled"] = _display_enabled(node)
+
         enhanced_nodes.append(enhanced)
-    
+
     return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 
@@ -371,7 +385,7 @@ def get_custom_nodes(_: bool = Depends(verify_session)):
 def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
     """Add a custom node from link"""
     srv = _get_server()
-    
+
     parsed = parse_node_link(data.link)
     if not parsed:
         raise HTTPException(status_code=400, detail="Invalid node link format")
@@ -382,26 +396,22 @@ def add_custom_node(data: CustomNode, _: bool = Depends(verify_session)):
             detail=f"Invalid node configuration: {invalid_reason}",
         )
     parsed = ProxyFilter.sanitize_proxy(parsed)
-    
-    node_id = generate_timestamp_id('node_')
-    node = {
-        'id': node_id,
-        'link': data.link,
-        **parsed
-    }
-    
-    if data.name:
-        node['name'] = data.name
 
-    inherit_regions_for_nodes([node], source='custom:add')
+    node_id = generate_timestamp_id("node_")
+    node = {"id": node_id, "link": data.link, **parsed}
+
+    if data.name:
+        node["name"] = data.name
+
+    inherit_regions_for_nodes([node], source="custom:add")
 
     def append_custom_node(config: dict):
-        config.setdefault('custom_nodes', []).append(node)
+        config.setdefault("custom_nodes", []).append(node)
         return dict(node)
 
     node = update_custom_nodes(append_custom_node)
     srv.invalidate_stats_cache()
-    
+
     return {"status": "success", "node": node}
 
 
@@ -422,47 +432,40 @@ def add_custom_nodes_batch(data: BatchCustomNodes, _: bool = Depends(verify_sess
     for idx, link in enumerate(links):
         parsed = parse_node_link(link)
         if not parsed:
-            errors.append({'link': link, 'reason': 'Invalid node link format'})
+            errors.append({"link": link, "reason": "Invalid node link format"})
             continue
         invalid_reason = ProxyFilter.get_structural_invalid_reason(parsed)
         if invalid_reason:
-            errors.append({
-                'link': link,
-                'reason': f'Invalid node configuration: {invalid_reason}',
-            })
+            errors.append(
+                {
+                    "link": link,
+                    "reason": f"Invalid node configuration: {invalid_reason}",
+                }
+            )
             continue
         parsed = ProxyFilter.sanitize_proxy(parsed)
 
         node_id = f"{generate_timestamp_id('node_')}_{idx}"
-        node = {
-            'id': node_id,
-            'link': link,
-            **parsed
-        }
+        node = {"id": node_id, "link": link, **parsed}
         if idx < len(names):
             custom_name = names[idx]
             if custom_name:
-                node['name'] = custom_name
+                node["name"] = custom_name
         added_nodes.append(node)
 
     if not added_nodes:
         raise HTTPException(status_code=400, detail="No valid nodes parsed")
 
-    inherit_regions_for_nodes(added_nodes, source='custom:batch-add')
+    inherit_regions_for_nodes(added_nodes, source="custom:batch-add")
 
     def extend_custom_nodes(config: dict):
-        config.setdefault('custom_nodes', []).extend(added_nodes)
+        config.setdefault("custom_nodes", []).extend(added_nodes)
         return len(added_nodes)
 
     update_custom_nodes(extend_custom_nodes)
     srv.invalidate_stats_cache()
 
-    return {
-        "status": "success",
-        "added": len(added_nodes),
-        "failed": len(errors),
-        "errors": errors
-    }
+    return {"status": "success", "added": len(added_nodes), "failed": len(errors), "errors": errors}
 
 
 @router.delete("/custom-nodes/{node_id}")
@@ -472,11 +475,11 @@ def delete_custom_node(node_id: str, _: bool = Depends(verify_session)):
     srv = _get_server()
 
     def remove_custom_node(config: dict):
-        nodes = config.get('custom_nodes', [])
+        nodes = config.get("custom_nodes", [])
         remaining_nodes = [n for n in nodes if get_custom_node_id(n) != node_id]
         if len(remaining_nodes) == len(nodes):
             raise HTTPException(status_code=404, detail="Node not found")
-        config['custom_nodes'] = remaining_nodes
+        config["custom_nodes"] = remaining_nodes
 
     update_custom_nodes(remove_custom_node)
     srv.invalidate_stats_cache()
@@ -490,10 +493,10 @@ def toggle_custom_node(node_id: str, _: bool = Depends(verify_session)):
     srv = _get_server()
 
     def toggle_node(config: dict) -> bool:
-        for node in config.get('custom_nodes', []):
+        for node in config.get("custom_nodes", []):
             if get_custom_node_id(node) == node_id:
-                node['enabled'] = not is_node_enabled(node)
-                return node['enabled']
+                node["enabled"] = not is_node_enabled(node)
+                return node["enabled"]
 
         raise HTTPException(status_code=404, detail="Node not found")
 
@@ -513,11 +516,11 @@ def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_s
         raise HTTPException(status_code=400, detail="No node IDs provided")
 
     def remove_custom_nodes(config: dict) -> int:
-        nodes = config.get('custom_nodes', [])
+        nodes = config.get("custom_nodes", [])
         remaining = [n for n in nodes if get_custom_node_id(n) not in id_set]
         deleted_count = len(nodes) - len(remaining)
         if deleted_count:
-            config['custom_nodes'] = remaining
+            config["custom_nodes"] = remaining
         return deleted_count
 
     deleted_count = update_custom_nodes(remove_custom_nodes)
@@ -532,10 +535,9 @@ def batch_delete_custom_nodes(data: BatchDeleteNodes, _: bool = Depends(verify_s
 @handle_api_errors
 def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
     """Reorder custom nodes"""
-    srv = _get_server()
 
     def apply_custom_node_order(config: dict):
-        nodes = config.get('custom_nodes', [])
+        nodes = config.get("custom_nodes", [])
         node_map = {get_custom_node_id(n): n for n in nodes}
 
         new_nodes = []
@@ -544,7 +546,7 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
                 new_nodes.append(node_map.pop(node_id))
         new_nodes.extend(node_map.values())
 
-        config['custom_nodes'] = new_nodes
+        config["custom_nodes"] = new_nodes
 
     update_custom_nodes(apply_custom_node_order)
     return {"status": "success"}
@@ -554,16 +556,15 @@ def reorder_custom_nodes(data: ReorderNodes, _: bool = Depends(verify_session)):
 @handle_api_errors
 def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
     """Reparse all custom nodes from their links"""
-    srv = _get_server()
 
     def reparse_nodes(config: dict) -> int:
-        nodes = config.get('custom_nodes', [])
+        nodes = config.get("custom_nodes", [])
 
         updated_count = 0
         existing_nodes = [dict(node) for node in nodes]
         for node in nodes:
-            if 'link' in node:
-                parsed = parse_node_link(node['link'])
+            if "link" in node:
+                parsed = parse_node_link(node["link"])
                 if parsed:
                     if ProxyFilter.get_structural_invalid_reason(parsed):
                         continue
@@ -571,22 +572,22 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
                     preserved = {
                         key: value
                         for key, value in node.items()
-                        if key in {'id', 'link', 'enabled', 'geoip'} or key in NODE_TEST_METADATA_FIELDS
+                        if key in {"id", "link", "enabled", "geoip"} or key in NODE_TEST_METADATA_FIELDS
                     }
                     # A manually renamed node must keep its display name; all
                     # protocol fields come from the link and stale fields are
                     # intentionally discarded.
-                    if node.get('name') and parsed.get('name') != node.get('name'):
-                        preserved['name'] = node['name']
+                    if node.get("name") and parsed.get("name") != node.get("name"):
+                        preserved["name"] = node["name"]
                     node.clear()
                     node.update(preserved)
                     node.update(parsed)
-                    if 'name' in preserved:
-                        node['name'] = preserved['name']
+                    if "name" in preserved:
+                        node["name"] = preserved["name"]
                     updated_count += 1
 
-        remember_nodes_region(existing_nodes, source='custom:reparse-existing')
-        inherit_regions_for_nodes(nodes, source='custom:reparse')
+        remember_nodes_region(existing_nodes, source="custom:reparse-existing")
+        inherit_regions_for_nodes(nodes, source="custom:reparse")
         return updated_count
 
     updated_count = update_custom_nodes(reparse_nodes)
@@ -597,13 +598,12 @@ def reparse_all_custom_nodes(_: bool = Depends(verify_session)):
 @handle_api_errors
 def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
     """Reparse a single custom node"""
-    srv = _get_server()
 
     def reparse_node(config: dict) -> dict:
-        for node in config.get('custom_nodes', []):
-            if get_custom_node_id(node) == node_id and 'link' in node:
+        for node in config.get("custom_nodes", []):
+            if get_custom_node_id(node) == node_id and "link" in node:
                 previous = dict(node)
-                parsed = parse_node_link(node['link'])
+                parsed = parse_node_link(node["link"])
                 if parsed:
                     invalid_reason = ProxyFilter.get_structural_invalid_reason(parsed)
                     if invalid_reason:
@@ -612,24 +612,24 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
                             detail=f"Invalid node configuration: {invalid_reason}",
                         )
                     parsed = ProxyFilter.sanitize_proxy(parsed)
-                    previous_enabled = node.get('enabled')
-                    previous_name = node.get('name')
-                    remember_nodes_region([previous], source='custom:reparse-one-existing')
+                    previous_enabled = node.get("enabled")
+                    previous_name = node.get("name")
+                    remember_nodes_region([previous], source="custom:reparse-one-existing")
                     preserved = {
                         key: value
                         for key, value in node.items()
-                        if key in {'id', 'link', 'enabled', 'geoip'} or key in NODE_TEST_METADATA_FIELDS
+                        if key in {"id", "link", "enabled", "geoip"} or key in NODE_TEST_METADATA_FIELDS
                     }
-                    if previous_name and parsed.get('name') != previous_name:
-                        preserved['name'] = previous_name
+                    if previous_name and parsed.get("name") != previous_name:
+                        preserved["name"] = previous_name
                     node.clear()
                     node.update(preserved)
                     node.update(parsed)
-                    if 'name' in preserved:
-                        node['name'] = preserved['name']
+                    if "name" in preserved:
+                        node["name"] = preserved["name"]
                     if previous_enabled is not None:
-                        node['enabled'] = previous_enabled
-                    inherit_regions_for_nodes([node], source='custom:reparse-one')
+                        node["enabled"] = previous_enabled
+                    inherit_regions_for_nodes([node], source="custom:reparse-one")
                     return dict(node)
                 raise HTTPException(status_code=400, detail="Failed to parse node link")
 
@@ -643,12 +643,11 @@ def reparse_custom_node(node_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(verify_session)):
     """Update custom node name"""
-    srv = _get_server()
 
     def rename_custom_node(config: dict) -> dict:
-        for node in config.get('custom_nodes', []):
+        for node in config.get("custom_nodes", []):
             if get_custom_node_id(node) == node_id:
-                node['name'] = data.name
+                node["name"] = data.name
                 return dict(node)
 
         raise HTTPException(status_code=404, detail="Node not found")
@@ -661,16 +660,15 @@ def update_custom_node(node_id: str, data: UpdateNodeName, _: bool = Depends(ver
 @handle_api_errors
 def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depends(verify_session)):
     """Update custom node with full config"""
-    srv = _get_server()
 
     def replace_custom_node(config: dict) -> dict:
-        for i, node in enumerate(config.get('custom_nodes', [])):
+        for i, node in enumerate(config.get("custom_nodes", [])):
             if get_custom_node_id(node) == node_id:
-                updated = {'id': node_id, 'link': node.get('link', '')}
+                updated = {"id": node_id, "link": node.get("link", "")}
                 updated.update(data.node)
-                if 'enabled' not in updated and 'enabled' in node:
-                    updated['enabled'] = node['enabled']
-                config['custom_nodes'][i] = updated
+                if "enabled" not in updated and "enabled" in node:
+                    updated["enabled"] = node["enabled"]
+                config["custom_nodes"][i] = updated
                 return dict(updated)
 
         raise HTTPException(status_code=404, detail="Node not found")
@@ -681,24 +679,25 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
 
 # ==================== Subscription Nodes API ====================
 
+
 @router.get("/subscriptions/{sub_id}/nodes")
 @handle_api_errors
 def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
     """Get nodes from a subscription"""
     config = load_config()
-    
-    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+
+    sub = next((s for s in config.get("subscriptions", []) if s["id"] == sub_id), None)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    
+
     sub_data = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=True)
-    
+
     # Handle case where YAML content is a string (invalid format)
     if isinstance(sub_data, str):
         logger.warning(f"Subscription {sub_id} YAML is a string, not a dict. Returning empty nodes.")
         nodes = []
     else:
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
 
     node_ids = subscription_node_ids(sub_id, nodes)
     enhanced_nodes = []
@@ -707,24 +706,23 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
         # enter the generated Clash output. Disabled nodes remain visible so
         # the user can re-enable them, but informational and incompatible
         # entries must not reappear as phantom nodes in the UI.
-        if ProxyFilter.get_target_invalid_reason(node, 'clash') is not None:
+        if ProxyFilter.get_target_invalid_reason(node, "clash") is not None:
             continue
         enhanced = dict(node)
-        enhanced['valid'] = ProxyFilter.is_valid_proxy(node)
-        enhanced['invalid_reason'] = (
-            ProxyFilter.get_target_invalid_reason(node, 'clash')
-            if not enhanced['valid'] else None
+        enhanced["valid"] = ProxyFilter.is_valid_proxy(node)
+        enhanced["invalid_reason"] = (
+            ProxyFilter.get_target_invalid_reason(node, "clash") if not enhanced["valid"] else None
         )
-        enhanced['index'] = i
-        enhanced['id'] = node_ids[i]
-        transformed = NameTransformer.transform_name(node, sub['name'])
-        enhanced['display_name'] = transformed.get('name', node.get('name', 'Unknown'))
-        enhanced['region'] = _resolve_region_info(node, transformed)
-        enhanced['city'] = _resolve_city_name(node)
-        enhanced['enabled'] = _display_enabled(node)
-        
+        enhanced["index"] = i
+        enhanced["id"] = node_ids[i]
+        transformed = NameTransformer.transform_name(node, sub["name"])
+        enhanced["display_name"] = transformed.get("name", node.get("name", "Unknown"))
+        enhanced["region"] = _resolve_region_info(node, transformed)
+        enhanced["city"] = _resolve_city_name(node)
+        enhanced["enabled"] = _display_enabled(node)
+
         enhanced_nodes.append(enhanced)
-    
+
     return {"nodes": enhanced_nodes, "count": len(enhanced_nodes)}
 
 
@@ -732,11 +730,12 @@ def get_subscription_nodes(sub_id: str, _: bool = Depends(verify_session)):
 @handle_api_errors
 def update_subscription_node(sub_id: str, node_id: str, data: UpdateSubNode, _: bool = Depends(verify_session)):
     """Update subscription node name"""
+
     def rename_node(sub_data: dict):
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
 
         node_index = _subscription_node_index(nodes, sub_id, node_id)
-        nodes[node_index]['name'] = data.name
+        nodes[node_index]["name"] = data.name
         return dict(nodes[node_index])
 
     updated_node = update_subscription_yaml_with_references(sub_id, rename_node)
@@ -746,16 +745,19 @@ def update_subscription_node(sub_id: str, node_id: str, data: UpdateSubNode, _: 
 
 @router.put("/subscriptions/{sub_id}/nodes/{node_id}/full")
 @handle_api_errors
-def update_subscription_node_full(sub_id: str, node_id: str, data: UpdateSubNodeFull, _: bool = Depends(verify_session)):
+def update_subscription_node_full(
+    sub_id: str, node_id: str, data: UpdateSubNodeFull, _: bool = Depends(verify_session)
+):
     """Update subscription node with full config"""
+
     def replace_node(sub_data: dict):
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
 
         node_index = _subscription_node_index(nodes, sub_id, node_id)
         previous = nodes[node_index]
         updated = dict(data.node)
-        if 'enabled' not in updated and isinstance(previous, dict) and 'enabled' in previous:
-            updated['enabled'] = previous['enabled']
+        if "enabled" not in updated and isinstance(previous, dict) and "enabled" in previous:
+            updated["enabled"] = previous["enabled"]
         nodes[node_index] = updated
         return dict(nodes[node_index])
 
@@ -771,16 +773,16 @@ def toggle_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify
     srv = _get_server()
     config = load_config()
 
-    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+    sub = next((s for s in config.get("subscriptions", []) if s["id"] == sub_id), None)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     def toggle_node(sub_data: dict):
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
 
         node_index = _subscription_node_index(nodes, sub_id, node_id)
-        nodes[node_index]['enabled'] = not is_node_enabled(nodes[node_index])
-        return nodes[node_index]['enabled']
+        nodes[node_index]["enabled"] = not is_node_enabled(nodes[node_index])
+        return nodes[node_index]["enabled"]
 
     enabled = update_subscription_yaml_with_references(sub_id, toggle_node)
     srv.invalidate_stats_cache()
@@ -792,13 +794,13 @@ def toggle_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify
 def delete_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify_session)):
     """Delete a node from subscription"""
     config = load_config()
-    
-    sub = next((s for s in config.get('subscriptions', []) if s['id'] == sub_id), None)
+
+    sub = next((s for s in config.get("subscriptions", []) if s["id"] == sub_id), None)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    
+
     def remove_node(sub_data: dict):
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
 
         node_index = _subscription_node_index(nodes, sub_id, node_id)
         del nodes[node_index]
@@ -806,7 +808,7 @@ def delete_subscription_node(sub_id: str, node_id: str, _: bool = Depends(verify
 
     update_subscription_yaml_with_references(sub_id, remove_node)
     _get_server().invalidate_stats_cache()
-    
+
     return {"status": "success"}
 
 
@@ -827,7 +829,7 @@ class NodeTestRequest(BaseModel):
 
 
 class NodeTestResultPayload(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
     latency: Optional[float] = Field(None, ge=-1)
     speed: Optional[float] = Field(None, ge=0)
     peak_speed: Optional[float] = Field(None, ge=0)
@@ -841,7 +843,7 @@ class NodeTestResultPayload(BaseModel):
 
 
 class BatchSaveRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
     results: Dict[str, Dict[str, NodeTestResultPayload]]
 
 
@@ -851,10 +853,10 @@ class BatchSaveRequest(BaseModel):
 async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: bool = Depends(verify_session)):
     """批量保存所有测试结果"""
     from datetime import datetime
-    
+
     saved_count = 0
     unmatched_node_ids = []
-    
+
     for source_id, nodes_data in data.results.items():
         if source_id == "vpngate":
             for node_id, result in nodes_data.items():
@@ -878,8 +880,8 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
             def save_custom_results(config: dict):
                 updated_region_nodes = []
                 saved = 0
-                custom_nodes = config.get('custom_nodes', [])
-                for node_id, result in nodes_data.items():
+                custom_nodes = config.get("custom_nodes", [])
+                for node_id, result in nodes_data.items():  # noqa: B023 - closure is invoked synchronously within the same loop iteration
                     result = result.model_dump(exclude_none=True)
                     node_index = next(
                         (
@@ -895,48 +897,39 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if normalized_node != node:
                             custom_nodes[node_index] = normalized_node
                             node = normalized_node
-                        if 'latency' in result:
-                            node['last_latency'] = result['latency']
-                            node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'speed' in result:
-                            node['last_speed'] = result['speed']
-                            node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'peak_speed' in result:
-                            node['last_peak_speed'] = result['peak_speed']
-                            node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'exit_ip' in result:
-                            node['exit_ip'] = result['exit_ip']
-                        if isinstance(result.get('ip_profile'), dict):
-                            profile_update = dict(result['ip_profile'])
-                            profile_exit_ip = (
-                                str(
-                                    result.get('exit_ip')
-                                    or profile_update.get('exit_ip')
-                                    or node.get('exit_ip')
-                                    or ''
-                                ).strip()
-                            )
+                        if "latency" in result:
+                            node["last_latency"] = result["latency"]
+                            node["last_latency_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "speed" in result:
+                            node["last_speed"] = result["speed"]
+                            node["last_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "peak_speed" in result:
+                            node["last_peak_speed"] = result["peak_speed"]
+                            node["last_peak_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "exit_ip" in result:
+                            node["exit_ip"] = result["exit_ip"]
+                        if isinstance(result.get("ip_profile"), dict):
+                            profile_update = dict(result["ip_profile"])
+                            profile_exit_ip = str(
+                                result.get("exit_ip") or profile_update.get("exit_ip") or node.get("exit_ip") or ""
+                            ).strip()
                             if profile_exit_ip:
-                                profile_update.setdefault('exit_ip', profile_exit_ip)
-                                node['ip_profile'] = _merge_ip_profile(
-                                    node.get('ip_profile'),
+                                profile_update.setdefault("exit_ip", profile_exit_ip)
+                                node["ip_profile"] = _merge_ip_profile(
+                                    node.get("ip_profile"),
                                     profile_update,
                                     profile_exit_ip,
                                 )
                             else:
-                                node['ip_profile'] = {
-                                    **(
-                                        node.get('ip_profile')
-                                        if isinstance(node.get('ip_profile'), dict)
-                                        else {}
-                                    ),
+                                node["ip_profile"] = {
+                                    **(node.get("ip_profile") if isinstance(node.get("ip_profile"), dict) else {}),
                                     **profile_update,
                                 }
-                        if 'region' in result:
-                            node['region'] = result['region']
-                        if 'city' in result:
-                            node['city'] = result['city']
-                        if 'region' in result:
+                        if "region" in result:
+                            node["region"] = result["region"]
+                        if "city" in result:
+                            node["city"] = result["city"]
+                        if "region" in result:
                             updated_region_nodes.append(dict(node))
                         saved += 1
                     else:
@@ -946,7 +939,7 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
             custom_saved_count, updated_region_nodes = update_custom_nodes(save_custom_results)
             saved_count += custom_saved_count
             if updated_region_nodes:
-                remember_nodes_region(updated_region_nodes, source='speedtest:custom-batch')
+                remember_nodes_region(updated_region_nodes, source="speedtest:custom-batch")
         else:
             # 保存订阅节点
             def save_subscription_results(sub_data: dict):
@@ -954,14 +947,14 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                 updated_region_nodes = []
                 if not sub_data:
                     return saved, updated_region_nodes
-                for node_id, result in nodes_data.items():
+                for node_id, result in nodes_data.items():  # noqa: B023 - closure is invoked synchronously within the same loop iteration
                     result = result.model_dump(exclude_none=True)
-                    nodes = sub_data.get('proxies', [])
+                    nodes = sub_data.get("proxies", [])
                     try:
-                        node_index = find_subscription_node_index(nodes, source_id, node_id)
+                        node_index = find_subscription_node_index(nodes, source_id, node_id)  # noqa: B023 - closure is invoked synchronously within the same loop iteration
                     except ValueError:
                         logger.warning("Skipped ambiguous node identity while saving batch results")
-                        unmatched_node_ids.append(f"{source_id}:{node_id}")
+                        unmatched_node_ids.append(f"{source_id}:{node_id}")  # noqa: B023 - closure is invoked synchronously within the same loop iteration
                         continue
                     if node_index is not None:
                         node = nodes[node_index]
@@ -969,52 +962,43 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
                         if normalized_node != node:
                             nodes[node_index] = normalized_node
                             node = normalized_node
-                        if 'latency' in result:
-                            node['last_latency'] = result['latency']
-                            node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'speed' in result:
-                            node['last_speed'] = result['speed']
-                            node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'peak_speed' in result:
-                            node['last_peak_speed'] = result['peak_speed']
-                            node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if 'exit_ip' in result:
-                            node['exit_ip'] = result['exit_ip']
-                        if isinstance(result.get('ip_profile'), dict):
-                            profile_update = dict(result['ip_profile'])
-                            profile_exit_ip = (
-                                str(
-                                    result.get('exit_ip')
-                                    or profile_update.get('exit_ip')
-                                    or node.get('exit_ip')
-                                    or ''
-                                ).strip()
-                            )
+                        if "latency" in result:
+                            node["last_latency"] = result["latency"]
+                            node["last_latency_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "speed" in result:
+                            node["last_speed"] = result["speed"]
+                            node["last_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "peak_speed" in result:
+                            node["last_peak_speed"] = result["peak_speed"]
+                            node["last_peak_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if "exit_ip" in result:
+                            node["exit_ip"] = result["exit_ip"]
+                        if isinstance(result.get("ip_profile"), dict):
+                            profile_update = dict(result["ip_profile"])
+                            profile_exit_ip = str(
+                                result.get("exit_ip") or profile_update.get("exit_ip") or node.get("exit_ip") or ""
+                            ).strip()
                             if profile_exit_ip:
-                                profile_update.setdefault('exit_ip', profile_exit_ip)
-                                node['ip_profile'] = _merge_ip_profile(
-                                    node.get('ip_profile'),
+                                profile_update.setdefault("exit_ip", profile_exit_ip)
+                                node["ip_profile"] = _merge_ip_profile(
+                                    node.get("ip_profile"),
                                     profile_update,
                                     profile_exit_ip,
                                 )
                             else:
-                                node['ip_profile'] = {
-                                    **(
-                                        node.get('ip_profile')
-                                        if isinstance(node.get('ip_profile'), dict)
-                                        else {}
-                                    ),
+                                node["ip_profile"] = {
+                                    **(node.get("ip_profile") if isinstance(node.get("ip_profile"), dict) else {}),
                                     **profile_update,
                                 }
-                        if 'region' in result:
-                            node['region'] = result['region']
-                        if 'city' in result:
-                            node['city'] = result['city']
-                        if 'region' in result:
+                        if "region" in result:
+                            node["region"] = result["region"]
+                        if "city" in result:
+                            node["city"] = result["city"]
+                        if "region" in result:
                             updated_region_nodes.append(node)
                         saved += 1
                     else:
-                        unmatched_node_ids.append(f"{source_id}:{node_id}")
+                        unmatched_node_ids.append(f"{source_id}:{node_id}")  # noqa: B023 - closure is invoked synchronously within the same loop iteration
                 return saved, updated_region_nodes
 
             source_saved_count, updated_region_nodes = update_subscription_yaml_with_references(
@@ -1023,8 +1007,8 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
             )
             saved_count += source_saved_count
             if updated_region_nodes:
-                remember_nodes_region(updated_region_nodes, source=f'speedtest:subscription-batch:{source_id}')
-    
+                remember_nodes_region(updated_region_nodes, source=f"speedtest:subscription-batch:{source_id}")
+
     return {
         "status": "success",
         "saved_count": saved_count,
@@ -1035,26 +1019,25 @@ async def batch_save_test_results(data: BatchSaveRequest, request: Request, _: b
 @router.post("/nodes/{source_id}/{node_id}/test")
 @limiter.limit(AppConfig.RATE_LIMIT_NODE_TEST)
 @handle_api_errors
-async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request: Request, _: bool = Depends(verify_session)):
+async def test_node(
+    source_id: str, node_id: str, data: NodeTestRequest, request: Request, _: bool = Depends(verify_session)
+):
     """Run one or more independent node measurements for a subscription or custom node."""
     import asyncio
     import math
     from datetime import datetime
+
     from api.speedtest import (
         _go_speedtest_request,
         build_node_speedtest_payload,
     )
-    
+
     if source_id == "custom":
         # Test custom node
         config = load_config()
-        nodes = config.get('custom_nodes', [])
+        nodes = config.get("custom_nodes", [])
         node_index = next(
-            (
-                index
-                for index, candidate in enumerate(nodes)
-                if get_custom_node_id(candidate) == node_id
-            ),
+            (index for index, candidate in enumerate(nodes) if get_custom_node_id(candidate) == node_id),
             None,
         )
         if node_index is None:
@@ -1075,15 +1058,15 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
         # Test subscription node
         config = load_config()
         subscription = next(
-            (candidate for candidate in config.get('subscriptions', []) if candidate.get('id') == source_id),
+            (candidate for candidate in config.get("subscriptions", []) if candidate.get("id") == source_id),
             None,
         )
         if not subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        if not subscription.get('enabled', True):
+        if not subscription.get("enabled", True):
             raise HTTPException(status_code=409, detail="Subscription is disabled")
         sub_data = load_subscription_yaml(source_id, YAML_SOURCE_DIR, use_cache=True)
-        nodes = sub_data.get('proxies', []) if sub_data else []
+        nodes = sub_data.get("proxies", []) if sub_data else []
         node_index = _subscription_node_index(nodes, source_id, node_id)
         node = nodes[node_index]
         persistent_custom_node_id = None
@@ -1093,7 +1076,7 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
     # Speed testing is backed by Mihomo/Go's Clash-compatible adapter. Keep
     # protocol-neutral validation for storage/export, but do not attempt to
     # test a node whose target adapter would reject or reinterpret it.
-    invalid_reason = ProxyFilter.get_target_invalid_reason(node, 'clash')
+    invalid_reason = ProxyFilter.get_target_invalid_reason(node, "clash")
     if invalid_reason:
         raise HTTPException(
             status_code=400,
@@ -1103,21 +1086,18 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
     normalization_changed = normalized_node != node
     if normalization_changed:
         node = normalized_node
-    
-    result = {
-        "success": True,
-        "name": node.get('name', 'Unknown')
-    }
+
+    result = {"success": True, "name": node.get("name", "Unknown")}
 
     timeout_ms = data.timeout
     timeout_seconds = max(1, math.ceil(timeout_ms / 1000))
-    
+
     need_save = normalization_changed
-    
+
     try:
         base_payload, using_proxy = build_node_speedtest_payload(node)
         if using_proxy:
-            result['using_proxy'] = True
+            result["using_proxy"] = True
 
         # Test latency
         if data.test_latency:
@@ -1132,16 +1112,16 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 # fallbacks, each with the requested node timeout.
                 timeout_seconds * 3 + 2,
             )
-            latency = latency_result.get('latency', -1)
-            result['latency'] = latency
-            if not latency_result.get('success'):
-                result['success'] = False
-                result['error'] = latency_result.get('error', 'Latency test failed')
+            latency = latency_result.get("latency", -1)
+            result["latency"] = latency
+            if not latency_result.get("success"):
+                result["success"] = False
+                result["error"] = latency_result.get("error", "Latency test failed")
             else:
-                node['last_latency'] = latency
-                node['last_latency_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                node["last_latency"] = latency
+                node["last_latency_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 need_save = True
-            
+
         # Test IP/region, IPPure attributes, and Radar independently.  All
         # three measurements share the node's current exit IP, but each
         # result records its own status so an unavailable provider is not
@@ -1152,9 +1132,9 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 {**base_payload, "timeout": timeout_ms},
                 timeout_seconds + 2,
             )
-            if ip_result.get('success') and ip_result.get('ip'):
-                exit_ip = ip_result.get('ip')
-                result['exit_ip'] = exit_ip
+            if ip_result.get("success") and ip_result.get("ip"):
+                exit_ip = ip_result.get("ip")
+                result["exit_ip"] = exit_ip
 
                 from geoip_service import lookup_ip_online
 
@@ -1172,9 +1152,7 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                         ippure_result = cached_ippure
                     else:
                         try:
-                            ippure_result = await _lookup_ippure_via_node(
-                                base_payload, timeout_seconds, exit_ip
-                            )
+                            ippure_result = await _lookup_ippure_via_node(base_payload, timeout_seconds, exit_ip)
                         except Exception as exc:
                             logger.debug("IPPure lookup failed for %s: %s", exit_ip, type(exc).__name__)
                             ippure_result = {"ippure_status": "failed"}
@@ -1213,49 +1191,45 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 if data.test_region:
                     profile_updates["ip_status"] = "success" if geo_result else "no_data"
                 if data.test_ip_profile:
-                    profile_updates["ippure_status"] = (
-                        (ippure_result or {}).get("ippure_status") or "failed"
-                    )
+                    profile_updates["ippure_status"] = (ippure_result or {}).get("ippure_status") or "failed"
                 if data.test_radar:
-                    profile_updates["radar_status"] = (
-                        (radar_result or {}).get("radar_status") or "failed"
-                    )
+                    profile_updates["radar_status"] = (radar_result or {}).get("radar_status") or "failed"
 
                 ip_profile = _merge_ip_profile(
                     node.get("ip_profile"),
                     profile_updates,
                     exit_ip,
                 )
-                result['ip_profile'] = ip_profile
-                node['ip_profile'] = ip_profile
-                node['exit_ip'] = exit_ip
+                result["ip_profile"] = ip_profile
+                node["ip_profile"] = ip_profile
+                node["exit_ip"] = exit_ip
                 need_save = True
 
                 if data.test_region and geo_result:
-                    result['region'] = {
-                        'country': geo_result.get('country_name'),
-                        'country_code': geo_result.get('iso_code'),
-                        'flag': geo_result.get('flag'),
-                        'display': geo_result.get('country_name')
+                    result["region"] = {
+                        "country": geo_result.get("country_name"),
+                        "country_code": geo_result.get("iso_code"),
+                        "flag": geo_result.get("flag"),
+                        "display": geo_result.get("country_name"),
                     }
-                    result['city'] = geo_result.get('city')
-                    node['region'] = {
-                        'country': geo_result.get('country_name'),
-                        'country_code': geo_result.get('iso_code'),
-                        'flag': geo_result.get('flag')
+                    result["city"] = geo_result.get("city")
+                    node["region"] = {
+                        "country": geo_result.get("country_name"),
+                        "country_code": geo_result.get("iso_code"),
+                        "flag": geo_result.get("flag"),
                     }
-                    node['city'] = geo_result.get('city')
-                    remember_nodes_region([node], source=f'speedtest:single:{source_id}')
+                    node["city"] = geo_result.get("city")
+                    remember_nodes_region([node], source=f"speedtest:single:{source_id}")
                 elif data.test_region:
                     # The exit IP test itself succeeded.  Keep the response
                     # successful and expose ``ip_status=no_data`` in the
                     # profile so the UI can distinguish this from an
                     # untested node.
-                    result['metadata_warning'] = 'GeoIP lookup returned no data'
+                    result["metadata_warning"] = "GeoIP lookup returned no data"
             else:
-                result['success'] = False
-                result['error'] = ip_result.get('error', 'IP lookup failed')
-            
+                result["success"] = False
+                result["error"] = ip_result.get("error", "IP lookup failed")
+
         # Test speed
         if data.test_speed:
             speed_result = await _go_speedtest_request(
@@ -1268,30 +1242,32 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 },
                 timeout_seconds + 5,
             )
-            if speed_result.get('success'):
-                speed = speed_result.get('speed', 0)
-                result['speed'] = speed
-                result['bytes'] = speed_result.get('bytes', 0)
+            if speed_result.get("success"):
+                speed = speed_result.get("speed", 0)
+                result["speed"] = speed
+                result["bytes"] = speed_result.get("bytes", 0)
 
-                node['last_speed'] = speed
-                node['last_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                peak_speed = speed_result.get('peakSpeed', speed_result.get('peak_speed'))
+                node["last_speed"] = speed
+                node["last_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                peak_speed = speed_result.get("peakSpeed", speed_result.get("peak_speed"))
                 if peak_speed is not None:
-                    result['peak_speed'] = peak_speed
-                    node['last_peak_speed'] = peak_speed
-                    node['last_peak_speed_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    result["peak_speed"] = peak_speed
+                    node["last_peak_speed"] = peak_speed
+                    node["last_peak_speed_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 need_save = True
             else:
-                result['success'] = False
-                result['error'] = speed_result.get('error', 'Speed test failed')
-        
+                result["success"] = False
+                result["error"] = speed_result.get("error", "Speed test failed")
+
         # Do not acknowledge a successful test until its metadata is durable.
         if need_save and not data.batch_mode:
+
             def save_test_result():
                 try:
                     if is_custom:
+
                         def save_custom_test_result(latest_config: dict):
-                            latest_nodes = latest_config.get('custom_nodes', [])
+                            latest_nodes = latest_config.get("custom_nodes", [])
                             target_index = None
 
                             for idx, candidate in enumerate(latest_nodes):
@@ -1304,7 +1280,8 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
 
                             latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
                             for field in (
-                                'xhttp-opts', *NODE_TEST_METADATA_FIELDS,
+                                "xhttp-opts",
+                                *NODE_TEST_METADATA_FIELDS,
                             ):
                                 if field in node:
                                     latest_node[field] = node[field]
@@ -1315,18 +1292,25 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                         updates = {
                             field: node[field]
                             for field in (
-                                'last_latency', 'last_latency_time',
-                                'last_speed', 'last_speed_time',
-                                'last_peak_speed', 'last_peak_speed_time',
-                                'exit_ip', 'ip_profile', 'region', 'city',
+                                "last_latency",
+                                "last_latency_time",
+                                "last_speed",
+                                "last_speed_time",
+                                "last_peak_speed",
+                                "last_peak_speed_time",
+                                "exit_ip",
+                                "ip_profile",
+                                "region",
+                                "city",
                             )
                             if field in node
                         }
                         if not update_vpngate_node_test_metadata(node_id, updates):
                             raise HTTPException(status_code=404, detail="VPN Gate node not found")
                     else:
+
                         def save_subscription_test_result(latest_sub_data: dict):
-                            latest_nodes = latest_sub_data.get('proxies', []) if latest_sub_data else []
+                            latest_nodes = latest_sub_data.get("proxies", []) if latest_sub_data else []
                             try:
                                 target_index = find_subscription_node_index(
                                     latest_nodes,
@@ -1341,7 +1325,8 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
 
                             latest_node = ProxyFilter.sanitize_proxy(latest_nodes[target_index])
                             for field in (
-                                'xhttp-opts', *NODE_TEST_METADATA_FIELDS,
+                                "xhttp-opts",
+                                *NODE_TEST_METADATA_FIELDS,
                             ):
                                 if field in node:
                                     latest_node[field] = node[field]
@@ -1354,15 +1339,15 @@ async def test_node(source_id: str, node_id: str, data: NodeTestRequest, request
                 except Exception as e:
                     logger.error(f"Failed to save node test results: {e}")
                     raise
-            
+
             await asyncio.to_thread(save_test_result)
-        
+
         return result
-        
+
     except Exception as e:
         logger.error(f"Node test error: {e}", exc_info=True)
         return {
             "success": False,
-            "name": node.get('name', 'Unknown'),
-            "error": SensitiveDataFilter.sanitize(str(e))[:500] or "Node test failed"
+            "name": node.get("name", "Unknown"),
+            "error": SensitiveDataFilter.sanitize(str(e))[:500] or "Node test failed",
         }

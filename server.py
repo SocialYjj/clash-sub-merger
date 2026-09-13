@@ -1,80 +1,93 @@
-import os
-import yaml
-import json
-import time
-import hashlib
-import httpx
-import subprocess
+import asyncio  # Used for async operations
 import atexit
 import base64  # Used for local subscription parsing
-import asyncio  # Used for async operations
-import uuid  # Used for request IDs
+import hashlib
+import json
+import os
+import subprocess
 import sys
-from copy import deepcopy
+import time
+import uuid  # Used for request IDs
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
+
+import httpx
+import yaml
 
 # Use C-accelerated safe YAML loader for better performance.
 # Remote subscriptions and uploaded templates must never be parsed with
 # yaml.Loader/CLoader because those loaders can construct arbitrary Python
 # objects from YAML tags.
 try:
-    from yaml import CSafeLoader as YAMLLoader, CSafeDumper as YAMLDumper
+    from yaml import CSafeDumper as YAMLDumper
+    from yaml import CSafeLoader as YAMLLoader
 except ImportError:
-    from yaml import SafeLoader as YAMLLoader, SafeDumper as YAMLDumper
-from typing import Optional, Tuple, Dict, List, Callable, AsyncGenerator
+    from yaml import SafeDumper as YAMLDumper
+    from yaml import SafeLoader as YAMLLoader
+from typing import AsyncGenerator, Callable, Dict, List, Optional, Tuple
+
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from filelock import FileLock, Timeout as FileLockTimeout
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+# Import API routers
+from api import api_router
+from api.health import set_http_client as set_health_http_client
+from api.template_compat import create_template_router, split_template
+from api.user_allocation import create_user_allocation_router
+
 # Import from refactored modules
 from core import (
-    http_requests_total, http_request_duration_seconds,
     concurrent_requests,
+    http_request_duration_seconds,
+    http_requests_total,
 )
+
+# Import refactored modules
+from core.config import AppConfig as CoreAppConfig
+from core.config import env_int
+from core.database import find_subscription_by_id, load_config, save_config, update_config, update_subscription_fields
+from core.http_middleware import RequestSizeLimitMiddleware
+from core.initialization import initialize_administrator
+from core.rate_limit import limiter
+from geoip_service import GeoIPService
+from helpers import (
+    Constants,
+    generate_timestamp_id,
+    load_subscription_yaml,
+)
+from logger_config import get_logger
+from scheduler_service import get_scheduler, init_scheduler
+from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP
 from services.name_transformer import NameTransformer
+from services.node_manager import find_node_by_reference, is_name_allocated
+from services.node_metadata import strip_node_metadata
+from services.node_parser import parse_node_link
+from services.node_reference_updates import (
+    reconcile_subscription_node_references,
+    subscription_nodes_from_yaml_content,
+)
 from services.node_visibility import (
     apply_node_visibility_to_yaml_content,
     clear_user_subscription_caches,
     is_node_enabled,
 )
-from services.node_reference_updates import (
-    reconcile_subscription_node_references,
-    subscription_nodes_from_yaml_content,
-)
-from services.country_data import COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP
-from services.node_parser import parse_node_link
+from services.proxy_filter import ProxyFilter
 from services.region_history import (
     apply_node_test_metadata_to_yaml_content,
     apply_region_history_to_yaml_content,
 )
-from services.node_manager import find_node_by_reference, is_name_allocated
-from services.proxy_filter import ProxyFilter
-from services.node_metadata import strip_node_metadata
-from services.subscription_node_count import count_effective_subscription_nodes
-from geoip_service import GeoIPService
-from scheduler_service import get_scheduler, init_scheduler
-from logger_config import get_logger
-from helpers import (
-    Constants,
-    load_subscription_yaml,
-    generate_timestamp_id,
-)
-
-# Import refactored modules
-from core.config import AppConfig as CoreAppConfig, env_int
-from core.database import load_config, save_config, update_config, find_subscription_by_id, update_subscription_fields
-from core.http_middleware import RequestSizeLimitMiddleware
-from core.initialization import initialize_administrator
-from core.rate_limit import limiter
-from services.subscription_output import create_subscription_output_router
 from services.subscription_fetcher import FetchError, SubscriptionFetcher
+from services.subscription_node_count import count_effective_subscription_nodes
+from services.subscription_output import create_subscription_output_router
 from services.subscription_refresh_lock import (
     SubscriptionRefreshInProgress,
     wait_for_refresh_slot,
@@ -96,12 +109,6 @@ from services.vpngate import (
     run_scheduled_vpngate_refresh,
 )
 
-# Import API routers
-from api import api_router
-from api.health import set_http_client as set_health_http_client
-from api.user_allocation import create_user_allocation_router
-from api.template_compat import create_template_router, split_template
-
 # Setup logger for this module
 logger = get_logger(__name__)
 
@@ -111,6 +118,7 @@ logger = get_logger(__name__)
 # here made environment variables drift between core and server startup paths.
 AppConfig = CoreAppConfig
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await startup_event()
@@ -118,6 +126,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         await shutdown_event()
+
 
 app = FastAPI(
     title="Clash Config Merger API",
@@ -137,20 +146,18 @@ app = FastAPI(
         {"name": "stats", "description": "Statistics and analytics"},
         {"name": "Subscription Output", "description": "Generated Clash/Mihomo subscription output"},
     ],
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
+
 # Global exception handler to log all unhandled exceptions
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled request exception", exc_info=(type(exc), exc, exc.__traceback__))
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.middleware("http")
@@ -168,7 +175,7 @@ async def security_headers_middleware(request: Request, call_next: Callable) -> 
         "object-src 'none'; "
         "base-uri 'self'; "
         "frame-ancestors 'none'; "
-        "form-action 'self'"
+        "form-action 'self'",
     )
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -177,9 +184,9 @@ async def security_headers_middleware(request: Request, call_next: Callable) -> 
     return response
 
 
-_cors_origins = [origin.strip() for origin in AppConfig.CORS_ORIGINS.split(',') if origin.strip()]
+_cors_origins = [origin.strip() for origin in AppConfig.CORS_ORIGINS.split(",") if origin.strip()]
 _cors_allow_credentials = True
-if AppConfig.CORS_ORIGINS.strip() == '*':
+if AppConfig.CORS_ORIGINS.strip() == "*":
     _cors_origins = ["*"]
     # Browsers reject Access-Control-Allow-Origin: * with credentials=true.
     # This app authenticates API calls with an Authorization header, so wildcard
@@ -202,6 +209,7 @@ app.add_middleware(RequestSizeLimitMiddleware, max_bytes=AppConfig.MAX_REQUEST_S
 
 # ==================== Startup/Shutdown Events ====================
 
+
 def _restore_scheduled_jobs():
     """Restore scheduled jobs from config."""
     try:
@@ -210,49 +218,43 @@ def _restore_scheduled_jobs():
         restored_count = 0
         desired_task_ids = {
             f"sub_refresh_{sub['id']}"
-            for sub in config.get('subscriptions', [])
-            if sub.get('id')
-            and sub.get('type') != 'local'
-            and sub.get('enabled', True)
-            and sub.get('cron_expr')
+            for sub in config.get("subscriptions", [])
+            if sub.get("id") and sub.get("type") != "local" and sub.get("enabled", True) and sub.get("cron_expr")
         }
 
         for existing_task_id in list(scheduler.jobs):
-            if existing_task_id.startswith('sub_refresh_') and existing_task_id not in desired_task_ids:
+            if existing_task_id.startswith("sub_refresh_") and existing_task_id not in desired_task_ids:
                 scheduler.remove_job(existing_task_id)
 
-        for sub in config.get('subscriptions', []):
-            if sub.get('type') == 'local' or not sub.get('enabled', True):
-                if sub.get('next_update') is not None:
-                    update_subscription_fields(sub['id'], {'next_update': None})
+        for sub in config.get("subscriptions", []):
+            if sub.get("type") == "local" or not sub.get("enabled", True):
+                if sub.get("next_update") is not None:
+                    update_subscription_fields(sub["id"], {"next_update": None})
                 continue
-            
-            cron_expr = sub.get('cron_expr')
+
+            cron_expr = sub.get("cron_expr")
             if cron_expr:
                 try:
                     task_id = f"sub_refresh_{sub['id']}"
-                    job_id = scheduler.add_job(
-                        task_id,
-                        cron_expr,
-                        refresh_subscription_job,
-                        sub['id']
-                    )
-                    
+                    job_id = scheduler.add_job(task_id, cron_expr, refresh_subscription_job, sub["id"])
+
                     # Update next_update timestamp
                     job_info = scheduler.get_job_info(task_id)
                     if job_id and job_info and job_info.get("next_run"):
                         next_update = int(job_info["next_run"].timestamp())
-                        update_subscription_fields(sub['id'], {'next_update': next_update})
+                        update_subscription_fields(sub["id"], {"next_update": next_update})
                         restored_count += 1
-                        logger.info(f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job_info['next_run']}")
+                        logger.info(
+                            f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job_info['next_run']}"
+                        )
                     else:
-                        update_subscription_fields(sub['id'], {'next_update': None})
-                        logger.error("Failed to restore schedule for subscription '%s'", sub.get('name'))
+                        update_subscription_fields(sub["id"], {"next_update": None})
+                        logger.error("Failed to restore schedule for subscription '%s'", sub.get("name"))
                 except Exception as e:
                     logger.error(f"Failed to restore schedule for subscription '{sub.get('name')}': {e}")
-                    update_subscription_fields(sub['id'], {'next_update': None})
-            elif sub.get('next_update') is not None:
-                update_subscription_fields(sub['id'], {'next_update': None})
+                    update_subscription_fields(sub["id"], {"next_update": None})
+            elif sub.get("next_update") is not None:
+                update_subscription_fields(sub["id"], {"next_update": None})
 
         if restored_count > 0:
             logger.info(f"Restored {restored_count} scheduled job(s)")
@@ -263,24 +265,22 @@ def _restore_scheduled_jobs():
 def _schedule_flclash_version_check():
     """Schedule FlClash version check if using flclash mode."""
     try:
-        ua_mode = os.getenv('SUBSCRIPTION_UA_MODE', 'flclash').strip().lower()
-        if ua_mode != 'flclash':
+        ua_mode = os.getenv("SUBSCRIPTION_UA_MODE", "flclash").strip().lower()
+        if ua_mode != "flclash":
             logger.info(f"FlClash version check disabled (UA mode: {ua_mode})")
             return
-        
-        from helpers_ua import refresh_version_cache
+
         from apscheduler.triggers.cron import CronTrigger
-        
+
+        from helpers_ua import refresh_version_cache
+
         scheduler = get_scheduler()
-        cron_expr = os.getenv('FLCLASH_VERSION_UPDATE_CRON', '0 3 * * *').strip()
-        
+        cron_expr = os.getenv("FLCLASH_VERSION_UPDATE_CRON", "0 3 * * *").strip()
+
         try:
             trigger = CronTrigger.from_crontab(cron_expr)
             scheduler.scheduler.add_job(
-                refresh_version_cache,
-                trigger=trigger,
-                id="flclash_version_refresh",
-                replace_existing=True
+                refresh_version_cache, trigger=trigger, id="flclash_version_refresh", replace_existing=True
             )
             logger.info(f"Scheduled FlClash version check with cron: {cron_expr}")
         except Exception as e:
@@ -289,7 +289,7 @@ def _schedule_flclash_version_check():
                 refresh_version_cache,
                 trigger=CronTrigger(hour=3, minute=0),
                 id="flclash_version_refresh",
-                replace_existing=True
+                replace_existing=True,
             )
             logger.info("Scheduled FlClash version check at 3:00 AM (default)")
     except Exception as e:
@@ -309,6 +309,7 @@ def _schedule_automatic_backup() -> None:
             return
 
         from apscheduler.triggers.interval import IntervalTrigger
+
         from services.backup import create_backup
 
         scheduler.add_job(
@@ -341,8 +342,9 @@ def reschedule_vpngate_refresh() -> None:
             logger.info("VPN Gate automatic refresh disabled")
             return
 
-        from apscheduler.triggers.interval import IntervalTrigger
         from datetime import datetime
+
+        from apscheduler.triggers.interval import IntervalTrigger
 
         scheduler.add_job(
             run_scheduled_vpngate_refresh,
@@ -377,26 +379,25 @@ async def startup_event() -> None:
     migrate_stable_node_references()
     initialize_administrator()
     init_geoip_config()
-    
+
     # Initialize HTTP client
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(
             connect=AppConfig.CONNECT_TIMEOUT,
             read=AppConfig.READ_TIMEOUT,
             write=AppConfig.WRITE_TIMEOUT,
-            pool=AppConfig.CONNECT_TIMEOUT
+            pool=AppConfig.CONNECT_TIMEOUT,
         ),
         follow_redirects=True,
         limits=httpx.Limits(
-            max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
-            max_connections=AppConfig.HTTP_MAX_CONNECTIONS
+            max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE, max_connections=AppConfig.HTTP_MAX_CONNECTIONS
         ),
         verify=AppConfig.HTTP_VERIFY_SSL,
         trust_env=False,
     )
     set_health_http_client(http_client)
     logger.info("HTTP client initialized")
-    
+
     # Start Go speedtest service
     if AppConfig.GO_SPEEDTEST_ENABLED:
         if await asyncio.to_thread(start_go_speedtest_service):
@@ -406,7 +407,7 @@ async def startup_event() -> None:
             logger.warning("Failed to start Go speedtest service - proxy fetching will not be available")
     else:
         logger.info("Go speedtest service disabled")
-    
+
     # APScheduler is process-local. A shared leader lock prevents multiple
     # replicas from registering refresh, version-check and backup jobs.
     if _acquire_scheduler_leader():
@@ -436,12 +437,14 @@ async def shutdown_event() -> None:
     # Close the subscription fetcher's dedicated HTTP client
     try:
         from api.subscriptions import close_fetcher
+
         await close_fetcher()
     except Exception:
         pass
     # Close the shared speedtest HTTP client
     try:
         from api.speedtest import _speedtest_client
+
         if _speedtest_client is not None:
             await _speedtest_client.aclose()
     except Exception:
@@ -450,6 +453,7 @@ async def shutdown_event() -> None:
 
 
 # Request ID middleware
+
 
 @app.middleware("http")
 async def add_request_id(request: Request, call_next: Callable) -> Response:
@@ -460,6 +464,7 @@ async def add_request_id(request: Request, call_next: Callable) -> Response:
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
+
 
 # Slow request logging middleware
 @app.middleware("http")
@@ -477,6 +482,7 @@ async def log_slow_requests(request: Request, call_next: Callable) -> Response:
         )
 
     return response
+
 
 # Metrics middleware
 @app.middleware("http")
@@ -501,7 +507,7 @@ async def metrics_middleware(request: Request, call_next):
         http_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(duration)
 
         return response
-    except Exception as e:
+    except Exception:
         # Record error
         route = request.scope.get("route")
         endpoint = getattr(route, "path", None) or "<unmatched>"
@@ -512,6 +518,7 @@ async def metrics_middleware(request: Request, call_next):
     finally:
         concurrent_requests.dec()
 
+
 # ==================== Register API Routers ====================
 # Include modular API routers (migrated endpoints)
 app.include_router(api_router)
@@ -519,10 +526,10 @@ app.include_router(api_router)
 # Use config values
 BASE_DIR = AppConfig.BASE_DIR
 DATA_DIR = AppConfig.DATA_DIR
-YAML_SOURCE_DIR = os.path.join(DATA_DIR, 'uploads')
-OUTPUT_FILE = os.path.join(DATA_DIR, 'myconfig.yaml')
-CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')  # Unified config file
-MIGRATIONS_LOG = os.path.join(DATA_DIR, 'migrations.log')
+YAML_SOURCE_DIR = os.path.join(DATA_DIR, "uploads")
+OUTPUT_FILE = os.path.join(DATA_DIR, "myconfig.yaml")
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")  # Unified config file
+MIGRATIONS_LOG = os.path.join(DATA_DIR, "migrations.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(YAML_SOURCE_DIR, exist_ok=True)
@@ -571,6 +578,7 @@ def _release_scheduler_leader() -> None:
     SCHEDULER_IS_LEADER = False
     SCHEDULER_LEADER_LOCK = None
 
+
 def start_go_speedtest_service():
     """Start the Go speedtest service as a subprocess"""
     global GO_SPEEDTEST_PROCESS
@@ -588,17 +596,17 @@ def start_go_speedtest_service():
     if speedtest_exe:
         speedtest_dir = os.path.dirname(speedtest_exe) or BASE_DIR
     else:
-        speedtest_dir = os.path.join(BASE_DIR, 'speedtest')
-        if sys.platform == 'win32':
-            speedtest_exe = os.path.join(speedtest_dir, 'speedtest.exe')
+        speedtest_dir = os.path.join(BASE_DIR, "speedtest")
+        if sys.platform == "win32":
+            speedtest_exe = os.path.join(speedtest_dir, "speedtest.exe")
         else:
-            speedtest_exe = os.path.join(speedtest_dir, 'speedtest')
+            speedtest_exe = os.path.join(speedtest_dir, "speedtest")
 
     if not os.path.exists(speedtest_exe):
         logger.error("Go speedtest executable not found at %s", speedtest_exe)
         return False
 
-    raw_startup_grace = os.environ.get('GO_SPEEDTEST_STARTUP_GRACE', '0.5')
+    raw_startup_grace = os.environ.get("GO_SPEEDTEST_STARTUP_GRACE", "0.5")
     try:
         startup_grace = float(raw_startup_grace)
         if not (0 <= startup_grace <= 30):
@@ -618,7 +626,7 @@ def start_go_speedtest_service():
             cwd=speedtest_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         if startup_grace > 0:
             time.sleep(startup_grace)
@@ -684,68 +692,68 @@ def stop_go_speedtest_service():
         finally:
             GO_SPEEDTEST_PROCESS = None
 
+
 # Register cleanup on exit
 atexit.register(stop_go_speedtest_service)
 
 # ==================== Scheduled Job Functions ====================
 
+
 def _load_existing_nodes(sub_id: str) -> list:
     """Load existing nodes for history preservation."""
     try:
         existing_cfg = load_subscription_yaml(sub_id, YAML_SOURCE_DIR, use_cache=False)
-        return existing_cfg.get('proxies', []) if isinstance(existing_cfg, dict) else []
+        return existing_cfg.get("proxies", []) if isinstance(existing_cfg, dict) else []
     except Exception:
         return []
 
 
 def _fetch_and_process_subscription(sub: dict) -> tuple:
     """Fetch subscription and apply history/visibility processing."""
-    sub_id = sub['id']
+    sub_id = sub["id"]
     existing_nodes = _load_existing_nodes(sub_id)
-    
+
     # Fetch subscription using SubscriptionFetcher (supports proxy fallback, consistent with manual refresh)
     try:
         from helpers_ua import get_subscription_user_agent
-        
+
         config = load_config()
-        proxy_url = config.get('settings', {}).get('subscription_proxy_url')
+        proxy_url = config.get("settings", {}).get("subscription_proxy_url")
         user_agent = get_subscription_user_agent()
         fetch_attempts = AppConfig.SUBSCRIPTION_FETCH_RETRIES + 1
-        retry_backoff = (
-            AppConfig.SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS
-            * (2 ** AppConfig.SUBSCRIPTION_FETCH_RETRIES - 1)
-        )
+        retry_backoff = AppConfig.SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS * (2**AppConfig.SUBSCRIPTION_FETCH_RETRIES - 1)
         connection_paths = 2 if proxy_url else 1
-        refresh_timeout = connection_paths * (
-            fetch_attempts * Constants.TIMEOUT_SUBSCRIPTION_FETCH + retry_backoff
-        ) + 10
-        
+        refresh_timeout = (
+            connection_paths * (fetch_attempts * Constants.TIMEOUT_SUBSCRIPTION_FETCH + retry_backoff) + 10
+        )
+
         async def _do_fetch():
             # Create a dedicated client for this thread's event loop.
             # The global http_client is bound to the main event loop and
             # cannot be used from asyncio.run() in a scheduler thread.
             import httpx as _httpx
+
             client = _httpx.AsyncClient(
                 timeout=_httpx.Timeout(
                     connect=AppConfig.CONNECT_TIMEOUT,
                     read=AppConfig.READ_TIMEOUT,
                     write=AppConfig.WRITE_TIMEOUT,
-                    pool=AppConfig.CONNECT_TIMEOUT
+                    pool=AppConfig.CONNECT_TIMEOUT,
                 ),
                 follow_redirects=True,
                 limits=_httpx.Limits(
                     max_keepalive_connections=AppConfig.HTTP_MAX_KEEPALIVE,
-                    max_connections=AppConfig.HTTP_MAX_CONNECTIONS
+                    max_connections=AppConfig.HTTP_MAX_CONNECTIONS,
                 ),
                 verify=AppConfig.HTTP_VERIFY_SSL,
                 trust_env=False,
             )
             try:
                 fetcher = SubscriptionFetcher(client, proxy_url=proxy_url)
-                return await fetcher.fetch(sub['url'], user_agent=user_agent)
+                return await fetcher.fetch(sub["url"], user_agent=user_agent)
             finally:
                 await client.aclose()
-        
+
         async def _run_fetch_with_timeout():
             return await asyncio.wait_for(_do_fetch(), timeout=refresh_timeout)
 
@@ -759,20 +767,20 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
             fetch_coroutine.close()
     except Exception as exc:
         raise FetchError(f"Failed to fetch subscription: {exc}") from None
-    
+
     # Apply region history
     content, remembered, inherited = apply_region_history_to_yaml_content(
         content,
         existing_nodes=existing_nodes,
-        source=f'sub:scheduled-refresh:{sub_id}',
+        source=f"sub:scheduled-refresh:{sub_id}",
     )
 
     content, test_metadata_inherited = apply_node_test_metadata_to_yaml_content(
         content,
         existing_nodes=existing_nodes,
-        source=f'sub:scheduled-refresh:{sub_id}',
+        source=f"sub:scheduled-refresh:{sub_id}",
     )
-    
+
     # Apply node visibility
     content, visibility_inherited = apply_node_visibility_to_yaml_content(
         content,
@@ -787,7 +795,7 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
     node_count = count_effective_subscription_nodes(processed_nodes)
     if node_count <= 0:
         raise FetchError("Subscription contains no valid proxy nodes")
-    
+
     return (
         content,
         sub_info,
@@ -808,11 +816,11 @@ def _build_success_updates(
 ) -> dict:
     """Build success updates dict for subscription."""
     return {
-        'upload': sub_info.get('upload', 0),
-        'download': sub_info.get('download', 0),
-        'total': sub_info.get('total', 0),
-        'expire': sub_info.get('expire', 0),
-        'node_count': node_count,
+        "upload": sub_info.get("upload", 0),
+        "download": sub_info.get("download", 0),
+        "total": sub_info.get("total", 0),
+        "expire": sub_info.get("expire", 0),
+        "node_count": node_count,
         **refresh_success_fields(
             subscription,
             attempted_at=attempted_at,
@@ -832,7 +840,7 @@ def refresh_subscription_job(sub_id: str):
     try:
         with wait_for_scheduled_refresh_slot(sub_id):
             config = load_config()
-            sub = next((candidate for candidate in config.get('subscriptions', []) if candidate['id'] == sub_id), None)
+            sub = next((candidate for candidate in config.get("subscriptions", []) if candidate["id"] == sub_id), None)
             current_subscription = sub
 
             if not sub:
@@ -840,19 +848,27 @@ def refresh_subscription_job(sub_id: str):
                 get_scheduler().remove_job(f"sub_refresh_{sub_id}")
                 return
 
-            if not sub.get('enabled', True):
+            if not sub.get("enabled", True):
                 logger.info("Skipping scheduled refresh for disabled subscription %s", sub_id)
                 return
 
-            if sub.get('type') == 'local':
+            if sub.get("type") == "local":
                 logger.warning("Skipping scheduled refresh for local subscription %s", sub_id)
                 get_scheduler().remove_job(f"sub_refresh_{sub_id}")
                 return
 
             try:
                 record_refresh_attempt(sub, attempted_at)
-                content, sub_info, node_count, remembered, inherited, visibility_inherited, test_metadata_inherited, existing_nodes = \
-                    _fetch_and_process_subscription(sub)
+                (
+                    content,
+                    sub_info,
+                    node_count,
+                    remembered,
+                    inherited,
+                    visibility_inherited,
+                    test_metadata_inherited,
+                    existing_nodes,
+                ) = _fetch_and_process_subscription(sub)
                 refreshed_nodes = subscription_nodes_from_yaml_content(content)
 
                 success_updates = _build_success_updates(sub_info, node_count, sub, attempted_at)
@@ -860,21 +876,25 @@ def refresh_subscription_job(sub_id: str):
                 if remembered or inherited or test_metadata_inherited or visibility_inherited:
                     logger.info(
                         "Scheduled refresh %s history: remembered=%s inherited_region=%s inherited_test_metadata=%s inherited_disabled=%s",
-                        sub_id, remembered, inherited, test_metadata_inherited, visibility_inherited,
+                        sub_id,
+                        remembered,
+                        inherited,
+                        test_metadata_inherited,
+                        visibility_inherited,
                     )
 
                 def commit_scheduled_refresh(latest_config: dict) -> dict:
                     latest_subscription = next(
                         (
                             candidate
-                            for candidate in latest_config.get('subscriptions', [])
-                            if candidate.get('id') == sub_id
+                            for candidate in latest_config.get("subscriptions", [])
+                            if candidate.get("id") == sub_id
                         ),
                         None,
                     )
                     if latest_subscription is None:
                         raise HTTPException(status_code=404, detail="Subscription not found")
-                    subscription_name = str(latest_subscription.get('name') or sub_id)
+                    subscription_name = str(latest_subscription.get("name") or sub_id)
                     reconcile_subscription_node_references(
                         latest_config,
                         sub_id,
@@ -905,7 +925,7 @@ def refresh_subscription_job(sub_id: str):
                     exc_info=True,
                 )
                 record_refresh_failure(sub, exc, attempted_at)
-    except SubscriptionRefreshInProgress as exc:
+    except SubscriptionRefreshInProgress:
         logger.warning("Scheduled refresh skipped because subscription %s is already refreshing", sub_id)
         # A concurrent refresh is not a refresh failure.  Do not overwrite the
         # in-flight job's attempt/success/failure state with a lock-conflict
@@ -931,20 +951,21 @@ def refresh_subscription_job(sub_id: str):
 # xhttp compatibility normalization, deep-copy cache behavior, and file locking.
 
 from core.migrations import (
-    migrate_old_config,
+    init_geoip_config,
     log_migration,
     migrate_legacy_sub_token,
+    migrate_node_pool_ids,
+    migrate_old_config,
+    migrate_proxy_chain_group_ids,
+    migrate_stable_node_references,
     migrate_subscription_fields,
     migrate_subscription_node_counts,
-    migrate_stable_node_references,
-    migrate_proxy_chain_group_ids,
-    migrate_node_pool_ids,
-    init_geoip_config,
     reload_runtime_configuration,
 )
 
 # ==================== Country Detection (imported from services) ====================
 # COUNTRY_KEYWORDS, COUNTRY_NAMES, PLACEHOLDER_COUNTRY_MAP are now in services/country_data.py
+
 
 def filter_underscore_fields(data: dict) -> dict:
     """
@@ -958,9 +979,13 @@ def filter_underscore_fields(data: dict) -> dict:
     """
     return strip_node_metadata(data)
 
-def process_template_proxy_groups(template_groups: List[dict], all_proxies: List[str],
-                                   country_groups: Dict[str, List[str]],
-                                   sorted_country_names: List[str]) -> List[dict]:
+
+def process_template_proxy_groups(
+    template_groups: List[dict],
+    all_proxies: List[str],
+    country_groups: Dict[str, List[str]],
+    sorted_country_names: List[str],
+) -> List[dict]:
     """
     Process template proxy-groups by replacing placeholders with actual values.
 
@@ -976,7 +1001,7 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
             continue
 
         new_group = dict(group)
-        proxies = group.get('proxies', [])
+        proxies = group.get("proxies", [])
 
         if not isinstance(proxies, list):
             processed_groups.append(new_group)
@@ -988,10 +1013,10 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
                 new_proxies.append(item)
                 continue
 
-            if item == '{{ALL_PROXIES}}':
+            if item == "{{ALL_PROXIES}}":
                 # Replace with all proxy names
                 new_proxies.extend(all_proxies)
-            elif item == '{{COUNTRY_GROUPS}}':
+            elif item == "{{COUNTRY_GROUPS}}":
                 # Replace with all country group names
                 new_proxies.extend(sorted_country_names)
             elif item in PLACEHOLDER_COUNTRY_MAP:
@@ -1000,7 +1025,7 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
                 # Find the country group name that matches this code
                 for country_name in sorted_country_names:
                     # Country name format: "flag + name" - need to check if code matches
-                    if country_code in country_name or COUNTRY_NAMES.get(country_code, '') in country_name:
+                    if country_code in country_name or COUNTRY_NAMES.get(country_code, "") in country_name:
                         if country_name in country_groups:
                             new_proxies.extend(country_groups[country_name])
                         break
@@ -1008,12 +1033,13 @@ def process_template_proxy_groups(template_groups: List[dict], all_proxies: List
                 # Keep as-is (DIRECT, REJECT, group references, etc.)
                 new_proxies.append(item)
 
-        new_group['proxies'] = new_proxies
+        new_group["proxies"] = new_proxies
         # Filter out underscore-prefixed fields before adding to output
         filtered_group = filter_underscore_fields(new_group)
         processed_groups.append(filtered_group)
 
     return processed_groups
+
 
 def extract_country_from_name(node_name: str, server: str = None) -> Optional[Dict]:
     """
@@ -1026,7 +1052,7 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
 
     # 1. Check for flag emoji first (two regional indicator symbols)
     for i in range(len(node_name) - 1):
-        potential_flag = node_name[i:i+2]
+        potential_flag = node_name[i : i + 2]
         if not (
             len(potential_flag) == 2
             and 0x1F1E6 <= ord(potential_flag[0]) <= 0x1F1FF
@@ -1036,9 +1062,9 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
         code = GeoIPService.flag_to_iso(potential_flag)
         if code and len(code) == 2:
             return {
-                'country': COUNTRY_NAMES.get(code, code),
-                'country_code': code,
-                'flag': GeoIPService.iso_to_flag(code)
+                "country": COUNTRY_NAMES.get(code, code),
+                "country_code": code,
+                "flag": GeoIPService.iso_to_flag(code),
             }
 
     # 2. Check for keywords (case-insensitive)
@@ -1056,12 +1082,13 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
 
     if best_match_code:
         return {
-            'country': COUNTRY_NAMES.get(best_match_code, best_match_code),
-            'country_code': best_match_code,
-            'flag': GeoIPService.iso_to_flag(best_match_code)
+            "country": COUNTRY_NAMES.get(best_match_code, best_match_code),
+            "country_code": best_match_code,
+            "flag": GeoIPService.iso_to_flag(best_match_code),
         }
 
     return None
+
 
 # Data Models moved to core/models.py
 
@@ -1073,14 +1100,15 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
 
 # ==================== Subscription Helper Functions ====================
 
+
 def parse_subscription_info(headers: dict) -> dict:
     """Parse subscription userinfo from headers"""
-    info = {'upload': 0, 'download': 0, 'total': 0, 'expire': 0}
-    userinfo = headers.get('subscription-userinfo', '') or headers.get('Subscription-Userinfo', '')
+    info = {"upload": 0, "download": 0, "total": 0, "expire": 0}
+    userinfo = headers.get("subscription-userinfo", "") or headers.get("Subscription-Userinfo", "")
     if userinfo:
-        for part in userinfo.split(';'):
-            if '=' in part:
-                key, val = part.split('=', 1)
+        for part in userinfo.split(";"):
+            if "=" in part:
+                key, val = part.split("=", 1)
                 try:
                     info[key.strip().lower()] = int(val.strip())
                 except ValueError as e:
@@ -1120,7 +1148,7 @@ async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
 
     try:
         config = load_config()
-        proxy_url = config.get('settings', {}).get('subscription_proxy_url')
+        proxy_url = config.get("settings", {}).get("subscription_proxy_url")
         user_agent = get_subscription_user_agent()
 
         fetcher = SubscriptionFetcher(http_client, proxy_url=proxy_url)
@@ -1135,9 +1163,9 @@ async def fetch_subscription_async(url: str) -> Tuple[str, dict, int]:
 def _process_subscription_content(response) -> str:
     """Process subscription content from response object"""
     from services.subscription_parser import parse_subscription_content
-    
+
     try:
-        content = response.content.decode('utf-8', errors='ignore').strip()
+        content = response.content.decode("utf-8", errors="ignore").strip()
     except AttributeError:
         try:
             content = response.text.strip()
@@ -1147,10 +1175,10 @@ def _process_subscription_content(response) -> str:
     except Exception as e:
         logger.error(f"Failed to decode response content: {e}")
         content = ""
-    
+
     if not content:
         return ""
-    
+
     try:
         return parse_subscription_content(content)
     except Exception as e:
@@ -1161,10 +1189,10 @@ def _process_subscription_content(response) -> str:
 def _process_subscription_content_str(content: str) -> str:
     """Process subscription content string and return YAML format"""
     from services.subscription_parser import parse_subscription_content
-    
+
     if not content:
         return ""
-    
+
     try:
         return parse_subscription_content(content)
     except Exception as e:
@@ -1176,8 +1204,8 @@ def _count_nodes(content: str) -> int:
     """Count number of nodes in YAML content"""
     try:
         cfg = yaml.load(content, Loader=YAMLLoader)
-        if cfg and isinstance(cfg, dict) and 'proxies' in cfg:
-            count = len(cfg.get('proxies', []))
+        if cfg and isinstance(cfg, dict) and "proxies" in cfg:
+            count = len(cfg.get("proxies", []))
             logger.debug(f"Counted {count} nodes in content")
             return count
     except yaml.YAMLError as e:
@@ -1189,7 +1217,7 @@ def _count_nodes(content: str) -> int:
 
 def _pad_base64(value: str) -> str:
     """Add only the Base64 padding that is actually missing."""
-    return value + '=' * (-len(value) % 4)
+    return value + "=" * (-len(value) % 4)
 
 
 def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
@@ -1206,7 +1234,7 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     try:
         # Remove possible padding issues
         padded = _pad_base64(original_content)
-        decoded = base64.b64decode(padded).decode('utf-8')
+        decoded = base64.b64decode(padded).decode("utf-8")
         decoded_content = decoded.strip()
         logger.debug("Successfully decoded Base64 content")
     except base64.binascii.Error as e:
@@ -1221,8 +1249,8 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
     # Check if it's YAML with proxies section
     try:
         cfg = yaml.load(decoded_content, Loader=YAMLLoader)
-        if isinstance(cfg, dict) and 'proxies' in cfg:
-            proxies = cfg.get('proxies', [])
+        if isinstance(cfg, dict) and "proxies" in cfg:
+            proxies = cfg.get("proxies", [])
             yaml_content = decoded_content
             logger.info(f"Parsed {len(proxies)} nodes from YAML content")
             return yaml_content, proxies, len(proxies)
@@ -1232,10 +1260,10 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
         logger.warning(f"Error parsing YAML content: {e}")
 
     # Try parsing as URI list (one link per line)
-    lines = decoded_content.split('\n')
+    lines = decoded_content.split("\n")
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('#'):
+        if not line or line.startswith("#"):
             continue
 
         # Parse various URI formats
@@ -1245,10 +1273,11 @@ def parse_local_subscription(content: str) -> Tuple[str, List[dict], int]:
 
     if proxies:
         # Convert to YAML format
-        yaml_content = yaml.dump({'proxies': proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
+        yaml_content = yaml.dump({"proxies": proxies}, allow_unicode=True, sort_keys=False, Dumper=YAMLDumper)
         return yaml_content, proxies, len(proxies)
 
     raise ValueError("无法识别订阅内容格式，请检查是否为有效的 YAML、Base64 或节点链接")
+
 
 def update_custom_nodes_yaml():
     """Update custom nodes yaml file"""
@@ -1256,18 +1285,22 @@ def update_custom_nodes_yaml():
 
     rebuild_custom_nodes_yaml()
 
+
 def get_ordered_sources() -> List[dict]:
     """Get all sources in order"""
     config = load_config()
-    subs = config.get('subscriptions', [])
-    custom_nodes = config.get('custom_nodes', [])
-    order = config.get('source_order', [])
+    subs = config.get("subscriptions", [])
+    custom_nodes = config.get("custom_nodes", [])
+    order = config.get("source_order", [])
 
     all_sources = {}
     for s in subs:
-        all_sources[s['id']] = {'type': 'subscription', 'data': s}
+        all_sources[s["id"]] = {"type": "subscription", "data": s}
     if custom_nodes:
-        all_sources['custom_nodes'] = {'type': 'custom', 'data': {'id': 'custom_nodes', 'name': 'Custom Nodes', 'nodes': custom_nodes}}
+        all_sources["custom_nodes"] = {
+            "type": "custom",
+            "data": {"id": "custom_nodes", "name": "Custom Nodes", "nodes": custom_nodes},
+        }
 
     result = []
     for source_id in order:
@@ -1278,7 +1311,9 @@ def get_ordered_sources() -> List[dict]:
 
     return result
 
+
 # ==================== Helper Functions ====================
+
 
 def get_all_final_node_names() -> set:
     """Get a set of all current final node names (for validation)"""
@@ -1286,15 +1321,15 @@ def get_all_final_node_names() -> set:
     names = set()
 
     # Get subscription nodes
-    for sub in config.get('subscriptions', []):
-        if sub.get('enabled', True):
+    for sub in config.get("subscriptions", []):
+        if sub.get("enabled", True):
             try:
-                cfg = load_subscription_yaml(sub['id'], YAML_SOURCE_DIR, use_cache=True)
-                for proxy in cfg.get('proxies', []):
+                cfg = load_subscription_yaml(sub["id"], YAML_SOURCE_DIR, use_cache=True)
+                for proxy in cfg.get("proxies", []):
                     if not is_node_enabled(proxy):
                         continue
-                    transformed = NameTransformer.transform_name(proxy, sub['name'])
-                    names.add(transformed.get('name', ''))
+                    transformed = NameTransformer.transform_name(proxy, sub["name"])
+                    names.add(transformed.get("name", ""))
             except HTTPException:
                 # Subscription file not found, skip
                 pass
@@ -1302,56 +1337,61 @@ def get_all_final_node_names() -> set:
                 logger.error(f"Error getting node names from {sub['id']}: {e}")
 
     # Get custom nodes
-    for node in config.get('custom_nodes', []):
+    for node in config.get("custom_nodes", []):
         if not is_node_enabled(node):
             continue
-        transformed = NameTransformer.transform_name(node, 'Custom')
-        names.add(transformed.get('name', ''))
+        transformed = NameTransformer.transform_name(node, "Custom")
+        names.add(transformed.get("name", ""))
 
     for node in list_vpngate_nodes():
-        transformed = NameTransformer.transform_name(node, 'VPN Gate')
-        names.add(transformed.get('name', ''))
+        transformed = NameTransformer.transform_name(node, "VPN Gate")
+        names.add(transformed.get("name", ""))
 
     return names
-
 
 
 # ==================== Modular Route Registration ====================
 
 # Register routers that depend on helper functions defined above.
-app.include_router(create_user_allocation_router(
-    yaml_source_dir=YAML_SOURCE_DIR,
-    load_config=load_config,
-    get_all_final_node_names=get_all_final_node_names,
-    logger=logger,
-))
-app.include_router(create_subscription_output_router(
-    yaml_source_dir=YAML_SOURCE_DIR,
-    output_file=OUTPUT_FILE,
-    load_config=load_config,
-    update_config=update_config,
-    fetch_subscription=fetch_subscription,
-    fetch_subscription_async=fetch_subscription_async,
-    find_node_by_reference=find_node_by_reference,
-    is_name_allocated=is_name_allocated,
-    filter_underscore_fields=filter_underscore_fields,
-    extract_country_from_name=extract_country_from_name,
-    split_template=split_template,
-    logger=logger,
-    subscription_refresh_lock=wait_for_refresh_slot,
-))
-app.include_router(create_template_router(
-    yaml_source_dir=YAML_SOURCE_DIR,
-    output_file=OUTPUT_FILE,
-    load_config=load_config,
-    update_config=update_config,
-    logger=logger,
-))
+app.include_router(
+    create_user_allocation_router(
+        yaml_source_dir=YAML_SOURCE_DIR,
+        load_config=load_config,
+        get_all_final_node_names=get_all_final_node_names,
+        logger=logger,
+    )
+)
+app.include_router(
+    create_subscription_output_router(
+        yaml_source_dir=YAML_SOURCE_DIR,
+        output_file=OUTPUT_FILE,
+        load_config=load_config,
+        update_config=update_config,
+        fetch_subscription=fetch_subscription,
+        fetch_subscription_async=fetch_subscription_async,
+        find_node_by_reference=find_node_by_reference,
+        is_name_allocated=is_name_allocated,
+        filter_underscore_fields=filter_underscore_fields,
+        extract_country_from_name=extract_country_from_name,
+        split_template=split_template,
+        logger=logger,
+        subscription_refresh_lock=wait_for_refresh_slot,
+    )
+)
+app.include_router(
+    create_template_router(
+        yaml_source_dir=YAML_SOURCE_DIR,
+        output_file=OUTPUT_FILE,
+        load_config=load_config,
+        update_config=update_config,
+        logger=logger,
+    )
+)
 
 
 # ==================== Static Files ====================
 
-frontend_dist = os.environ.get('FRONTEND_DIST_DIR') or os.path.join(BASE_DIR, 'submerger', 'dist')
+frontend_dist = os.environ.get("FRONTEND_DIST_DIR") or os.path.join(BASE_DIR, "submerger", "dist")
 if not os.path.isabs(frontend_dist):
     frontend_dist = os.path.join(BASE_DIR, frontend_dist)
 frontend_dist_path = Path(frontend_dist).resolve()
@@ -1367,7 +1407,7 @@ def _is_path_within(child: Path, parent: Path) -> bool:
 
 def _resolve_frontend_static_file(full_path: str) -> Optional[Path]:
     """Resolve a SPA/static file request without allowing path traversal."""
-    normalized = (full_path or '').replace('\\', '/').lstrip('/')
+    normalized = (full_path or "").replace("\\", "/").lstrip("/")
     target = (frontend_dist_path / normalized).resolve()
     if not _is_path_within(target, frontend_dist_path):
         return None
@@ -1378,7 +1418,7 @@ def _resolve_frontend_static_file(full_path: str) -> Optional[Path]:
 
 if os.path.exists(frontend_dist):
     # 1. Mount assets with cache headers for performance
-    assets_path = os.path.join(frontend_dist, 'assets')
+    assets_path = os.path.join(frontend_dist, "assets")
     if os.path.exists(assets_path):
         app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
 
@@ -1402,11 +1442,11 @@ if os.path.exists(frontend_dist):
         if file_path:
             response = FileResponse(str(file_path))
             # Cache static assets (js, css, images) for 1 year (immutable with hash)
-            if full_path.endswith(('.js', '.css', '.woff', '.woff2', '.ttf', '.eot')):
+            if full_path.endswith((".js", ".css", ".woff", ".woff2", ".ttf", ".eot")):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            elif full_path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp')):
+            elif full_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp")):
                 response.headers["Cache-Control"] = "public, max-age=86400"  # 1 day for images
-            elif full_path.endswith('.json'):
+            elif full_path.endswith(".json"):
                 response.headers["Cache-Control"] = "public, max-age=3600"  # 1 hour for JSON
             return response
 
@@ -1414,6 +1454,7 @@ if os.path.exists(frontend_dist):
         response = FileResponse(str(frontend_dist_path / "index.html"))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -1423,8 +1464,8 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Get configuration from environment variables
-    port = env_int('PORT', 8666, minimum=1, maximum=65535)
-    host = os.getenv('HOST', '0.0.0.0')
+    port = env_int("PORT", 8666, minimum=1, maximum=65535)
+    host = os.getenv("HOST", "0.0.0.0")
 
     logger.info(f"Starting server on {host}:{port}")
     # Subscription clients authenticate in the URL. Uvicorn's default access

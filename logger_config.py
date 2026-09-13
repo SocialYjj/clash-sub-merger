@@ -2,6 +2,7 @@
 Logging configuration for the application
 Supports both plain text and JSON structured logging formats
 """
+
 import json
 import logging
 import os
@@ -14,13 +15,13 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 # Get log level from environment variable
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 # Enable JSON logging with LOG_FORMAT=json
-LOG_FORMAT_TYPE = os.environ.get('LOG_FORMAT', 'text').lower()
-DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.dirname(__file__), 'data'))
+LOG_FORMAT_TYPE = os.environ.get("LOG_FORMAT", "text").lower()
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 
 # Ensure logs directory exists
-LOGS_DIR = os.path.join(DATA_DIR, 'logs')
+LOGS_DIR = os.path.join(DATA_DIR, "logs")
 try:
     Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
 except (PermissionError, OSError):
@@ -28,11 +29,11 @@ except (PermissionError, OSError):
     pass
 
 # Log file path
-LOG_FILE = os.path.join(LOGS_DIR, 'app.log')
+LOG_FILE = os.path.join(LOGS_DIR, "app.log")
 
 # Log format
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class JSONFormatter(logging.Formatter):
@@ -40,30 +41,28 @@ class JSONFormatter(logging.Formatter):
     JSON formatter for structured logging
     Outputs logs in JSON format for easy parsing by log aggregation tools
     """
-    
+
     def format(self, record: logging.LogRecord) -> str:
         log_data = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'level': record.levelname,
-            'logger': record.name,
-            'message': self._sanitize_message(record.getMessage()),
-            'module': record.module,
-            'function': record.funcName,
-            'line': record.lineno,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": self._sanitize_message(record.getMessage()),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
         }
-        
+
         # Add exception info if present
         if record.exc_info:
-            log_data['exception'] = SensitiveDataFilter.sanitize(
-                self.formatException(record.exc_info)
-            )
-        
+            log_data["exception"] = SensitiveDataFilter.sanitize(self.formatException(record.exc_info))
+
         # Add extra fields if any
-        if hasattr(record, 'extra_data'):
-            log_data['extra'] = SensitiveDataFilter.sanitize_value(record.extra_data)
-        
+        if hasattr(record, "extra_data"):
+            log_data["extra"] = SensitiveDataFilter.sanitize_value(record.extra_data)
+
         return json.dumps(log_data, ensure_ascii=False)
-    
+
     def _sanitize_message(self, message: str) -> str:
         """Sanitize sensitive information from log messages"""
         return SensitiveDataFilter.sanitize(message)
@@ -74,26 +73,29 @@ class SensitiveDataFilter(logging.Filter):
     Filter to sanitize sensitive data from log messages
     Masks tokens, passwords, API keys, etc.
     """
-    
+
     # Patterns for sensitive data
     PATTERNS = [
         # API tokens and keys (generic)
-        (re.compile(r'(token["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
-        (re.compile(r'(api[_-]?key["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
-        (re.compile(r'(secret["\s:=]+)["\']?([a-zA-Z0-9_-]{8,})["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (re.compile(r'(token["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r"\1***REDACTED***"),
+        (re.compile(r'(api[_-]?key["\s:=]+)["\']?([a-zA-Z0-9_-]{16,})["\']?', re.IGNORECASE), r"\1***REDACTED***"),
+        (re.compile(r'(secret["\s:=]+)["\']?([a-zA-Z0-9_-]{8,})["\']?', re.IGNORECASE), r"\1***REDACTED***"),
         # Passwords
-        (re.compile(r'(password["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
-        (re.compile(r'(passwd["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (re.compile(r'(password["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r"\1***REDACTED***"),
+        (re.compile(r'(passwd["\s:=]+)["\']?([^"\s,}]+)["\']?', re.IGNORECASE), r"\1***REDACTED***"),
         # Authorization headers
-        (re.compile(r'(Authorization["\s:=]+)["\']?(Bearer\s+)?([a-zA-Z0-9_.-]+)["\']?', re.IGNORECASE), r'\1***REDACTED***'),
+        (
+            re.compile(r'(Authorization["\s:=]+)["\']?(Bearer\s+)?([a-zA-Z0-9_.-]+)["\']?', re.IGNORECASE),
+            r"\1***REDACTED***",
+        ),
         # URLs with credentials
-        (re.compile(r'(https?://)[^:]+:[^@]+@', re.IGNORECASE), r'\1***:***@'),
+        (re.compile(r"(https?://)[^:]+:[^@]+@", re.IGNORECASE), r"\1***:***@"),
         (
             re.compile(
                 r'\b(?:vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|socks5?|anytls|wireguard)://[^\s"\']+',
                 re.IGNORECASE,
             ),
-            '***REDACTED_PROXY_URI***',
+            "***REDACTED_PROXY_URI***",
         ),
     ]
 
@@ -103,23 +105,23 @@ class SensitiveDataFilter(logging.Filter):
     def _redact_http_url(match: re.Match) -> str:
         """Keep only the origin; subscription paths and queries commonly carry credentials."""
         raw_url = match.group(0)
-        trailing = ''
-        while raw_url and raw_url[-1] in '.,);]}':
+        trailing = ""
+        while raw_url and raw_url[-1] in ".,);]}":
             trailing = raw_url[-1] + trailing
             raw_url = raw_url[:-1]
         try:
             parsed = urlsplit(raw_url)
-            hostname = parsed.hostname or ''
+            hostname = parsed.hostname or ""
             if not hostname:
-                return '***REDACTED_URL***' + trailing
-            if ':' in hostname and not hostname.startswith('['):
-                hostname = f'[{hostname}]'
-            port = f':{parsed.port}' if parsed.port else ''
-            redacted = urlunsplit((parsed.scheme, f'{hostname}{port}', '/***REDACTED***', '', ''))
+                return "***REDACTED_URL***" + trailing
+            if ":" in hostname and not hostname.startswith("["):
+                hostname = f"[{hostname}]"
+            port = f":{parsed.port}" if parsed.port else ""
+            redacted = urlunsplit((parsed.scheme, f"{hostname}{port}", "/***REDACTED***", "", ""))
             return redacted + trailing
         except (ValueError, TypeError):
-            return '***REDACTED_URL***' + trailing
-    
+            return "***REDACTED_URL***" + trailing
+
     @classmethod
     def sanitize(cls, message: str) -> str:
         """Apply all sanitization patterns to a message"""
@@ -129,11 +131,13 @@ class SensitiveDataFilter(logging.Filter):
         return cls.HTTP_URL_PATTERN.sub(cls._redact_http_url, message)
 
     @classmethod
-    def sanitize_value(cls, value, key: str = ''):
+    def sanitize_value(cls, value, key: str = ""):
         """Sanitize nested structured log fields without flattening their shape."""
-        normalized_key = key.lower().replace('-', '_')
-        if any(marker in normalized_key for marker in ('token', 'password', 'passwd', 'secret', 'api_key', 'authorization')):
-            return '***REDACTED***' if value not in (None, '') else value
+        normalized_key = key.lower().replace("-", "_")
+        if any(
+            marker in normalized_key for marker in ("token", "password", "passwd", "secret", "api_key", "authorization")
+        ):
+            return "***REDACTED***" if value not in (None, "") else value
         if isinstance(value, dict):
             return {item_key: cls.sanitize_value(item_value, str(item_key)) for item_key, item_value in value.items()}
         if isinstance(value, (list, tuple)):
@@ -141,7 +145,7 @@ class SensitiveDataFilter(logging.Filter):
         if isinstance(value, str):
             return cls.sanitize(value)
         return value
-    
+
     def filter(self, record: logging.LogRecord) -> bool:
         """Filter and sanitize the log record"""
         if record.msg:
@@ -150,10 +154,7 @@ class SensitiveDataFilter(logging.Filter):
             if isinstance(record.args, dict):
                 record.args = self.sanitize_value(record.args)
             else:
-                record.args = tuple(
-                    self.sanitize(str(arg)) if isinstance(arg, str) else arg
-                    for arg in record.args
-                )
+                record.args = tuple(self.sanitize(str(arg)) if isinstance(arg, str) else arg for arg in record.args)
         return True
 
 
@@ -166,6 +167,7 @@ class SensitiveFormatter(logging.Formatter):
     def formatException(self, exc_info) -> str:
         return SensitiveDataFilter.sanitize(super().formatException(exc_info))
 
+
 # Store all loggers for dynamic level adjustment
 _all_loggers = {}
 _handlers_lock = threading.Lock()
@@ -176,11 +178,11 @@ _shared_file_handler: logging.Handler | None = None
 def _get_formatter() -> logging.Formatter:
     """
     Get the appropriate formatter based on LOG_FORMAT_TYPE
-    
+
     Returns:
         JSONFormatter for 'json', standard Formatter for 'text'
     """
-    if LOG_FORMAT_TYPE == 'json':
+    if LOG_FORMAT_TYPE == "json":
         return JSONFormatter()
     return SensitiveFormatter(LOG_FORMAT, DATE_FORMAT)
 
@@ -188,28 +190,28 @@ def _get_formatter() -> logging.Formatter:
 def setup_logger(name: str = None) -> logging.Logger:
     """
     Setup and return a logger instance
-    
+
     Args:
         name: Logger name (usually __name__ of the module)
-    
+
     Returns:
         Configured logger instance
-    
+
     Environment Variables:
         LOG_LEVEL: Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         LOG_FORMAT: Set output format ('text' or 'json')
     """
-    logger = logging.getLogger(name or 'submerger')
-    
+    logger = logging.getLogger(name or "submerger")
+
     # Store logger reference for dynamic adjustment
-    _all_loggers[name or 'submerger'] = logger
-    
+    _all_loggers[name or "submerger"] = logger
+
     # Avoid adding handlers multiple times
     if logger.handlers:
         return logger
-    
+
     logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
-    
+
     # Add sensitive data filter and share handlers across all module loggers.
     # Independent RotatingFileHandler instances can rotate the same file at
     # the same time, dropping or duplicating records under concurrent load.
@@ -230,7 +232,7 @@ def setup_logger(name: str = None) -> logging.Logger:
                     LOG_FILE,
                     maxBytes=10 * 1024 * 1024,
                     backupCount=5,
-                    encoding='utf-8',
+                    encoding="utf-8",
                 )
                 _shared_file_handler.setLevel(logging.DEBUG)
                 _shared_file_handler.setFormatter(formatter)
@@ -241,7 +243,7 @@ def setup_logger(name: str = None) -> logging.Logger:
                 logger.warning("Could not create file handler: %s. Logging to console only.", e)
         if _shared_file_handler:
             logger.addHandler(_shared_file_handler)
-    
+
     return logger
 
 
@@ -252,10 +254,10 @@ logger = setup_logger()
 def get_logger(name: str) -> logging.Logger:
     """
     Get a logger instance for a specific module
-    
+
     Args:
         name: Module name (usually __name__)
-    
+
     Returns:
         Logger instance
     """
@@ -268,31 +270,31 @@ def get_logger(name: str) -> logging.Logger:
 def set_log_level(level: str):
     """
     Dynamically adjust log level for all loggers at runtime
-    
+
     Args:
         level: Log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
     level_upper = level.upper()
-    if level_upper not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+    if level_upper not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
         raise ValueError(f"Invalid log level: {level}. Must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL")
-    
+
     log_level = getattr(logging, level_upper)
-    
+
     # Update all existing loggers
     for logger_name, logger_instance in _all_loggers.items():
         logger_instance.setLevel(log_level)
         logger.info("Log level changed to %s for logger: %s", level_upper, logger_name)
-    
+
     # Update root logger
     logging.getLogger().setLevel(log_level)
-    
+
     logger.info("Global log level changed to: %s", level_upper)
 
 
 def get_current_log_level() -> str:
     """
     Get current log level
-    
+
     Returns:
         Current log level as string
     """
@@ -302,22 +304,18 @@ def get_current_log_level() -> str:
 def list_all_loggers() -> dict:
     """
     List all registered loggers and their levels
-    
+
     Returns:
         Dictionary of logger names and their levels
     """
-    return {
-        name: logging.getLevelName(logger_instance.level)
-        for name, logger_instance in _all_loggers.items()
-    }
+    return {name: logging.getLevelName(logger_instance.level) for name, logger_instance in _all_loggers.items()}
 
 
 def get_log_format() -> str:
     """
     Get current log format type
-    
+
     Returns:
         Current log format ('text' or 'json')
     """
     return LOG_FORMAT_TYPE
-

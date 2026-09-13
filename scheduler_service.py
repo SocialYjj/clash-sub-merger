@@ -5,12 +5,13 @@ Provides cron-based task scheduling using APScheduler.
 
 import re
 from datetime import datetime
-from typing import Optional, Dict, Callable
 from threading import RLock
+from typing import Callable, Dict, Optional
 
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.executors.pool import ThreadPoolExecutor
+
 from core.config import AppConfig
 from logger_config import get_logger
 
@@ -23,120 +24,113 @@ class SchedulerManager:
     Manages scheduled tasks using APScheduler.
     Supports cron expressions for subscription updates and speed tests.
     """
-    
+
     def __init__(self):
         self.scheduler = AsyncIOScheduler(
             executors={
-                'default': ThreadPoolExecutor(max_workers=AppConfig.SCHEDULED_REFRESH_WORKERS),
+                "default": ThreadPoolExecutor(max_workers=AppConfig.SCHEDULED_REFRESH_WORKERS),
             },
             job_defaults={
-                'coalesce': True,
-                'max_instances': 1,
-                'misfire_grace_time': AppConfig.SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS,
+                "coalesce": True,
+                "max_instances": 1,
+                "misfire_grace_time": AppConfig.SCHEDULED_REFRESH_MISFIRE_GRACE_SECONDS,
             },
         )
         self.jobs: Dict[str, str] = {}  # {task_id: job_id}
         self._lock = RLock()
         self._started = False
         self._callbacks: Dict[str, Callable] = {}  # Store callbacks for tasks
-    
+
     def start(self):
         """Start the scheduler"""
         if not self._started:
             self.scheduler.start()
             self._started = True
             logger.info("Scheduler started")
-    
+
     def stop(self):
         """Stop the scheduler"""
         if self._started:
             self.scheduler.shutdown(wait=False)
             self._started = False
             logger.info("Scheduler stopped")
-    
+
     def is_running(self) -> bool:
         """Check if scheduler is running"""
         return self._started and self.scheduler.running
-    
+
     @staticmethod
     def clean_cron_expression(cron_expr: str) -> str:
         """
         Clean and validate cron expression.
         Removes extra whitespace and validates format.
-        
+
         Standard cron format: minute hour day month weekday
         Example: "0 */6 * * *" = every 6 hours
         """
         if not cron_expr:
             return ""
-        
+
         # Remove leading/trailing whitespace
         cleaned = cron_expr.strip()
-        
+
         # Replace multiple spaces with single space
-        cleaned = re.sub(r'\s+', ' ', cleaned)
-        
+        cleaned = re.sub(r"\s+", " ", cleaned)
+
         return cleaned
-    
+
     @staticmethod
     def validate_cron_expression(cron_expr: str) -> tuple[bool, str]:
         """
         Validate a cron expression.
-        
+
         Returns:
             (is_valid, error_message)
         """
         if not cron_expr:
             return False, "Cron expression is empty"
-        
+
         cleaned = SchedulerManager.clean_cron_expression(cron_expr)
-        parts = cleaned.split(' ')
-        
+        parts = cleaned.split(" ")
+
         if len(parts) != 5:
             return False, f"Cron expression must have 5 parts (minute hour day month weekday), got {len(parts)}"
-        
+
         try:
             # Try to create a trigger to validate
             CronTrigger.from_crontab(cleaned)
             return True, ""
         except Exception as e:
             return False, str(e)
-    
+
     def get_next_run_time(self, cron_expr: str) -> Optional[datetime]:
         """
         Calculate next run time for a cron expression.
-        
+
         Returns:
             Next run datetime or None if invalid
         """
         cleaned = self.clean_cron_expression(cron_expr)
         if not cleaned:
             return None
-        
+
         try:
             trigger = CronTrigger.from_crontab(cleaned)
             return trigger.get_next_fire_time(None, datetime.now())
         except Exception as e:
             logger.error(f"Failed to parse cron expression '{cron_expr}': {e}")
             return None
-    
-    def add_job(
-        self,
-        task_id: str,
-        cron_expr: str,
-        func: Callable,
-        *args,
-        **kwargs
-    ) -> Optional[str]:
+
+    def add_job(self, task_id: str, cron_expr: str, func: Callable, *args, **kwargs) -> Optional[str]:
         """
         Add a scheduled job.
-        
+
         Args:
             task_id: Unique identifier for this task
             cron_expr: Cron expression (minute hour day month weekday)
             func: Function to execute
             *args, **kwargs: Arguments to pass to the function
-        
+
         Returns:
             Job ID or None if failed
         """
@@ -145,7 +139,7 @@ class SchedulerManager:
             if not cleaned:
                 logger.warning(f"Invalid cron expression for task {task_id}")
                 return None
-            
+
             # Remove existing job if any (inline to avoid deadlock)
             if task_id in self.jobs:
                 old_job_id = self.jobs[task_id]
@@ -155,84 +149,71 @@ class SchedulerManager:
                     logger.debug(f"Failed to remove old job {old_job_id}: {e}")
                 del self.jobs[task_id]
                 logger.info(f"Removed existing job {task_id}")
-            
+
             try:
                 trigger = CronTrigger.from_crontab(cleaned)
                 trigger.jitter = AppConfig.SCHEDULED_REFRESH_JITTER_SECONDS or None
                 job = self.scheduler.add_job(
-                    func,
-                    trigger,
-                    args=args,
-                    kwargs=kwargs,
-                    id=f"task_{task_id}",
-                    replace_existing=True
+                    func, trigger, args=args, kwargs=kwargs, id=f"task_{task_id}", replace_existing=True
                 )
-                
+
                 self.jobs[task_id] = job.id
                 next_run = job.next_run_time
                 logger.info(f"Added job {task_id} with cron '{cleaned}', next run: {next_run}")
                 return job.id
-                
+
             except Exception as e:
                 logger.error(f"Failed to add job {task_id}: {e}")
                 return None
-    
+
     def remove_job(self, task_id: str) -> bool:
         """
         Remove a scheduled job.
-        
+
         Returns:
             True if removed, False if not found
         """
         with self._lock:
             if task_id not in self.jobs:
                 return False
-            
+
             job_id = self.jobs[task_id]
             try:
                 self.scheduler.remove_job(job_id)
             except Exception as e:
                 logger.debug(f"Failed to remove job {job_id}: {e}")
-            
+
             del self.jobs[task_id]
             logger.info(f"Removed job {task_id}")
             return True
-    
-    def update_job(
-        self,
-        task_id: str,
-        cron_expr: str,
-        enabled: bool,
-        func: Callable,
-        *args,
-        **kwargs
-    ) -> bool:
+
+    def update_job(self, task_id: str, cron_expr: str, enabled: bool, func: Callable, *args, **kwargs) -> bool:
         """
         Update a scheduled job.
-        
+
         Args:
             task_id: Task identifier
             cron_expr: New cron expression
             enabled: Whether the job should be active
             func: Function to execute
             *args, **kwargs: Arguments for the function
-        
+
         Returns:
             True if successful
         """
         # Remove existing job first
         self.remove_job(task_id)
-        
+
         # Add new job if enabled
         if enabled and cron_expr:
             return self.add_job(task_id, cron_expr, func, *args, **kwargs) is not None
-        
+
         return True
-    
+
     def get_job_info(self, task_id: str) -> Optional[Dict]:
         """
         Get information about a scheduled job.
-        
+
         Returns:
             {
                 "task_id": str,
@@ -245,26 +226,21 @@ class SchedulerManager:
         with self._lock:
             if task_id not in self.jobs:
                 return None
-            
+
             job_id = self.jobs[task_id]
             try:
                 job = self.scheduler.get_job(job_id)
                 if job:
-                    return {
-                        "task_id": task_id,
-                        "job_id": job_id,
-                        "next_run": job.next_run_time,
-                        "pending": job.pending
-                    }
+                    return {"task_id": task_id, "job_id": job_id, "next_run": job.next_run_time, "pending": job.pending}
             except Exception as e:
                 logger.debug(f"Failed to get job info for {task_id}: {e}")
-            
+
             return None
-    
+
     def list_jobs(self) -> list[Dict]:
         """
         List all scheduled jobs.
-        
+
         Returns:
             List of job info dictionaries
         """
@@ -274,16 +250,18 @@ class SchedulerManager:
                 try:
                     job = self.scheduler.get_job(job_id)
                     if job:
-                        jobs.append({
-                            "task_id": task_id,
-                            "job_id": job_id,
-                            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
-                            "pending": job.pending
-                        })
+                        jobs.append(
+                            {
+                                "task_id": task_id,
+                                "job_id": job_id,
+                                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                                "pending": job.pending,
+                            }
+                        )
                 except Exception as e:
                     logger.debug(f"Failed to get job info: {e}")
         return jobs
-    
+
     def pause_job(self, task_id: str) -> bool:
         """Pause a job"""
         with self._lock:
@@ -294,7 +272,7 @@ class SchedulerManager:
                 return True
             except Exception:
                 return False
-    
+
     def resume_job(self, task_id: str) -> bool:
         """Resume a paused job"""
         with self._lock:
@@ -324,13 +302,13 @@ CRON_PRESETS = {
 def get_cron_description(cron_expr: str) -> str:
     """
     Get human-readable description of a cron expression.
-    
+
     Examples:
         "0 */6 * * *" -> "Every 6 hours"
         "0 0 * * *" -> "Daily at midnight"
     """
     cleaned = SchedulerManager.clean_cron_expression(cron_expr)
-    
+
     # Check presets
     for name, preset in CRON_PRESETS.items():
         if cleaned == preset:
@@ -346,26 +324,26 @@ def get_cron_description(cron_expr: str) -> str:
                 "monthly": "每月",
             }
             return descriptions.get(name, name)
-    
+
     # Parse and describe
-    parts = cleaned.split(' ')
+    parts = cleaned.split(" ")
     if len(parts) != 5:
         return cron_expr
-    
+
     minute, hour, day, month, weekday = parts
-    
+
     # Simple patterns
     if minute == "0" and hour.startswith("*/"):
         interval = hour[2:]
         return f"每{interval}小时"
-    
+
     if minute.startswith("*/"):
         interval = minute[2:]
         return f"每{interval}分钟"
-    
+
     if minute == "0" and hour == "0" and day == "*" and month == "*" and weekday == "*":
         return "每天午夜"
-    
+
     return cron_expr
 
 

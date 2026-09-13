@@ -105,18 +105,22 @@ class GroupConfigurationValidationTests(unittest.TestCase):
         config = {
             "subscriptions": [],
             "custom_nodes": [],
-            "proxy_chains": [{
-                "id": "chain_1",
-                "name": "Chain",
-                "enabled": True,
-                "rows": [{
-                    "row_id": "row_1",
-                    "nodes": [
-                        {"type": "node", "sub_id": "sub_1", "node_id": "node_1", "node_name": "One"},
-                        {"type": "node", "sub_id": "sub_1", "node_id": "node_2", "node_name": "Two"},
+            "proxy_chains": [
+                {
+                    "id": "chain_1",
+                    "name": "Chain",
+                    "enabled": True,
+                    "rows": [
+                        {
+                            "row_id": "row_1",
+                            "nodes": [
+                                {"type": "node", "sub_id": "sub_1", "node_id": "node_1", "node_name": "One"},
+                                {"type": "node", "sub_id": "sub_1", "node_id": "node_2", "node_name": "Two"},
+                            ],
+                        }
                     ],
-                }],
-            }],
+                }
+            ],
             "templates": [],
         }
         subject = {"template_id": "builtin"}
@@ -146,10 +150,7 @@ class GroupConfigurationValidationTests(unittest.TestCase):
             allocations={"chain_nodes": ["*"]},
             builtin_template=self.builtin_template,
         )
-        editable_group = next(
-            group for group in group_view["groups"]
-            if group["name"] == "Editable"
-        )
+        editable_group = next(group for group in group_view["groups"] if group["name"] == "Editable")
         self.assertEqual(editable_group["current_nodes"], ["DIRECT", "🔗 Chain"])
 
 

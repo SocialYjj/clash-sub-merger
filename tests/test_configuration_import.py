@@ -10,8 +10,8 @@ import api.system as system_api
 import services.backup as backup_service
 from services.configuration_validation import (
     remove_legacy_stale_references,
-    validate_configuration_node_references,
     validate_and_normalize_configuration,
+    validate_configuration_node_references,
 )
 from services.proxy_chain_references import list_proxy_chain_virtual_references
 
@@ -19,35 +19,43 @@ from services.proxy_chain_references import list_proxy_chain_virtual_references
 def _valid_configuration() -> dict:
     return {
         "auth": {"password_hash": "a" * 64, "sessions": {"runtime-session": 9999999999}},
-        "subscriptions": [{
-            "id": "sub_1",
-            "name": "Provider",
-            "url": "https://provider.example/subscription",
-            "type": "url",
-        }],
-        "custom_nodes": [{
-            "id": "custom_1",
-            "name": "Custom",
-            "type": "ss",
-            "server": "custom.example",
-            "port": 443,
-            "cipher": "aes-128-gcm",
-            "password": "test-password",
-        }],
-        "users": [{
-            "id": "user_1",
-            "name": "User",
-            "token": "user-token-value",
-            "allocations": {"sub_1": ["*"], "custom_nodes": ["*"]},
-            "group_config": {},
-        }],
+        "subscriptions": [
+            {
+                "id": "sub_1",
+                "name": "Provider",
+                "url": "https://provider.example/subscription",
+                "type": "url",
+            }
+        ],
+        "custom_nodes": [
+            {
+                "id": "custom_1",
+                "name": "Custom",
+                "type": "ss",
+                "server": "custom.example",
+                "port": 443,
+                "cipher": "aes-128-gcm",
+                "password": "test-password",
+            }
+        ],
+        "users": [
+            {
+                "id": "user_1",
+                "name": "User",
+                "token": "user-token-value",
+                "allocations": {"sub_1": ["*"], "custom_nodes": ["*"]},
+                "group_config": {},
+            }
+        ],
         "templates": [],
-        "admin_tokens": [{
-            "id": "admin_1",
-            "name": "Admin",
-            "token": "admin-token-value",
-            "group_config": {},
-        }],
+        "admin_tokens": [
+            {
+                "id": "admin_1",
+                "name": "Admin",
+                "token": "admin-token-value",
+                "group_config": {},
+            }
+        ],
         "proxy_chains": [],
         "source_order": ["sub_1", "custom_nodes"],
         "settings": {},
@@ -67,39 +75,47 @@ class ConfigurationValidationTests(unittest.TestCase):
             validate_and_normalize_configuration(duplicate_token_config)
 
         bad_chain_config = _valid_configuration()
-        bad_chain_config["proxy_chains"] = [{
-            "id": "chain_1",
-            "name": "Chain",
-            "rows": [{
-                "row_id": "row_1",
-                "nodes": [
-                    {"type": "node", "sub_id": "missing", "node_id": "node_1"},
-                    {"type": "node", "sub_id": "sub_1", "node_id": "node_2"},
+        bad_chain_config["proxy_chains"] = [
+            {
+                "id": "chain_1",
+                "name": "Chain",
+                "rows": [
+                    {
+                        "row_id": "row_1",
+                        "nodes": [
+                            {"type": "node", "sub_id": "missing", "node_id": "node_1"},
+                            {"type": "node", "sub_id": "sub_1", "node_id": "node_2"},
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
         with self.assertRaisesRegex(ValueError, "unknown subscription"):
             validate_and_normalize_configuration(bad_chain_config)
 
     def test_import_normalizes_vpngate_country_pool_and_rejects_invalid_code(self):
         config = _valid_configuration()
-        config["proxy_chains"] = [{
-            "id": "chain_vpngate",
-            "name": "VPN Gate",
-            "rows": [{
-                "row_id": "row_vpngate",
-                "nodes": [
-                    {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
+        config["proxy_chains"] = [
+            {
+                "id": "chain_vpngate",
+                "name": "VPN Gate",
+                "rows": [
                     {
-                        "type": "group",
-                        "group_id": "group_vpngate",
-                        "group_name": "VPN Gate 日本池",
-                        "group_source": "vpngate",
-                        "vpngate_country_code": "jp",
-                    },
+                        "row_id": "row_vpngate",
+                        "nodes": [
+                            {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
+                            {
+                                "type": "group",
+                                "group_id": "group_vpngate",
+                                "group_name": "VPN Gate 日本池",
+                                "group_source": "vpngate",
+                                "vpngate_country_code": "jp",
+                            },
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
 
         normalized = validate_and_normalize_configuration(config)
         self.assertEqual(
@@ -118,9 +134,7 @@ class ConfigurationValidationTests(unittest.TestCase):
             validate_and_normalize_configuration(missing_hash)
 
         excessive_work_factor = _valid_configuration()
-        excessive_work_factor["auth"]["password_hash"] = (
-            "pbkdf2_sha256$999999999$12345678$" + "YQ=="
-        )
+        excessive_work_factor["auth"]["password_hash"] = "pbkdf2_sha256$999999999$12345678$" + "YQ=="
         with self.assertRaisesRegex(ValueError, "password hash is invalid"):
             validate_and_normalize_configuration(excessive_work_factor)
 
@@ -137,17 +151,21 @@ class ConfigurationValidationTests(unittest.TestCase):
 
     def test_import_validates_chain_allocation_stable_and_legacy_references(self):
         config = _valid_configuration()
-        config["proxy_chains"] = [{
-            "id": "chain_1",
-            "name": "Chain",
-            "rows": [{
-                "row_id": "row_1",
-                "nodes": [
-                    {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
-                    {"type": "node", "sub_id": "sub_1", "node_id": "node_b"},
+        config["proxy_chains"] = [
+            {
+                "id": "chain_1",
+                "name": "Chain",
+                "rows": [
+                    {
+                        "row_id": "row_1",
+                        "nodes": [
+                            {"type": "node", "sub_id": "sub_1", "node_id": "node_a"},
+                            {"type": "node", "sub_id": "sub_1", "node_id": "node_b"},
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
         references = list_proxy_chain_virtual_references(
             config,
             base_node_names=set(),
@@ -175,17 +193,21 @@ class ConfigurationValidationTests(unittest.TestCase):
         config = _valid_configuration()
         config["subscriptions"] = []
         config["source_order"] = ["custom_nodes"]
-        config["proxy_chains"] = [{
-            "id": "chain_1",
-            "name": "Chain",
-            "rows": [{
-                "row_id": "row_1",
-                "nodes": [
-                    {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
-                    {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
+        config["proxy_chains"] = [
+            {
+                "id": "chain_1",
+                "name": "Chain",
+                "rows": [
+                    {
+                        "row_id": "row_1",
+                        "nodes": [
+                            {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
+                            {"type": "node", "sub_id": "custom", "node_id": "custom_1"},
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
         config["users"][0]["allocations"] = {"chain_nodes": ["virtual_deleted_chain"]}
 
         with tempfile.TemporaryDirectory() as tempdir:

@@ -14,14 +14,18 @@ class ProxyFilterTargetCompatibilityTests(unittest.TestCase):
         for name in banners:
             with self.subTest(name=name):
                 self.assertTrue(ProxyFilter.get_invalid_reason({"name": name}))
-                self.assertFalse(ProxyFilter.is_minimally_valid_proxy({
-                    "name": name,
-                    "type": "ss",
-                    "server": "example.com",
-                    "port": 443,
-                    "cipher": "aes-128-gcm",
-                    "password": "secret",
-                }))
+                self.assertFalse(
+                    ProxyFilter.is_minimally_valid_proxy(
+                        {
+                            "name": name,
+                            "type": "ss",
+                            "server": "example.com",
+                            "port": 443,
+                            "cipher": "aes-128-gcm",
+                            "password": "secret",
+                        }
+                    )
+                )
 
     @staticmethod
     def _reality_spider_node() -> dict:
