@@ -20,6 +20,7 @@ from services.node_reference_updates import (
     subscription_nodes_from_yaml_content,
 )
 from services.node_visibility import clear_user_subscription_caches
+from services.stats_history import record_stats_snapshot
 from services.subscription_fetcher import FetchError, SubscriptionFetcher
 from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_refresh_lock import SubscriptionRefreshInProgress
@@ -152,6 +153,40 @@ def _schedule_automatic_backup() -> None:
         logger.info("Automatic config backup scheduled every %s hour(s)", AppConfig.AUTO_BACKUP_INTERVAL_HOURS)
     except Exception:
         logger.error("Failed to schedule automatic config backup", exc_info=True)
+
+
+def _schedule_stats_snapshot() -> None:
+    """Register the configured daily dashboard statistics snapshot job."""
+    import server as srv
+
+    scheduler = srv.get_scheduler().scheduler
+    job_id = "stats_history_snapshot"
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+
+        cron_expr = os.getenv("STATS_SNAPSHOT_CRON", "0 6 * * *").strip() or "0 6 * * *"
+        try:
+            trigger = CronTrigger.from_crontab(cron_expr)
+        except Exception:
+            logger.warning("Invalid STATS_SNAPSHOT_CRON '%s': falling back to 0 6 * * *", cron_expr)
+            cron_expr = "0 6 * * *"
+            trigger = CronTrigger.from_crontab(cron_expr)
+        scheduler.add_job(stats_snapshot_job, trigger=trigger, id=job_id, replace_existing=True)
+        logger.info("Daily stats snapshot scheduled with cron: %s", cron_expr)
+    except Exception:
+        logger.error("Failed to schedule daily stats snapshot", exc_info=True)
+
+
+def stats_snapshot_job() -> None:
+    """Daily dashboard snapshot job; runs in a background scheduler thread."""
+    import server as srv
+
+    try:
+        record_stats_snapshot(srv.load_config())
+    except Exception:
+        # record_stats_snapshot already swallows failures; this guard keeps an
+        # unexpected seam error from killing the scheduler thread.
+        logger.error("Fatal error in stats snapshot job", exc_info=True)
 
 
 def reschedule_vpngate_refresh() -> None:

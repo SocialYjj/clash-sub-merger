@@ -16,6 +16,7 @@ from services.name_transformer import NameTransformer
 from services.node_visibility import is_node_enabled
 from services.proxy_filter import ProxyFilter
 from services.stats_cache import get_countries, get_overview, set_countries, set_overview
+from services.stats_history import load_stats_history
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -248,6 +249,13 @@ def get_stats_countries(_: bool = Depends(verify_session)):
     }
     set_countries(countries_result)
     return countries_result
+
+
+@router.get("/history")
+@handle_api_errors
+def get_stats_history(_: bool = Depends(verify_session)):
+    """Get daily dashboard snapshots ascending by date"""
+    return {"history": load_stats_history()}
 
 
 @router.get("/nodes-by-country")

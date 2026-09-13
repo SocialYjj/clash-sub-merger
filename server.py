@@ -74,6 +74,7 @@ from services.speedtest_supervisor import (
     stop_go_speedtest_service,
 )
 from services.stats_cache import invalidate as invalidate_stats_cache
+from services.stats_history import record_stats_snapshot_if_stale
 from services.subscription_output import create_subscription_output_router
 from services.subscription_processing import (
     _pad_base64,
@@ -89,6 +90,7 @@ from services.subscription_refresh_jobs import (
     _restore_scheduled_jobs,
     _schedule_automatic_backup,
     _schedule_flclash_version_check,
+    _schedule_stats_snapshot,
     refresh_subscription_job,
     reschedule_vpngate_refresh,
 )
@@ -220,6 +222,11 @@ async def startup_event() -> None:
     initialize_administrator()
     init_geoip_config()
 
+    # Seed the dashboard trend history when the stored snapshot is stale so a
+    # fresh deployment gets a first data point without waiting for the cron.
+    # Crash-safe and idempotent: failures are logged, never raised.
+    record_stats_snapshot_if_stale()
+
     # Initialize HTTP client
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(
@@ -256,6 +263,7 @@ async def startup_event() -> None:
         _restore_scheduled_jobs()
         _schedule_flclash_version_check()
         _schedule_automatic_backup()
+        _schedule_stats_snapshot()
         reschedule_vpngate_refresh()
 
 
