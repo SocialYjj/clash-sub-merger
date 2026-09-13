@@ -8,6 +8,7 @@ loading both config.json and subscription YAML files.
 from __future__ import annotations
 
 import base64
+import binascii
 import re
 from typing import Any, Iterable
 
@@ -40,7 +41,7 @@ def decode_certificate_pin(value: Any) -> bytes | None:
     padding = "=" * ((4 - len(normalized) % 4) % 4)
     try:
         decoded = base64.b64decode(normalized + padding, validate=True)
-    except (ValueError, TypeError, base64.binascii.Error):
+    except (ValueError, TypeError, binascii.Error):
         return None
     return decoded if len(decoded) == 32 else None
 

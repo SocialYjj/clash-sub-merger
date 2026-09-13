@@ -210,7 +210,8 @@ class AppConfig:
         except Exception:
             return "3.1.1"  # Fallback version
 
-    VERSION = _read_version.__func__()
+    # Python 3.10+ allows calling the staticmethod object directly.
+    VERSION = _read_version()
 
 
 def get_config_file() -> str:

@@ -50,7 +50,7 @@ YAML_SOURCE_DIR = AppConfig.YAML_SOURCE_DIR
 class ProxyChainNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # type: 'node' (default) or 'group'
+    # Field kind: 'node' (default) or 'group'
     type: Literal["node", "group"] = "node"
     sub_id: str | None = Field(None, max_length=200)
     node_id: str | None = Field(None, max_length=200)

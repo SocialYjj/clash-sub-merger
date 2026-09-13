@@ -49,5 +49,7 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body", "f
 "server.py" = ["E402", "F401"]
 # 迁移脚本需先改写 sys.path 才能导入项目模块。
 "scripts/*" = ["E402"]
+# E2E 启动器必须先设置环境变量再导入应用模块。
+"e2e/launch.py" = ["E402"]
 # 测试中 assertRaises(Exception) 用于断言「任何异常都不应发生」的场景。
 "tests/*" = ["B017"]

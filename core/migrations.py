@@ -5,6 +5,7 @@ import json
 import os
 import time
 from copy import deepcopy
+from typing import Any
 
 from core.config import AppConfig
 from core.database import load_config, save_config
@@ -67,7 +68,7 @@ def migrate_old_config() -> None:
 
     _save_config = _resolve_save_config()
 
-    config = {
+    config: dict[str, Any] = {
         "auth": {},
         "subscriptions": [],
         "custom_nodes": [],

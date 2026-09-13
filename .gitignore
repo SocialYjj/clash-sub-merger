@@ -18,6 +18,9 @@ venv/
 # Node
 node_modules/
 submerger/node_modules/
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
 
 # Build (Frontend)
 submerger/dist/

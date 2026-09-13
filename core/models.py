@@ -3,9 +3,9 @@ Pydantic Data Models
 Shared data models for API validation
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, RootModel, field_validator
 
 from core.security import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validate_password_policy
 
@@ -119,8 +119,40 @@ class UpdateNodeName(BaseModel):
         return v
 
 
+class NodePayload(RootModel[Dict[str, Any]]):
+    """Free-form node configuration mapping (Clash proxy schema).
+
+    Node payloads come from arbitrary subscription providers, so the shape is
+    intentionally a pass-through ``dict``: there is no strict field schema that
+    could reject previously-accepted payloads. The commonly required fields are
+    exposed as typed accessors instead.
+    """
+
+    @property
+    def name(self) -> str:
+        return str(self.root.get("name") or "")
+
+    @property
+    def proxy_type(self) -> str:
+        return str(self.root.get("type") or "")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a plain-dict copy of the payload."""
+        return dict(self.root)
+
+
 class UpdateNodeFull(BaseModel):
-    node: dict
+    """Full node update payload.
+
+    The validated route-level variants live in ``api/nodes.py``; this model
+    keeps the shared contract: ``node`` must be a mapping, nothing stricter.
+    """
+
+    node: NodePayload
+
+    @property
+    def node_data(self) -> Dict[str, Any]:
+        return self.node.to_dict()
 
 
 class UpdateSubNode(BaseModel):
@@ -135,7 +167,11 @@ class UpdateSubNode(BaseModel):
 
 
 class UpdateSubNodeFull(BaseModel):
-    node: dict
+    node: NodePayload
+
+    @property
+    def node_data(self) -> Dict[str, Any]:
+        return self.node.to_dict()
 
 
 # ==================== User Models ====================
