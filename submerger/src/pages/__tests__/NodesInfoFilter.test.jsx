@@ -6,7 +6,7 @@ import {
   isInfoNode,
   isNodeIpPropertyUntested,
   isNodeIpSourceUntested,
-} from '../Nodes.jsx';
+} from '../nodes/nodeHelpers.js';
 
 describe('节点管理信息节点过滤', () => {
   it.each([

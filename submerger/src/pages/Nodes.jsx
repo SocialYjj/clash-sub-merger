@@ -1,226 +1,41 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Link, useLocation } from 'react-router';
-import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
+import { Server, Search, Plus, Trash2, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Edit2, ChevronUp, ChevronDown, Globe, Link2, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
 import NodePoolModal from '../components/NodePoolModal';
 import { COUNTRY_CHINESE_NAMES } from './countryData';
 
+import {
+  LEADING_FLAG_ICON_RE,
+  stripLeadingFlagIcon,
+  isInfoNode,
+  parseNodeTestResponse,
+  getNodeInvalidReasonLabel,
+  getLatencyColor,
+  getLatencyBadge,
+  getIpSourceLabel,
+  getNetworkTypeLabel,
+  getNodeIpSource,
+  getNodeIpProperty,
+  isNodeIpSourceUntested,
+  isNodeIpPropertyUntested,
+  getNodeCountryFilterValue,
+  getNodeCountryFilterLabel,
+  formatRadarRatio,
+  formatIppureScore,
+  mergeIpProfiles,
+  getMetadataStatusLabel,
+  getMetadataStatusClass,
+} from './nodes/nodeHelpers.js';
+import AddNodeModal from './nodes/AddNodeModal';
+import TestSettingsModal from './nodes/TestSettingsModal';
+import { PortMappingModal, PortMappingListModal } from './nodes/PortMappingModals';
+import useNodeTesting from './nodes/useNodeTesting';
+import ProxyChainSection from './nodes/ProxyChainSection';
+
 const API_BASE = '/api';
-
-const INFO_PREFIX_RE = /^\s*(?:建议|通知|公告|提示|说明|使用前|更新订阅|套餐到期|剩余流量)\s*[:：]?/i;
-const INFO_DOMAIN_HINT_RE = /^\s*(?:最强备用|备用网址|备用地址|官网地址?|防丢失官网?|防失联官网?|永久官网|永久地址|最新官网|最新地址|网址发布|域名发布|防丢失|防失联)\s*[:：]?\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
-const INFO_TIMESTAMP_RE = /^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\(UTC[+-]\d{1,2}(?::?\d{2})?\)\s*$/i;
-const INFO_BALANCE_RE = /^\s*(?:balance|余额)\s*[:：]\s*\d+(?:[.,]\d+)?\s*(?:[KMGTPE]i?B|B)\s*$/i;
-const INFO_WEBSITE_RE = /^\s*(?:website|网站|网址)\s*[:：]\s*(?:https?:\/\/)?(?:[A-Za-z0-9\u4e00-\u9fff-]+\.)+[A-Za-z]{2,}(?:\/\S*)?\s*$/i;
-const OFFICIAL_URL_RE = /https?:\/\//i;
-
-const HARD_INVALID_KEYWORDS = [
-  '剩余流量', '套餐到期', '距离下次重置', '未到期', '使用前',
-  '使用说明', '教程', '更新订阅', '公告', '通知', '客服',
-  '续费', '购买', '工单', '咨询', '合作', '邀请', '返利',
-  '免注册', '免费节点', '变动较大', '全超时', '更换客户端',
-  '关注', '版本', '须知', '频道', '维护', '公众号'
-];
-
-const SOFT_INVALID_KEYWORDS = [
-  '建议', '剩余', '到期', '重置', '流量', '过期', '订阅',
-  '网址', '群组', 'Telegram', 'TG', '会员', '商城', '账号'
-];
-
-// Complete region names from COUNTRY_CHINESE_NAMES (236 countries/regions)
-const REGION_KEYWORDS = [
-  ...Object.values(COUNTRY_CHINESE_NAMES),  // All 236 Chinese country names
-  // Common abbreviations and English names
-  'HK', 'TW', 'MO', 'JP', 'KR', 'SG', 'US', 'UK', 
-  'DE', 'FR', 'CA', 'AU', 'RU', 'IN', 'TH', 'VN', 'MY', 'PH', 'ID',
-  'CN', 'GB', 'IT', 'ES', 'PT', 'NL', 'BE', 'CH', 'AT', 'CZ', 'PL',
-  'SE', 'NO', 'FI', 'DK', 'IE', 'NZ', 'BR', 'AR', 'CL', 'MX', 'TR',
-  'SA', 'AE', 'IL', 'EG', 'ZA', 'NG', 'KE', 'UA', 'BY', 'KZ', 'UZ',
-  '海外',  // Generic "overseas"
-  // Short forms for Chinese regions (COUNTRY_CHINESE_NAMES has "China Hong Kong" but nodes use "Hong Kong")
-  '香港', '台湾', '澳门'
-];
-
-const STRONG_NODE_HINTS = [
-  '节点', '备用', '家宽', '专线', '中转', '落地', '倍率',
-  '游戏', '住宅', '原生'
-];
-
-const LINE_INDEX_RE = /--\s*\d+\b|\(\s*\d+\s*\)$/;
-const LEADING_FLAG_ICON_RE = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|🔰|🌏|🌍|🌎|🏳️)\s*/u;
-
-const hasRegionHint = (name) => {
-  return REGION_KEYWORDS.some(region => {
-    if (region.length <= 3 && /^[A-Z]+$/.test(region)) {
-      const escaped = region.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(?<![A-Za-z])${escaped}(?:\\d+)?(?![A-Za-z])`).test(name);
-    }
-    return name.includes(region);
-  });
-};
-
-const hasNodeIdentity = (name) => {
-  if (hasRegionHint(name)) return true;
-  if (LINE_INDEX_RE.test(name)) return true;
-  return STRONG_NODE_HINTS.some(hint => name.includes(hint));
-};
-
-const stripLeadingFlagIcon = (value) => String(value || '').replace(LEADING_FLAG_ICON_RE, '').trim();
-
-export const isInfoNode = (node) => {
-  if (!node || !node.name) return true;
-  const name = String(node.name).trim();
-  if (!name) return true;
-
-  if (INFO_PREFIX_RE.test(name)) return true;
-  if (INFO_DOMAIN_HINT_RE.test(name)) return true;
-  if (INFO_TIMESTAMP_RE.test(name)) return true;
-  if (INFO_BALANCE_RE.test(name)) return true;
-  if (INFO_WEBSITE_RE.test(name)) return true;
-
-  if (name.startsWith('官网')) {
-    return !hasRegionHint(name);
-  }
-
-  if (name.includes('官网') && OFFICIAL_URL_RE.test(name) && !hasNodeIdentity(name)) {
-    return true;
-  }
-
-  if (HARD_INVALID_KEYWORDS.some(keyword => name.includes(keyword))) {
-    return true;
-  }
-
-  return SOFT_INVALID_KEYWORDS.some(keyword => name.includes(keyword)) && !hasNodeIdentity(name);
-};
-
-const parseNodeTestResponse = (response) => {
-  const testPayload = response?.data || {};
-  if (testPayload.success === false) {
-    const failureMessage = testPayload.error || '节点测试失败';
-    const failure = new Error(failureMessage);
-    failure.response = { data: { detail: failureMessage } };
-    throw failure;
-  }
-  return testPayload;
-};
-
-const NODE_INVALID_REASON_LABELS = {
-  'unsupported-reality-option': 'Clash/Mihomo 不支持 Reality spider-x',
-  'unsupported-tls-extension': 'Clash/Mihomo 不支持该 TLS 扩展',
-  'unsupported-certificate-pin-format': 'Clash/Mihomo 不支持当前证书指纹格式',
-  'unsupported-trojan-tcp-disguise': 'Clash/Mihomo 不支持 Trojan TCP HTTP 伪装',
-  'unsupported-vless-network': 'Clash/Mihomo 不支持该 VLESS 传输方式',
-  'unsupported-vmess-network': 'Clash/Mihomo 不支持该 VMess 传输方式',
-  'unsupported-trojan-network': 'Clash/Mihomo 不支持该 Trojan 传输方式',
-  'unsupported-anytls-network': 'Clash/Mihomo 不支持该 AnyTLS 传输方式',
-  'unsupported-anytls-reality': 'Clash/Mihomo 不支持 AnyTLS Reality',
-};
-
-const getNodeInvalidReasonLabel = (reason) => {
-  if (!reason) return '节点配置不兼容';
-  return NODE_INVALID_REASON_LABELS[reason] || `节点配置不兼容（${reason}）`;
-};
-
-// Latency color helper
-const getLatencyColor = (latency) => {
-  if (latency === null || latency === undefined) return 'text-gray-500';
-  if (latency < 100) return 'text-green-400';
-  if (latency < 200) return 'text-lime-400';
-  if (latency < 500) return 'text-yellow-400';
-  if (latency < 1000) return 'text-orange-400';
-  return 'text-red-400';
-};
-
-// Latency status badge
-const getLatencyBadge = (latency, error) => {
-  if (error) return { text: '失败', color: 'bg-red-500/20 text-red-400' };
-  if (latency === -2) return { text: '失败', color: 'bg-red-500/20 text-red-400' };  // Error
-  if (latency === -1) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Timeout - red
-  if (latency === null) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Legacy timeout - red
-  if (latency === undefined) return { text: '未测', color: 'bg-gray-500/20 text-gray-400' };
-  if (latency < 200) return { text: '优秀', color: 'bg-green-500/20 text-green-400' };
-  if (latency < 500) return { text: '良好', color: 'bg-lime-500/20 text-lime-400' };
-  if (latency < 1000) return { text: '一般', color: 'bg-yellow-500/20 text-yellow-400' };
-  return { text: '较慢', color: 'bg-orange-500/20 text-orange-400' };
-};
-
-const getIpSourceLabel = (source) => ({
-  broadcast: '广播 IP',
-  native: '原生 IP',
-}[source] || '-');
-
-const getNetworkTypeLabel = (networkType) => ({
-  residential: '住宅 IP',
-  datacenter: '机房 IP',
-}[networkType] || '-');
-
-export const getNodeIpSource = (node) => (
-  node?.ip_profile?.ip_source || node?.ip_source || ''
-);
-
-export const getNodeIpProperty = (node) => (
-  node?.ip_profile?.network_type || node?.network_type || ''
-);
-
-export const isNodeIpSourceUntested = (node) => !getNodeIpSource(node);
-
-export const isNodeIpPropertyUntested = (node) => !getNodeIpProperty(node);
-
-const getNodeCountryFilterValue = (node) => {
-  const country = String(node?.country || '').trim();
-  const normalizedCountry = country.toUpperCase();
-  if (/^[A-Z]{2,3}$/.test(normalizedCountry)) return normalizedCountry;
-  return String(node?.region || country).trim();
-};
-
-const getNodeCountryFilterLabel = (node) => {
-  const country = String(node?.country || '').trim();
-  const normalizedCountry = country.toUpperCase();
-  return String(
-    node?.region
-      || COUNTRY_CHINESE_NAMES[normalizedCountry]
-      || country
-      || '未知地区'
-  ).trim();
-};
-
-const formatRadarRatio = (value) => {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : '-';
-};
-
-const formatIppureScore = (value) => {
-  if (value === null || value === undefined || value === '') return '-';
-  const normalized = String(value).trim();
-  return normalized.endsWith('%') ? normalized : `${normalized}%`;
-};
-
-const mergeIpProfiles = (previous, current) => {
-  if (!current || typeof current !== 'object') return previous;
-  if (!previous || typeof previous !== 'object') return current;
-  return { ...previous, ...current };
-};
-
-const getMetadataStatusLabel = (status, hasValue = false) => {
-  if (hasValue) return '';
-  if (status === 'success') return '无数据';
-  return ({
-    no_data: '无数据',
-    failed: '检测失败',
-    not_configured: '未配置',
-    dependency_failed: '依赖数据缺失',
-  }[status] || '未检测');
-};
-
-const getMetadataStatusClass = (status, hasValue = false) => {
-  if (hasValue) return '';
-  if (status === 'failed') return 'text-red-400';
-  if (status === 'not_configured') return 'text-amber-400';
-  if (status === 'no_data' || status === 'success') return 'text-gray-500';
-  return 'text-gray-500';
-};
 
 export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes, showToast }) {
   const location = useLocation();
@@ -260,8 +75,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, nodeId: null });
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState({ open: false, ids: [], keys: [], count: 0 });
-  const [testingByNode, setTestingByNode] = useState({});
-  const [nodeTestResults, setNodeTestResults] = useState({});
   const [selectedNodes, setSelectedNodes] = useState(new Set());
   const [batchTesting, setBatchTesting] = useState(false);
   const [batchTestProgress, setBatchTestProgress] = useState({ current: 0, total: 0 });
@@ -309,13 +122,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [editingNodePool, setEditingNodePool] = useState(null);
   const [savingNodePool, setSavingNodePool] = useState(false);
   const [deleteNodePoolConfirm, setDeleteNodePoolConfirm] = useState({ open: false, poolId: null });
-  const [showChainModal, setShowChainModal] = useState(false);
-  const [editingChain, setEditingChain] = useState(null);
-  const [chainName, setChainName] = useState('');
-  const [chainRows, setChainRows] = useState([[null, null]]);
-  const [groupDrafts, setGroupDrafts] = useState({});
-  const [groupEditing, setGroupEditing] = useState({});
-  const [groupSearch, setGroupSearch] = useState({});
+  const [chainModalRequest, setChainModalRequest] = useState(null);
+  const chainModalRequestSeq = useRef(0);
   const [deleteChainConfirm, setDeleteChainConfirm] = useState({ open: false, chainId: null });
   const [showAddDropdown, setShowAddDropdown] = useState(false);
   const subNodesRequestSeq = useRef(0);
@@ -324,6 +132,17 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const chainNodesRequestSeq = useRef(0);
   const nodePoolsRequestSeq = useRef(0);
   const vpngateRequestSeq = useRef(0);
+  // Single-node testing state and handlers (useNodeTesting)
+  const {
+    nodeTestResults,
+    setNodeTestResults,
+    mergeNodeTestResults,
+    testingByNode,
+    testNode,
+    testNodeSpeed,
+    testNodeIppure,
+    testNodeRadar,
+  } = useNodeTesting({ showToast, testTimeout, selectedGeoipApi });
 
 
   // Fetch nodes from subscription files
@@ -916,29 +735,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return 0;
   }, [sortBy, sortOrder]);
 
-  const orderedChainNodes = useMemo(() => {
-    const nodes = [...availableChainNodes];
-    if (!nodes.length) return nodes;
-
-    // Order by subscription list order, then by node_index
-    const subOrder = new Map();
-    (subscriptions || []).forEach((sub, idx) => {
-      subOrder.set(sub.id, idx);
-    });
-
-    nodes.sort((a, b) => {
-      const sa = a.sub_id === 'custom' ? -1 : (subOrder.get(a.sub_id) ?? Number.POSITIVE_INFINITY);
-      const sb = b.sub_id === 'custom' ? -1 : (subOrder.get(b.sub_id) ?? Number.POSITIVE_INFINITY);
-      if (sa !== sb) return sa - sb;
-      const ia = Number.isFinite(a.node_index) ? a.node_index : Number.POSITIVE_INFINITY;
-      const ib = Number.isFinite(b.node_index) ? b.node_index : Number.POSITIVE_INFINITY;
-      if (ia === ib) return 0;
-      return ia - ib;
-    });
-
-    return nodes;
-  }, [availableChainNodes, subscriptions]);
-
   // Filter and sort
   const filteredNodes = useMemo(() => {
     // Sorting must not mutate the memoized source list; mutating it can leave
@@ -1177,135 +973,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     return normalizedType === 'hysteria2' ? 'HY2' : normalizedType.toUpperCase() || '-';
   };
 
-  // Test single node
-  const mergeNodeTestResults = (updates) => {
-    setNodeTestResults(prev => {
-      const next = { ...prev };
-      Object.entries(updates || {}).forEach(([nodeKey, result]) => {
-        next[nodeKey] = { ...prev[nodeKey], ...result };
-      });
-      return next;
-    });
-  };
-
-  const setNodeTesting = (nodeKey, type) => {
-    setTestingByNode(prev => ({ ...prev, [nodeKey]: type }));
-  };
-
-  const clearNodeTesting = (nodeKey) => {
-    setTestingByNode(prev => {
-      const next = { ...prev };
-      delete next[nodeKey];
-      return next;
-    });
-  };
-
-  const testNode = async (node, isRegionTest = false) => {
-    if (node.sourceType === 'chain') {
-      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
-      return;
-    }
-    if (node.valid === false) {
-      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
-      return;
-    }
-    setNodeTesting(node.nodeKey, isRegionTest ? 'region' : 'latency');
-    try {
-      const payload = {
-        test_latency: !isRegionTest,
-        test_speed: false,
-        test_region: isRegionTest,
-        test_ip_profile: false,
-        test_radar: false,
-        timeout: testTimeout
-      };
-      if (isRegionTest) {
-        payload.geoip_api = selectedGeoipApi;
-      }
-      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, payload);
-      const testPayload = parseNodeTestResponse(res);
-      setNodeTestResults(prev => {
-        const newResult = { ...prev[node.nodeKey] };
-        if (isRegionTest) {
-          newResult.region = testPayload.region;
-          newResult.city = testPayload.city;
-          newResult.exit_ip = testPayload.exit_ip;
-          const mergedIpProfile = mergeIpProfiles(node.ip_profile, testPayload.ip_profile);
-          if (mergedIpProfile) {
-            newResult.ip_profile = mergedIpProfile;
-          }
-          newResult.regionError = false;
-        } else {
-          newResult.latency = testPayload.latency;
-          newResult.error = false;
-        }
-        return { ...prev, [node.nodeKey]: newResult };
-      });
-    } catch (err) {
-      setNodeTestResults(prev => {
-        const failedResult = { ...prev[node.nodeKey] };
-        const failureMessage = err.response?.data?.detail || err.message || '未知错误';
-        if (isRegionTest) {
-          failedResult.regionError = true;
-          failedResult.regionErrorMessage = failureMessage;
-        } else {
-          failedResult.latency = null;
-          failedResult.error = true;
-          failedResult.errorMessage = failureMessage;
-        }
-        return { ...prev, [node.nodeKey]: failedResult };
-      });
-      showToast?.(`节点测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
-    } finally {
-      clearNodeTesting(node.nodeKey);
-    }
-  };
-
-  // Test single node speed
-  const testNodeSpeed = async (node) => {
-    if (node.sourceType === 'chain') {
-      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点测速', 'warning');
-      return;
-    }
-    if (node.valid === false) {
-      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
-      return;
-    }
-    setNodeTesting(node.nodeKey, 'speed');
-    try {
-      const res = await request.post(`${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`, {
-        test_latency: false,
-        test_speed: true,
-        test_region: false,
-        timeout: testTimeout
-      });
-      const testPayload = parseNodeTestResponse(res);
-      setNodeTestResults(prev => ({
-        ...prev,
-        [node.nodeKey]: {
-          ...prev[node.nodeKey],
-          speed: testPayload.speed,
-          peak_speed: testPayload.peak_speed,
-          speed_error: false,
-          speedErrorMessage: undefined
-        }
-      }));
-    } catch (err) {
-      setNodeTestResults(prev => ({
-        ...prev,
-        [node.nodeKey]: {
-          ...prev[node.nodeKey],
-          speed: null,
-          peak_speed: null,
-          speed_error: true,
-          speedErrorMessage: err.response?.data?.detail || err.message || '未知错误'
-        }
-      }));
-      showToast?.(`速度测试失败: ${err.response?.data?.detail || err.message || '未知错误'}`, 'error');
-    } finally {
-      clearNodeTesting(node.nodeKey);
-    }
-  };
 
   // Batch test nodes - latency first with concurrency, then region
   const batchTestNodes = async () => {
@@ -1814,76 +1481,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
   };
 
-  const testNodeMetadata = async (node, metadataType) => {
-    if (node.sourceType === 'chain') {
-      showToast?.('链式代理需要通过最终订阅测试，暂不支持单节点信息检测', 'warning');
-      return;
-    }
-    if (node.valid === false) {
-      showToast?.(getNodeInvalidReasonLabel(node.invalid_reason), 'warning');
-      return;
-    }
-
-    const requestFields = {
-      test_latency: false,
-      test_speed: false,
-      test_region: metadataType === 'region',
-      test_ip_profile: metadataType === 'ippure',
-      test_radar: metadataType === 'radar',
-      timeout: testTimeout,
-    };
-    if (metadataType !== 'ippure') {
-      requestFields.geoip_api = selectedGeoipApi;
-    }
-
-    setNodeTesting(node.nodeKey, metadataType);
-    try {
-      const res = await request.post(
-        `${API_BASE}/nodes/${node.sourceId}/${encodeURIComponent(node.id)}/test`,
-        requestFields,
-      );
-      const testPayload = parseNodeTestResponse(res);
-      setNodeTestResults(prev => {
-        const next = { ...prev[node.nodeKey] };
-        const mergedIpProfile = mergeIpProfiles(
-          next.ip_profile || node.ip_profile,
-          testPayload.ip_profile,
-        );
-        if (mergedIpProfile) next.ip_profile = mergedIpProfile;
-        if (testPayload.exit_ip) next.exit_ip = testPayload.exit_ip;
-        if (metadataType === 'region') {
-          next.region = testPayload.region;
-          next.city = testPayload.city;
-          next.regionError = false;
-        } else if (metadataType === 'ippure') {
-          next.ippureError = false;
-        } else {
-          next.radarError = false;
-        }
-        return { ...prev, [node.nodeKey]: next };
-      });
-    } catch (err) {
-      const failureMessage = err.response?.data?.detail || err.message || '未知错误';
-      setNodeTestResults(prev => ({
-        ...prev,
-        [node.nodeKey]: {
-          ...prev[node.nodeKey],
-          ...(metadataType === 'region'
-            ? { regionError: true, regionErrorMessage: failureMessage }
-            : metadataType === 'ippure'
-              ? { ippureError: true, ippureErrorMessage: failureMessage }
-              : { radarError: true, radarErrorMessage: failureMessage }),
-        },
-      }));
-      showToast?.(`节点信息检测失败: ${failureMessage}`, 'error');
-    } finally {
-      clearNodeTesting(node.nodeKey);
-    }
-  };
-
-  const testNodeIppure = (node) => testNodeMetadata(node, 'ippure');
-  const testNodeRadar = (node) => testNodeMetadata(node, 'radar');
-
   const updateCustomOrderValue = (nodeId, value) => {
     setCustomOrderMap(prev => ({
       ...prev,
@@ -1995,386 +1592,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
   // Proxy chain functions
   const openChainModal = (chain = null) => {
-    if (chain) {
-      setChainName(chain.name);
-      const resolveStoredNode = (subId, nodeId, nodeName, nodeIndex) => {
-        if (nodeId) {
-          const byId = availableChainNodes.find(n => n.sub_id === subId && n.node_id === nodeId);
-          if (byId) return byId;
-        }
-        if (nodeName) {
-          const byName = availableChainNodes.find(n =>
-            n.sub_id === subId && (n.node_name ?? n.display_name ?? n.name) === nodeName
-          );
-          if (byName) return byName;
-        }
-        return availableChainNodes.find(n => n.sub_id === subId && n.node_index === nodeIndex);
-      };
-      const resolveGroupId = (groupId, rowIndex, colIndex) => groupId || `${chain.id || 'chain'}_${rowIndex}_${colIndex}`;
-      const rows = chain.rows.map((row, rowIndex) =>
-        row.nodes.map((node, colIndex) => {
-          if (node?.type !== 'group' && node?.sub_id === 'vpngate') {
-            return {
-              type: 'group',
-              group_id: resolveGroupId(null, rowIndex, colIndex),
-              group_name: 'VPN Gate 动态池',
-              group_source: 'vpngate',
-              vpngate_country_code: null,
-              group_strategy: 'url-test',
-              lb_strategy: 'round-robin',
-              group_nodes: [],
-            };
-          }
-          if (node?.type === 'group') {
-            const isLast = colIndex === row.nodes.length - 1;
-            const defaultLabel = isLast ? '落地池' : '中转池';
-            return {
-              type: 'group',
-              group_id: resolveGroupId(node.group_id, rowIndex, colIndex),
-              group_name: node.group_name || defaultLabel,
-              group_source: node.group_source || 'nodes',
-              vpngate_country_code: node.vpngate_country_code || null,
-              group_strategy: node.group_strategy || 'load-balance',
-              lb_strategy: node.lb_strategy || 'round-robin',
-              group_nodes: (node.group_source === 'vpngate' ? [] : (node.group_nodes || [])).map(n => {
-                const resolved = resolveStoredNode(n.sub_id, n.node_id, n.node_name, n.node_index);
-                return {
-                  type: 'node',
-                  sub_id: n.sub_id,
-                  node_id: n.node_id || resolved?.node_id,
-                  node_name: n.node_name || resolved?.node_name || resolved?.display_name || resolved?.name
-                };
-              })
-            };
-          }
-          const resolved = resolveStoredNode(node.sub_id, node.node_id, node.node_name, node.node_index);
-          return {
-            type: 'node',
-            sub_id: node.sub_id,
-            node_id: node.node_id || resolved?.node_id,
-            node_name: node.node_name || resolved?.node_name || resolved?.display_name || resolved?.name
-          };
-        })
-      );
-      setChainRows(rows);
-      setEditingChain(chain);
-    } else {
-      setChainName('');
-      setChainRows([[null, null]]);
-      setEditingChain(null);
-    }
-    setGroupEditing({});
-    setGroupDrafts({});
-    setGroupSearch({});
-    setShowChainModal(true);
-  };
-
-  const closeChainModal = () => {
-    setShowChainModal(false);
-    setEditingChain(null);
-    setChainName('');
-    setChainRows([[null, null]]);
-    setGroupSearch({});
-  };
-
-  const addChainColumn = (rowIndex) => {
-    setChainRows(prev => {
-      const newRows = [...prev];
-      newRows[rowIndex] = [...newRows[rowIndex], null];
-      return newRows;
-    });
-  };
-
-  const removeChainColumn = (rowIndex, colIndex) => {
-    setChainRows(prev => {
-      const newRows = [...prev];
-      if (newRows[rowIndex].length > 2) {
-        newRows[rowIndex] = newRows[rowIndex].filter((_, i) => i !== colIndex);
-      }
-      return newRows;
-    });
-  };
-
-  const generateGroupId = () => `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-  const makeChainNodeKey = (subId, nodeId, nodeName, nodeIndex) => {
-    if (!subId) return '';
-    if (nodeId) return `${subId}|id:${encodeURIComponent(nodeId)}`;
-    if (nodeName) return `${subId}|${encodeURIComponent(nodeName)}`;
-    if (nodeIndex !== undefined && nodeIndex !== null && !Number.isNaN(nodeIndex)) {
-      return `${subId}|#${nodeIndex}`;
-    }
-    return '';
-  };
-
-  const parseChainNodeKey = (key) => {
-    if (!key) return { subId: '', nodeId: '', nodeName: '', nodeIndex: null };
-    const sep = key.indexOf('|');
-    if (sep === -1) return { subId: '', nodeId: '', nodeName: '', nodeIndex: null };
-    const subId = key.slice(0, sep);
-    const rest = key.slice(sep + 1);
-    if (rest.startsWith('id:')) {
-      return { subId, nodeId: decodeURIComponent(rest.slice(3)), nodeName: '', nodeIndex: null };
-    }
-    if (rest.startsWith('#')) {
-      const idx = parseInt(rest.slice(1), 10);
-      return { subId, nodeId: '', nodeName: '', nodeIndex: Number.isNaN(idx) ? null : idx };
-    }
-    return { subId, nodeId: '', nodeName: decodeURIComponent(rest), nodeIndex: null };
-  };
-
-  const resolveChainNode = (nodes, subId, nodeId, nodeName, nodeIndex) => {
-    if (!nodes?.length || !subId) return null;
-    if (nodeId) {
-      const match = nodes.find(n => n.sub_id === subId && n.node_id === nodeId);
-      if (match) return match;
-    }
-    if (nodeName) {
-      const match = nodes.find(n =>
-        n.sub_id === subId && (n.node_name ?? n.display_name ?? n.name) === nodeName
-      );
-      if (match) return match;
-    }
-    if (nodeIndex !== null && nodeIndex !== undefined && !Number.isNaN(nodeIndex)) {
-      return nodes.find(n => n.sub_id === subId && n.node_index === nodeIndex) || null;
-    }
-    return null;
-  };
-
-  const resolveChainNodeFromKey = (nodes, key) => {
-    const { subId, nodeId, nodeName, nodeIndex } = parseChainNodeKey(key);
-    return resolveChainNode(nodes, subId, nodeId, nodeName, nodeIndex);
-  };
-
-  const updateChainNode = (rowIndex, colIndex, nodeKey) => {
-    if (!nodeKey) {
-      setChainRows(prev => {
-        const newRows = [...prev];
-        newRows[rowIndex][colIndex] = null;
-        return newRows;
-      });
-      return;
-    }
-
-    const node = resolveChainNodeFromKey(availableChainNodes, nodeKey);
-    const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
-
-    setChainRows(prev => {
-      const newRows = [...prev];
-      newRows[rowIndex][colIndex] = node ? {
-        type: 'node',
-        sub_id: node.sub_id,
-        node_id: node.node_id,
-        node_name: nodeName
-      } : null;
-      return newRows;
-    });
-  };
-
-  const updateChainCellType = (rowIndex, colIndex, cellType) => {
-    setChainRows(prev => {
-      const newRows = [...prev];
-      if (cellType === 'group' || cellType === 'vpngate') {
-        const isLast = colIndex === newRows[rowIndex].length - 1;
-        const defaultName = cellType === 'vpngate'
-          ? 'VPN Gate 动态池'
-          : (chainName.trim()
-            ? `${chainName.trim()} ${isLast ? '落地池' : '中转池'}`
-            : (isLast ? '落地池' : '中转池'));
-        newRows[rowIndex][colIndex] = {
-          type: 'group',
-          group_id: generateGroupId(),
-          group_name: defaultName,
-          group_source: cellType === 'vpngate' ? 'vpngate' : 'nodes',
-          vpngate_country_code: null,
-          group_strategy: cellType === 'vpngate' ? 'url-test' : 'load-balance',
-          lb_strategy: 'round-robin',
-          group_nodes: []
-        };
-      } else {
-        newRows[rowIndex][colIndex] = null;
-      }
-      return newRows;
-    });
-
-    const key = getGroupCellKey(rowIndex, colIndex);
-    if (cellType === 'group') {
-      setGroupDrafts(prev => ({ ...prev, [key]: [] }));
-      setGroupEditing(prev => ({ ...prev, [key]: true }));
-    } else {
-      setGroupEditing(prev => ({ ...prev, [key]: false }));
-    }
-  };
-
-  const updateChainGroup = (rowIndex, colIndex, patch) => {
-    setChainRows(prev => {
-      const newRows = [...prev];
-      const current = newRows[rowIndex][colIndex];
-      if (!current || current.type !== 'group') return newRows;
-      newRows[rowIndex][colIndex] = { ...current, ...patch };
-      return newRows;
-    });
-  };
-
-  const updateVpngateCountry = (rowIndex, colIndex, countryCode) => {
-    const selectedPool = vpngatePools.find(pool => pool.country_code === countryCode);
-    updateChainGroup(rowIndex, colIndex, {
-      vpngate_country_code: countryCode || null,
-      group_name: selectedPool?.pool_name || 'VPN Gate 动态池',
-    });
-  };
-
-  const updateChainGroupMembers = (rowIndex, colIndex, selectedKeys) => {
-    const nodes = selectedKeys.map(key => {
-      const node = resolveChainNodeFromKey(orderedChainNodes, key);
-      const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
-      return node ? {
-        type: 'node',
-        sub_id: node.sub_id,
-        node_id: node.node_id,
-        node_name: nodeName
-      } : null;
-    }).filter(Boolean);
-    updateChainGroup(rowIndex, colIndex, { group_nodes: nodes });
-  };
-
-  const getGroupCellKey = (rowIndex, colIndex) => `${rowIndex}-${colIndex}`;
-
-  const beginGroupEdit = (rowIndex, colIndex) => {
-    const key = getGroupCellKey(rowIndex, colIndex);
-    const current = chainRows[rowIndex]?.[colIndex];
-    const keys = (current?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
-    setGroupDrafts(prev => ({ ...prev, [key]: keys }));
-    setGroupEditing(prev => ({ ...prev, [key]: true }));
-  };
-
-  const toggleGroupDraft = (rowIndex, colIndex, nodeKey) => {
-    const key = getGroupCellKey(rowIndex, colIndex);
-    setGroupDrafts(prev => {
-      const cur = prev[key] || [];
-      const next = cur.includes(nodeKey) ? cur.filter(k => k !== nodeKey) : [...cur, nodeKey];
-      return { ...prev, [key]: next };
-    });
-  };
-
-  const setGroupDraftKeys = (rowIndex, colIndex, keys) => {
-    const key = getGroupCellKey(rowIndex, colIndex);
-    setGroupDrafts(prev => ({ ...prev, [key]: keys }));
-  };
-
-  const confirmGroupDraft = (rowIndex, colIndex) => {
-    const key = getGroupCellKey(rowIndex, colIndex);
-    const keys = groupDrafts[key] || [];
-    updateChainGroupMembers(rowIndex, colIndex, keys);
-    setGroupEditing(prev => ({ ...prev, [key]: false }));
-  };
-
-
-  const getChainNodeLabel = (node) => {
-    const name = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
-    const type = node?.node_type ?? node?.type ?? '';
-    return type ? `${name} (${type})` : name;
-  };
-
-  const getChainNodeKey = (node) => {
-    if (!node || node.type === 'group') return '';
-    return makeChainNodeKey(node.sub_id, node.node_id, node.node_name, node.node_index);
-  };
-
-  const saveChain = async () => {
-    if (!chainName.trim()) {
-      showToast?.('请输入链式代理名称', 'error');
-      return;
-    }
-
-    for (const row of chainRows) {
-      if (row.some(node => !node)) {
-        showToast?.('请选择所有节点', 'error');
-        return;
-      }
-      for (let i = 0; i < row.length; i++) {
-        const node = row[i];
-        if (node?.type === 'group') {
-          if (!node.group_name || !node.group_name.trim()) {
-            showToast?.('请填写组名称', 'error');
-            return;
-          }
-          if (node.group_source === 'vpngate') {
-            const selectedPool = node.vpngate_country_code
-              ? vpngatePools.find(pool => pool.country_code === node.vpngate_country_code)
-              : vpngatePool;
-            if (!selectedPool?.available) {
-              showToast?.(
-                node.vpngate_country_code
-                  ? 'VPN Gate 所选国家当前没有可用节点，请先在系统设置中更新节点源'
-                  : 'VPN Gate 动态池当前没有可用节点，请先在系统设置中更新节点源',
-                'error'
-              );
-              return;
-            }
-          } else {
-            if (!node.group_nodes || node.group_nodes.length === 0) {
-              showToast?.('组内至少选择一个节点', 'error');
-              return;
-            }
-            if (node.group_nodes.some(member => !member?.sub_id || !member?.node_id)) {
-              showToast?.('组内存在已失效节点，请重新选择', 'error');
-              return;
-            }
-          }
-        } else if (!node?.sub_id || !node?.node_id) {
-          showToast?.('链路中存在已失效节点，请重新选择', 'error');
-          return;
-        }
-      }
-    }
-
-    const payload = {
-      name: chainName.trim(),
-      rows: chainRows.map(row => ({
-        nodes: row.map(node => {
-          if (node.type === 'group') {
-            return {
-              type: 'group',
-              group_id: node.group_id,
-              group_name: node.group_name,
-              group_strategy: node.group_strategy,
-              lb_strategy: node.lb_strategy,
-              group_source: node.group_source || 'nodes',
-              ...(node.group_source === 'vpngate' ? {
-                ...(node.vpngate_country_code ? { vpngate_country_code: node.vpngate_country_code } : {})
-              } : {
-                group_nodes: (node.group_nodes || []).map(n => ({
-                  sub_id: n.sub_id,
-                  node_id: n.node_id,
-                  node_name: n.node_name
-                }))
-              })
-            };
-          }
-          return {
-            type: 'node',
-            sub_id: node.sub_id,
-            node_id: node.node_id,
-            node_name: node.node_name
-          };
-        })
-      }))
-    };
-
-    try {
-      if (editingChain) {
-        await request.put(`${API_BASE}/proxy-chains/${editingChain.id}`, payload);
-        showToast?.('链式代理已更新');
-      } else {
-        await request.post(`${API_BASE}/proxy-chains`, payload);
-        showToast?.('链式代理已创建');
-      }
-      closeChainModal();
-      fetchProxyChains();
-    } catch (err) {
-      showToast?.(err.response?.data?.detail || '保存失败', 'error');
-    }
+    setChainModalRequest({ chain: chain || null, seq: ++chainModalRequestSeq.current });
   };
 
   const toggleChain = async (chainId) => {
@@ -3443,119 +2661,29 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
       {/* Add Node Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-md border border-gray-700">
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="font-semibold text-white">添加自建节点</h3>
-              <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">节点链接</label>
-                <textarea
-                  value={newNodeLink}
-                  onChange={(e) => setNewNodeLink(e.target.value)}
-                  placeholder="支持多行，一行一个链接（含 socks5://用户名:密码@地址:端口）"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 h-24 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">节点名称（可选）</label>
-                <input
-                  type="text"
-                  value={newNodeName}
-                  onChange={(e) => setNewNodeName(e.target.value)}
-                  placeholder="留空则使用链接名；批量用分号分隔"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-              <p className="text-xs text-gray-500">
-                支持的协议：SOCKS5, VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC 等
-              </p>
-            </div>
-            <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={addCustomNode}
-                disabled={!newNodeLink.trim() || loading}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
-              >
-                {loading ? '添加中...' : '添加'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AddNodeModal
+          newNodeLink={newNodeLink}
+          setNewNodeLink={setNewNodeLink}
+          newNodeName={newNodeName}
+          setNewNodeName={setNewNodeName}
+          loading={loading}
+          onClose={() => setShowAddModal(false)}
+          onSubmit={addCustomNode}
+        />
       )}
 
       {/* Test Settings Modal */}
       {showTestSettingsModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-md border border-gray-700">
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="font-semibold text-white">检测设置</h3>
-              <button onClick={() => setShowTestSettingsModal(false)} className="text-gray-400 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">超时时间 (毫秒)</label>
-                <input
-                  type="number"
-                  value={testTimeout}
-                  onChange={(e) => setTestTimeout(parseInt(e.target.value) || 5000)}
-                  min={1000}
-                  max={30000}
-                  step={1000}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">建议 3000-10000ms</p>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">并发数量</label>
-                <input
-                  type="number"
-                  value={testConcurrency}
-                  onChange={(e) => setTestConcurrency(parseInt(e.target.value) || 5)}
-                  min={1}
-                  max={20}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">同时测试的节点数量，建议 3-10</p>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">IP/地区检测 API</label>
-                <select
-                  value={selectedGeoipApi}
-                  onChange={(e) => setSelectedGeoipApi(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                >
-                  {geoipApis.filter(api => api.enabled !== false).map(api => (
-                    <option key={api.id} value={api.id}>
-                      {api.name} {api.limit ? `(${api.limit})` : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-gray-500 mt-1">用于检测出口 IP、地区以及为 Radar 查询 ASN</p>
-              </div>
-            </div>
-            <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">
-              <button
-                onClick={() => setShowTestSettingsModal(false)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
-              >
-                确定
-              </button>
-            </div>
-          </div>
-        </div>
+        <TestSettingsModal
+          testTimeout={testTimeout}
+          setTestTimeout={setTestTimeout}
+          testConcurrency={testConcurrency}
+          setTestConcurrency={setTestConcurrency}
+          selectedGeoipApi={selectedGeoipApi}
+          setSelectedGeoipApi={setSelectedGeoipApi}
+          geoipApis={geoipApis}
+          onClose={() => setShowTestSettingsModal(false)}
+        />
       )}
 
       {/* Delete Confirm Modal */}
@@ -3600,460 +2728,35 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
       {/* Port Mapping Modal */}
       {portMappingNode && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-md border border-gray-700">
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="font-semibold text-white">端口绑定</h3>
-              <button onClick={() => setPortMappingNode(null)} className="text-gray-400 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">节点名称</label>
-                <p className="text-white text-sm bg-gray-700/50 px-3 py-2 rounded-lg truncate" title={portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name || '未命名'}>
-                  {portMappingNode.final_name || portMappingNode.display_name || portMappingNode.name || '未命名'}
-                </p>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">监听端口</label>
-                <input
-                  type="number"
-                  value={portMappingValue}
-                  onChange={(e) => setPortMappingValue(e.target.value)}
-                  placeholder="如: 42001"
-                  min={1024}
-                  max={65535}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-green-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">端口范围: 1024-65535</p>
-              </div>
-              {portMappingNode.mapped_port && (
-                <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
-                  <p className="text-green-400 text-sm">
-                    当前已绑定端口: <span className="font-mono">{portMappingNode.mapped_port}</span>
-                  </p>
-                </div>
-              )}
-            </div>
-            <div className="px-4 py-3 border-t border-gray-700 flex justify-between">
-              <div>
-                {portMappingNode.mapped_port && (
-                  <button
-                    onClick={removePortMapping}
-                    className="px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors"
-                  >
-                    解除绑定
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setPortMappingNode(null)}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={savePortMapping}
-                  disabled={!portMappingValue}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-                >
-                  绑定
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <PortMappingModal
+          portMappingNode={portMappingNode}
+          setPortMappingNode={setPortMappingNode}
+          portMappingValue={portMappingValue}
+          setPortMappingValue={setPortMappingValue}
+          savePortMapping={savePortMapping}
+          removePortMapping={removePortMapping}
+        />
       )}
 
       {/* Port Mapping List Modal */}
       {showPortMappingList && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-2xl border border-gray-700 max-h-[80vh] flex flex-col">
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="font-semibold text-white">端口映射管理</h3>
-              <button onClick={() => setShowPortMappingList(false)} className="text-gray-400 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-4 overflow-y-auto flex-1">
-              {allPortMappings.length === 0 ? (
-                <div className="text-center text-gray-500 py-8">
-                  暂无端口映射
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 px-3 py-2">
-                    <div className="col-span-2">端口</div>
-                    <div className="col-span-7">节点名称</div>
-                    <div className="col-span-2">状态</div>
-                    <div className="col-span-1">操作</div>
-                  </div>
-                  {allPortMappings.map((mapping) => (
-                    <div
-                      key={mapping.port}
-                      className={`grid grid-cols-12 gap-2 items-center px-3 py-2 rounded-lg ${mapping.active ? 'bg-gray-700/50' : 'bg-red-500/10 border border-red-500/30'
-                        }`}
-                    >
-                      <div className="col-span-2">
-                        <span className="font-mono text-green-400">{mapping.port}</span>
-                      </div>
-                      <div className="col-span-7">
-                        <span className={`text-sm truncate block ${mapping.active ? 'text-white' : 'text-gray-500'}`} title={mapping.final_name}>
-                          {mapping.final_name}
-                        </span>
-                      </div>
-                      <div className="col-span-2">
-                        {mapping.active ? (
-                          <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">活跃</span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">失效</span>
-                        )}
-                      </div>
-                      <div className="col-span-1">
-                        <button
-                          onClick={() => deletePortMappingFromList(mapping.port, mapping.final_name)}
-                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                          title="删除"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="px-4 py-3 border-t border-gray-700 text-sm text-gray-500">
-              <p>活跃：节点存在于当前订阅中，生成配置时会包含 listener</p>
-              <p>失效：节点已不存在，可删除或等节点恢复后自动生效</p>
-            </div>
-          </div>
-        </div>
+        <PortMappingListModal
+          allPortMappings={allPortMappings}
+          setShowPortMappingList={setShowPortMappingList}
+          deletePortMappingFromList={deletePortMappingFromList}
+        />
       )}
 
       {/* Proxy Chain Modal */}
-      {showChainModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
-              <h2 className="text-lg font-medium text-white">
-                {editingChain ? '编辑链式代理' : '添加链式代理'}
-              </h2>
-              <button
-                onClick={closeChainModal}
-                className="p-1 text-gray-400 hover:text-white transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-4 space-y-4">
-              {/* Name Input */}
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">名称</label>
-                <input
-                  type="text"
-                  value={chainName}
-                  onChange={(e) => setChainName(e.target.value)}
-                  placeholder="例如：美国家宽链路"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {/* Chain Rows - Vertical Layout */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm text-gray-400">链路配置</label>
-                </div>
-
-                <div className="space-y-4">
-                  {chainRows.map((row, rowIndex) => (
-                    <div key={rowIndex} className="bg-gray-900/50 rounded-lg p-3">
-
-                      {/* Vertical Node Selectors */}
-                      <div className="space-y-2">
-                        <div className="text-sm text-gray-500 text-center">我</div>
-                        
-                        {row.map((node, colIndex) => {
-                          const isLast = colIndex === row.length - 1;
-                          const cellType = node?.type === 'group' && node?.group_source === 'vpngate'
-                            ? 'vpngate'
-                            : (node?.type || 'node');
-                          const isVpnGatePool = cellType === 'vpngate';
-                          const groupLabel = isLast ? '组(落地池)' : '组(中转池)';
-                          return (
-                            <React.Fragment key={colIndex}>
-                              <div className="flex justify-center">
-                                <ArrowRight size={16} className="text-gray-600 rotate-90" />
-                              </div>
-                              <div className="relative space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-500">类型</span>
-                                  <select
-                                    value={cellType}
-                                    onChange={(e) => updateChainCellType(rowIndex, colIndex, e.target.value)}
-                                    className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
-                                  >
-                                    <option value="node">节点</option>
-                                    <option value="group">{groupLabel}</option>
-                                    {isLast && (
-                                      <option value="vpngate">
-                                        VPN Gate 国家动态池（{vpngatePools.length} 个国家）
-                                      </option>
-                                    )}
-                                  </select>
-                                </div>
-
-                                {cellType === 'group' || isVpnGatePool ? (
-                                  <div className="space-y-2">
-                                    <input
-                                      type="text"
-                                      value={node?.group_name || ''}
-                                      onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_name: e.target.value })}
-                                      placeholder={isLast ? '落地池名称' : '中转池名称'}
-                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-                                    />
-                                    <select
-                                      value={node?.group_strategy || 'load-balance'}
-                                      onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_strategy: e.target.value })}
-                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-                                    >
-                                      <option value="select">手动选择</option>
-                                      <option value="load-balance">负载均衡(随机/轮询)</option>
-                                      <option value="url-test">自动测速</option>
-                                      <option value="fallback">故障切换</option>
-                                    </select>
-
-                                    {node?.group_strategy === 'load-balance' && (
-                                      <select
-                                        value={node?.lb_strategy || 'round-robin'}
-                                        onChange={(e) => updateChainGroup(rowIndex, colIndex, { lb_strategy: e.target.value })}
-                                        className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-                                      >
-                                        <option value="round-robin">轮询 (round-robin)</option>
-                                        <option value="consistent-hashing">同目标固定 (consistent-hashing)</option>
-                                        <option value="sticky-sessions">同会话固定 (sticky-sessions)</option>
-                                      </select>
-                                    )}
-
-                                    {isVpnGatePool ? (
-                                      <div className="space-y-2">
-                                        <select
-                                          value={node?.vpngate_country_code || ''}
-                                          onChange={(e) => updateVpngateCountry(rowIndex, colIndex, e.target.value)}
-                                          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-                                        >
-                                          <option value="">全部国家（{vpngatePool.active_node_count ?? 0} 个）</option>
-                                          {vpngatePools.map(pool => (
-                                            <option key={pool.pool_id || pool.country_code} value={pool.country_code}>
-                                              {pool.flag || ''} {pool.country || pool.country_code}（{pool.active_node_count ?? 0} 个）
-                                            </option>
-                                          ))}
-                                        </select>
-                                        {(() => {
-                                          const selectedPool = node?.vpngate_country_code
-                                            ? vpngatePools.find(pool => pool.country_code === node.vpngate_country_code)
-                                            : null;
-                                          const poolLabel = selectedPool?.country
-                                            ? `${selectedPool.country} `
-                                            : '';
-                                          const activeCount = selectedPool?.active_node_count ?? vpngatePool.active_node_count ?? 0;
-                                          return (
-                                            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                                              自动使用当前有效的 {poolLabel}VPN Gate 节点，刷新节点源后池成员会同步更新；当前有效节点：{activeCount}
-                                            </div>
-                                          );
-                                        })()}
-                                      </div>
-                                    ) : (() => {
-                                      const cellKey = getGroupCellKey(rowIndex, colIndex);
-                                      const isEditing = groupEditing[cellKey];
-                                      const draftKeys = groupDrafts[cellKey] || [];
-                                      const searchValue = groupSearch[cellKey] || '';
-                                      const filteredNodes = orderedChainNodes.filter((n) => {
-                                        if (!searchValue) return true;
-                                        const label = getChainNodeLabel(n).toLowerCase();
-                                        const source = (n.sub_name || n.sub_id || '').toLowerCase();
-                                        const q = searchValue.toLowerCase();
-                                        return label.includes(q) || source.includes(q);
-                                      });
-                                      const selectedNames = (node?.group_nodes || []).map(n => n.node_name);
-
-                                      if (!isEditing) {
-                                        return (
-                                          <div className="space-y-2">
-                                            <div className="text-xs text-gray-500">已选 {selectedNames.length} 个</div>
-                                            {selectedNames.length > 0 ? (
-                                              <div className="flex flex-wrap gap-1">
-                                                {selectedNames.map((name, i) => (
-                                                  <span key={`${name}-${i}`} className="px-2 py-0.5 bg-gray-700 text-gray-200 rounded text-xs">{name}</span>
-                                                ))}
-                                              </div>
-                                            ) : (
-                                              <div className="text-xs text-gray-500">尚未选择组内节点</div>
-                                            )}
-                                            <button
-                                              type="button"
-                                              onClick={() => beginGroupEdit(rowIndex, colIndex)}
-                                              className="text-xs text-blue-400 hover:text-blue-300"
-                                            >
-                                              修改
-                                            </button>
-                                          </div>
-                                        );
-                                      }
-
-                                      return (
-                                        <div className="space-y-2">
-                                          <div className="flex items-center justify-between text-xs text-gray-500">
-                                            <span>点击选择，已选 {draftKeys.length} 个</span>
-                                            <div className="flex gap-2">
-                                              <button
-                                                type="button"
-                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, filteredNodes.map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index)))}
-                                                className="text-blue-400 hover:text-blue-300"
-                                              >
-                                                全选
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() => setGroupDraftKeys(rowIndex, colIndex, [])}
-                                                className="text-gray-400 hover:text-gray-300"
-                                              >
-                                                清空
-                                              </button>
-                                            </div>
-                                          </div>
-                                          <input
-                                            value={searchValue}
-                                            onChange={(e) => setGroupSearch(prev => ({ ...prev, [cellKey]: e.target.value }))}
-                                            placeholder="搜索节点/订阅"
-                                            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
-                                          />
-                                          <div className="max-h-40 overflow-y-auto border border-gray-700 rounded-lg bg-gray-800">
-                                            {filteredNodes.map(n => {
-                                              const key = makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
-                                              const checked = draftKeys.includes(key);
-                                              return (
-                                                <div
-                                                  key={key}
-                                                  onClick={() => toggleGroupDraft(rowIndex, colIndex, key)}
-                                                  className="px-3 py-2 text-sm text-white hover:bg-gray-700/50 cursor-pointer flex items-center justify-between"
-                                                >
-                                                  <span className="truncate">{getChainNodeLabel(n)}</span>
-                                                  <span className={checked ? 'text-blue-400' : 'text-gray-600'}>{checked ? '已选' : ''}</span>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-xs text-gray-500">选择组内节点，系统会自动生成链路组</span>
-                                            <button
-                                              type="button"
-                                              onClick={() => confirmGroupDraft(rowIndex, colIndex)}
-                                              className="px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30"
-                                            >
-                                              确定
-                                            </button>
-                                          </div>
-                                        </div>
-                                      );
-                                    })()}
-                                  </div>
-                                ) : (
-                                  <select
-                                    value={getChainNodeKey(node)}
-                                    onChange={(e) => updateChainNode(rowIndex, colIndex, e.target.value)}
-                                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 appearance-none"
-                                  >
-                                    <option value="">选择节点</option>
-                                    {/* Use flat list like node management page */}
-                                    {orderedChainNodes.map(n => {
-                                      const key = makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
-                                      return (
-                                        <option key={key} value={key}>
-                                          {getChainNodeLabel(n)}
-                                        </option>
-                                      );
-                                    })}
-                                  </select>
-                                )}
-
-                                {row.length > 2 && (
-                                  <button
-                                    onClick={() => removeChainColumn(rowIndex, colIndex)}
-                                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-400"
-                                  >
-                                    ×
-                                  </button>
-                                )}
-                              </div>
-                            </React.Fragment>
-                          );
-                        })}
-
-                        <div className="flex justify-center">
-                          <ArrowRight size={16} className="text-gray-600 rotate-90" />
-                        </div>
-                        <div className="text-sm text-gray-500 text-center">服务</div>
-
-                        <button
-                          onClick={() => addChainColumn(rowIndex)}
-                          className="w-full px-2 py-1.5 text-xs text-blue-400 hover:text-blue-300 border border-blue-400/30 rounded hover:border-blue-400/50 mt-2"
-                        >
-                          + 添加中转节点
-                        </button>
-                      </div>
-
-                      {/* Preview */}
-                      <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
-                        预览: 我 → {row.map((n, colIndex) => {
-                          if (n?.type === 'group') {
-                            const groupName = n?.group_name || '落地池';
-                            if (n?.group_source === 'vpngate') {
-                              const selectedPool = n.vpngate_country_code
-                                ? vpngatePools.find(pool => pool.country_code === n.vpngate_country_code)
-                                : null;
-                              const count = selectedPool?.active_node_count ?? vpngatePool.active_node_count ?? 0;
-                              return `组:${groupName}(${count}个)`;
-                            }
-                            const key = getGroupCellKey(rowIndex, colIndex);
-                            const draftCount = (groupDrafts[key] || []).length;
-                            const savedCount = (n?.group_nodes || []).length;
-                            const count = groupEditing[key] ? draftCount : savedCount;
-                            return count > 0 ? `组:${groupName}(${count}个)` : `组:${groupName}`;
-                          }
-                          return n?.node_name || n?.display_name || n?.name || '?';
-                        }).join(' → ')} → 服务
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="flex items-center justify-end gap-2 p-4 border-t border-gray-700">
-              <button
-                onClick={closeChainModal}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={saveChain}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ProxyChainSection
+        subscriptions={subscriptions}
+        availableChainNodes={availableChainNodes}
+        vpngatePool={vpngatePool}
+        vpngatePools={vpngatePools}
+        showToast={showToast}
+        openChainRequest={chainModalRequest}
+        onChainSaved={fetchProxyChains}
+      />
 
       {/* Delete Chain Confirm Modal */}
       <ConfirmModal
