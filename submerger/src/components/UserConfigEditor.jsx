@@ -23,6 +23,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
     const controller = new AbortController();
     loadGroupConfig(controller.signal);
     return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- user.id 变化时加载一次分组配置；loadGroupConfig 闭包引用 user.id 派生路径与稳定 setter
   }, [user.id]);
 
   // Update YAML preview when groupConfig changes (real-time)
@@ -30,6 +31,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
     if (!loading && groups.length > 0) {
       generateYamlPreview();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 配置/分组/加载态变化时重建 YAML 预览；generateYamlPreview 每次渲染重建，补依赖会触发 setState 循环
   }, [groupConfig, groups, loading]);
 
   const loadGroupConfig = async (signal) => {

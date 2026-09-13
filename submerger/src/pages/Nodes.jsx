@@ -153,6 +153,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       controller.abort();
       subNodesRequestSeq.current += 1;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscriptions 变化时拉取一次；fetchAllSubNodes 闭包仅引用稳定 setter 与请求序号 ref
   }, [subscriptions]);
 
   // Fetch proxy chains
@@ -308,6 +309,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       controller.abort();
       geoipRequestSeq.current += 1;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 节点源就绪后做一次 GeoIP 补全；fetchGeoipData 会 setState 但其结果不在触发集内
   }, [subNodes, customNodes, vpngateNodes, loadingNodes]);
 
   const fetchGeoipData = async (signal, requestId) => {
@@ -801,7 +803,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     result.sort(compareNodes);
 
     return result;
-  }, [allNodes, search, filterSource, filterCountry, filterIpSource, filterIpProperty, filterType, filterLatencyStatus, sortBy, sortOrder]);
+  }, [allNodes, search, filterSource, filterCountry, filterIpSource, filterIpProperty, filterType, filterLatencyStatus, compareNodes]);
 
   // 分页节点
   const paginatedNodes = useMemo(() => {

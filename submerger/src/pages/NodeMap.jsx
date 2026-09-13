@@ -474,6 +474,7 @@ export default function NodeMap() {
       // chartInstance.current?.dispose(); 
       // chartInstance.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 地图数据就绪后拉取一次；fetchCountryNodes 会更新 countryData/rawData，补依赖将形成拉取循环
   }, [points, lines, targetPoint, loading, mapLoading, countryData, rawData]); // Re-run when data changes
 
   // Dispose chart on unmount

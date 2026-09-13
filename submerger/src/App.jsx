@@ -203,6 +203,7 @@ export default function App() {
     const controller = new AbortController();
     fetchAllData(controller.signal);
     return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在登录态变化时拉取一次；fetchAllData 闭包只引用稳定 setter，补依赖会随渲染重复拉取
   }, [isLoggedIn]);
 
   const checkAuthStatus = async (signal) => {

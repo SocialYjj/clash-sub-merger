@@ -139,6 +139,7 @@ export default function Dashboard({ showToast }) {
     const controller = new AbortController();
     fetchData(controller.signal);
     return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载时拉取一次；fetchData 闭包仅引用稳定 setter，属有意的 mount-once 模式
   }, []);
 
   const fetchData = async (signal) => {

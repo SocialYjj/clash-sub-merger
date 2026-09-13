@@ -236,6 +236,7 @@ export default function Settings({
       clearInterval(timer);
       controller.abort();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 展开/自动刷新/筛选变化时重建轮询定时器；refreshGeoipCache 闭包仅引用稳定 setter
   }, [geoipCacheExpanded, geoipAutoRefresh, geoipCacheFilters]);
 
   const saveOnlineGeoipConfig = async (preferredApi = null, token = null) => {

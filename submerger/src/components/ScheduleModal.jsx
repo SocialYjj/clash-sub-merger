@@ -28,6 +28,7 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
             document.removeEventListener('keydown', handleKeyDown);
             if (previous && typeof previous.focus === 'function') previous.focus();
         };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Escape 监听与焦点管理只在挂载时绑定一次；补 onClose 依赖会在父级重渲染时重新捕获焦点
     }, []);
 
     useEffect(() => {

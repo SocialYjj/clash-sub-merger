@@ -30,6 +30,7 @@ export default function ConfirmModal({
         previouslyFocused.focus();
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Escape 监听与焦点管理只在开关时绑定一次；补 onClose 依赖会在父级重渲染时重新捕获焦点
   }, [isOpen]);
 
   if (!isOpen) return null;
