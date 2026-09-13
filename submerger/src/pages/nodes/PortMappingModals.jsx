@@ -1,4 +1,12 @@
 import { Trash2, X } from 'lucide-react';
+import VirtualList from '../../components/VirtualList';
+
+// Virtualized mapping list geometry: each 48px slot holds a 40px row
+// (h-10, border-box so the inactive state's border stays inside) plus the
+// 8px gap that `space-y-2` used to provide between rows.
+const MAPPING_ROW_SLOT_HEIGHT = 48;
+// Viewport cap of the virtualized list before it scrolls internally.
+const MAPPING_LIST_MAX_HEIGHT = 384;
 
 export function PortMappingModal({
   portMappingNode,
@@ -82,6 +90,11 @@ export function PortMappingListModal({
   setShowPortMappingList,
   deletePortMappingFromList,
 }) {
+  // Only the visible window of mappings is rendered; short lists keep their
+  // natural height because the container shrinks to the total list height.
+  const totalListHeight = allPortMappings.length * MAPPING_ROW_SLOT_HEIGHT;
+  const listContainerHeight = Math.min(totalListHeight, MAPPING_LIST_MAX_HEIGHT);
+
   return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-800 rounded-xl w-full max-w-2xl border border-gray-700 max-h-[80vh] flex flex-col">
@@ -104,38 +117,44 @@ export function PortMappingListModal({
                     <div className="col-span-2">状态</div>
                     <div className="col-span-1">操作</div>
                   </div>
-                  {allPortMappings.map((mapping) => (
-                    <div
-                      key={mapping.port}
-                      className={`grid grid-cols-12 gap-2 items-center px-3 py-2 rounded-lg ${mapping.active ? 'bg-gray-700/50' : 'bg-red-500/10 border border-red-500/30'
-                        }`}
-                    >
-                      <div className="col-span-2">
-                        <span className="font-mono text-green-400">{mapping.port}</span>
-                      </div>
-                      <div className="col-span-7">
-                        <span className={`text-sm truncate block ${mapping.active ? 'text-white' : 'text-gray-500'}`} title={mapping.final_name}>
-                          {mapping.final_name}
-                        </span>
-                      </div>
-                      <div className="col-span-2">
-                        {mapping.active ? (
-                          <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">活跃</span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">失效</span>
-                        )}
-                      </div>
-                      <div className="col-span-1">
-                        <button
-                          onClick={() => deletePortMappingFromList(mapping.port, mapping.final_name)}
-                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                          title="删除"
+                  <VirtualList
+                    items={allPortMappings}
+                    itemHeight={MAPPING_ROW_SLOT_HEIGHT}
+                    containerHeight={listContainerHeight}
+                    renderItem={(mapping) => (
+                      <div className="pb-2">
+                        <div
+                          className={`grid grid-cols-12 gap-2 items-center px-3 h-10 rounded-lg ${mapping.active ? 'bg-gray-700/50' : 'bg-red-500/10 border border-red-500/30'
+                            }`}
                         >
-                          <Trash2 size={14} />
-                        </button>
+                          <div className="col-span-2">
+                            <span className="font-mono text-green-400">{mapping.port}</span>
+                          </div>
+                          <div className="col-span-7">
+                            <span className={`text-sm truncate block ${mapping.active ? 'text-white' : 'text-gray-500'}`} title={mapping.final_name}>
+                              {mapping.final_name}
+                            </span>
+                          </div>
+                          <div className="col-span-2">
+                            {mapping.active ? (
+                              <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">活跃</span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">失效</span>
+                            )}
+                          </div>
+                          <div className="col-span-1">
+                            <button
+                              onClick={() => deletePortMappingFromList(mapping.port, mapping.final_name)}
+                              className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                              title="删除"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )}
+                  />
                 </div>
               )}
             </div>
