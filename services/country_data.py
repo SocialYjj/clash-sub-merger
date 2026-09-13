@@ -592,3 +592,56 @@ def detect_country(name: str) -> Optional[Dict[str, str]]:
         }
 
     return None
+
+
+def extract_country_from_name(node_name: str, server: str = None) -> Optional[Dict]:
+    """
+    Extract country info from node name using flag emoji or keywords.
+    Priority: 1. Flag emoji  2. Keywords  3. None
+    Returns: {'country': str, 'country_code': str, 'flag': str} or None
+
+    Kept separate from detect_country(): the subscription-output router relies
+    on this exact matching behavior (positional flag scan, plain keyword
+    contains) and its signature carries the historical ``server`` parameter.
+    """
+    if not node_name:
+        return None
+
+    # 1. Check for flag emoji first (two regional indicator symbols)
+    for i in range(len(node_name) - 1):
+        potential_flag = node_name[i : i + 2]
+        if not (
+            len(potential_flag) == 2
+            and 0x1F1E6 <= ord(potential_flag[0]) <= 0x1F1FF
+            and 0x1F1E6 <= ord(potential_flag[1]) <= 0x1F1FF
+        ):
+            continue
+        code = GeoIPService.flag_to_iso(potential_flag)
+        if code and len(code) == 2:
+            return {
+                "country": COUNTRY_NAMES.get(code, code),
+                "country_code": code,
+                "flag": GeoIPService.iso_to_flag(code),
+            }
+
+    # 2. Check for keywords (case-insensitive)
+    # Find the longest matching keyword to prioritize specific names (e.g. 'Antarctica' > 'CA')
+    name_lower = node_name.lower()
+    best_match_code = None
+    max_len = 0
+
+    for code, keywords in COUNTRY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in name_lower:
+                if len(keyword) > max_len:
+                    max_len = len(keyword)
+                    best_match_code = code
+
+    if best_match_code:
+        return {
+            "country": COUNTRY_NAMES.get(best_match_code, best_match_code),
+            "country_code": best_match_code,
+            "flag": GeoIPService.iso_to_flag(best_match_code),
+        }
+
+    return None

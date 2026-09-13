@@ -71,3 +71,13 @@ def strip_node_metadata(node: dict) -> dict:
     return {
         key: value for key, value in node.items() if key not in NODE_METADATA_FIELDS and not str(key).startswith("_")
     }
+
+
+def filter_underscore_fields(data: dict) -> dict:
+    """
+    Remove application-only metadata before serializing a client configuration.
+
+    Historical alias kept for the subscription-output router seam; new code
+    should call strip_node_metadata directly.
+    """
+    return strip_node_metadata(data)
