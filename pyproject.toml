@@ -1,0 +1,53 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    ".venv",
+    "submerger",
+    "speedtest",
+    "data",
+    ".audit",
+    ".workbuddy",
+    ".tmp_mihomo_src",
+    ".tmp_v2rayn_src",
+    "scripts/__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E4",  # pycodestyle errors (imports/indentation-level issues)
+    "E7",  # pycodestyle statements (bare except, lambda assignment...)
+    "E9",  # pycodestyle runtime (syntax errors, undefined names)
+    "F",   # pyflakes (unused imports/variables, f-string issues)
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear (likely bugs)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "api",
+    "core",
+    "services",
+    "speedtest_service",
+    "scheduler_service",
+    "geoip_service",
+    "translation_service",
+    "logger_config",
+    "helpers",
+    "helpers_ua",
+    "ddns_sync",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008: FastAPI 依赖注入依赖「默认参数调用 Depends()」，属框架惯例。
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body", "fastapi.File"]
+
+[tool.ruff.lint.per-file-ignores]
+# 包的 __init__.py 以再导出为主，import 未直接使用是预期行为。
+"__init__.py" = ["F401"]
+# server.py 为规避循环依赖刻意在模块中部导入，且承担对历史入口符号的再导出。
+"server.py" = ["E402", "F401"]
+# 迁移脚本需先改写 sys.path 才能导入项目模块。
+"scripts/*" = ["E402"]
+# 测试中 assertRaises(Exception) 用于断言「任何异常都不应发生」的场景。
+"tests/*" = ["B017"]

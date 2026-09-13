@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import request, { isRequestCanceled } from '../utils/request';
 import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
 import UserConfigEditor from '../components/UserConfigEditor';
@@ -315,7 +315,7 @@ const AllocationModal = ({ user, onClose, showToast }) => {
     }
   };
 
-  const toggleSubscription = (subId, allNodes) => {
+  const toggleSubscription = (subId, _allNodes) => {
     setAllocations(prev => {
       const current = prev[subId];
       if (current && current.includes('*')) {
@@ -372,7 +372,7 @@ const AllocationModal = ({ user, onClose, showToast }) => {
     return allocations[subId] && allocations[subId].includes('*');
   };
 
-  const isSubPartial = (subId, allNodes) => {
+  const isSubPartial = (subId, _allNodes) => {
     const current = allocations[subId];
     return current && !current.includes('*') && current.length > 0;
   };
@@ -500,7 +500,6 @@ export default function Users({
   onCopyUrl,
   onRefreshUsers,
   showToast,
-  loading
 }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
@@ -813,7 +812,7 @@ export default function Users({
           user={configUser}
           onClose={() => setConfigUser(null)}
           onSave={() => onRefreshUsers && onRefreshUsers()}
-          showToast={showToast || ((msg, type) => alert(msg))}
+          showToast={showToast || ((msg, _type) => alert(msg))}
         />
       )}
     </div>

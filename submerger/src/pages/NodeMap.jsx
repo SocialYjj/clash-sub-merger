@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import request, { isRequestCanceled } from '../utils/request';
 import * as echarts from 'echarts';
@@ -63,7 +63,7 @@ export default function NodeMap() {
   const [mapLoading, setMapLoading] = useState(true);
   const [countryData, setCountryData] = useState([]); // Array of { code, name, count, flag }
   const [rawData, setRawData] = useState({}); // Object { code: count }
-  const [totalNodes, setTotalNodes] = useState(0);
+  const [, setTotalNodes] = useState(0);
 
   // Node list modal state
   const [showNodeList, setShowNodeList] = useState(false);
@@ -174,7 +174,7 @@ export default function NodeMap() {
   };
 
   // Process data for ECharts
-  const { points, lines, targetPoint, unknownCount } = useMemo(() => {
+  const { points, lines, targetPoint } = useMemo(() => {
     const pts = [];
     const lns = [];
     let tPoint = null;

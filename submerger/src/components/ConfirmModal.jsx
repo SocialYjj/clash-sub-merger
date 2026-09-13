@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
 export default function ConfirmModal({ 

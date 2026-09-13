@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Search, CheckSquare, Square } from 'lucide-react';
 
 const NodeSelector = ({ groupName, availableNodes, selectedNodes, onConfirm, onCancel }) => {

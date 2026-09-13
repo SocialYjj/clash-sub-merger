@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Key, Eye, EyeOff } from 'lucide-react';
 
 export default function SecuritySection({ onChangePassword }) {

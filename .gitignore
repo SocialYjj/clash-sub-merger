@@ -5,6 +5,15 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local analysis / temporary working files
+.audit/
+.workbuddy/
+.tmp_*/
+*.diff
+.tmp_*.txt
 
 # Node
 node_modules/
@@ -41,3 +50,5 @@ Thumbs.db
 
 # Misc
 uv.lock
+.zcode/
+.current_protocol_diff.txt

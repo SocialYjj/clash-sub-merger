@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Link, useLocation } from 'react-router';
-import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Filter, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
+import { Server, Search, Plus, Trash2, X, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Edit2, ChevronUp, ChevronDown, Globe, Link2, ArrowRight, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
 import NodeEditModal from '../components/NodeEditModal';
@@ -993,7 +993,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     // Latency status filter
     if (filterLatencyStatus !== 'all') {
       result = result.filter(n => {
-        const badge = getLatencyBadge(n.latency, n.testError);
         if (filterLatencyStatus === 'untested') return n.latency === undefined && !n.testError;
         if (filterLatencyStatus === 'success') return n.latency !== undefined && n.latency > 0 && !n.testError;
         if (filterLatencyStatus === 'timeout') return n.latency === -1 || n.latency === null;
@@ -1350,7 +1349,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       + (testIppure ? nodesToTest.length : 0)
       + (testRadar ? nodesToTest.length : 0)
       + (testSpeed ? nodesToTest.length : 0);
-    let currentStep = 0;
+    let currentStep;
     const firstPhase = testLatency
       ? '延迟'
       : testRegion
@@ -1491,8 +1490,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
     // Phase 3: Test IPPure attributes with the same concurrency as region.
     if (testIppure) {
-      const baseStep = (testLatency ? nodesToTest.length : 0)
-        + (testRegion ? nodesToTest.length : 0);
       setBatchTestProgress(prev => ({ ...prev, phase: 'IP属性' }));
       for (let i = 0; i < nodesToTest.length; i += testConcurrency) {
         const batch = nodesToTest.slice(i, i + testConcurrency);
@@ -2098,16 +2095,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     });
   };
 
-  const addChainRow = () => {
-    setChainRows(prev => [...prev, [null, null]]);
-  };
-
-  const removeChainRow = (rowIndex) => {
-    if (chainRows.length > 1) {
-      setChainRows(prev => prev.filter((_, i) => i !== rowIndex));
-    }
-  };
-
   const generateGroupId = () => `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
   const makeChainNodeKey = (subId, nodeId, nodeName, nodeIndex) => {
@@ -2282,29 +2269,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     setGroupEditing(prev => ({ ...prev, [key]: false }));
   };
 
-  const toggleChainGroupMember = (rowIndex, colIndex, nodeKey) => {
-    setChainRows(prev => {
-      const newRows = [...prev];
-      const current = newRows[rowIndex]?.[colIndex];
-      if (!current || current.type !== 'group') return newRows;
-      const selectedKeys = (current.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
-      const nextKeys = selectedKeys.includes(nodeKey)
-        ? selectedKeys.filter(k => k !== nodeKey)
-        : [...selectedKeys, nodeKey];
-      const nodes = nextKeys.map(key => {
-        const node = resolveChainNodeFromKey(orderedChainNodes, key);
-        const nodeName = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
-        return node ? {
-          type: 'node',
-          sub_id: node.sub_id,
-          node_id: node.node_id,
-          node_name: nodeName
-        } : null;
-      }).filter(Boolean);
-      newRows[rowIndex][colIndex] = { ...current, group_nodes: nodes };
-      return newRows;
-    });
-  };
 
   const getChainNodeLabel = (node) => {
     const name = node?.node_name ?? node?.display_name ?? node?.name ?? '未知节点';
@@ -2993,7 +2957,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
               </thead>
               <tbody className="divide-y divide-gray-700">
                 {paginatedNodes.length > 0 ? (
-                  paginatedNodes.map((node, idx) => {
+                  paginatedNodes.map((node, _idx) => {
                     const activeTestType = testingByNode[node.nodeKey];
                     const isTesting = Boolean(activeTestType);
                     const isSelected = selectedNodes.has(node.nodeKey);
@@ -3821,7 +3785,6 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             : (node?.type || 'node');
                           const isVpnGatePool = cellType === 'vpngate';
                           const groupLabel = isLast ? '组(落地池)' : '组(中转池)';
-                          const selectedKeys = (node?.group_nodes || []).map(n => makeChainNodeKey(n.sub_id, n.node_id, n.node_name, n.node_index));
                           return (
                             <React.Fragment key={colIndex}>
                               <div className="flex justify-center">

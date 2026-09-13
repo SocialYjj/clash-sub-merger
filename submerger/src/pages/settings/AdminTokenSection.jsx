@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Key, Plus, FileCode, Check, Copy, Sliders, Edit2, RefreshCw, Trash2, X, Shuffle } from 'lucide-react';
 import request, { isRequestCanceled } from '../../utils/request';
 import { copyToClipboard } from '../../utils/clipboard';

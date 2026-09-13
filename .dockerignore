@@ -23,6 +23,17 @@ venv
 htmlcov
 .tox
 .mypy_cache
+.ruff_cache
+
+# Local analysis / temporary working files
+.audit
+.workbuddy
+.tmp_*
+*.diff
+
+# Go build artifacts (not needed in build context)
+speedtest/*.exe
+speedtest/*.exe~
 
 # Node
 submerger/node_modules

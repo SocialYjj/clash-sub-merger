@@ -1,4 +1,3 @@
-import React from 'react';
 import { CheckCircle, XCircle, Info, AlertTriangle } from 'lucide-react';
 
 export default function Toast({ show, message, type = 'success' }) {

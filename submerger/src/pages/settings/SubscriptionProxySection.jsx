@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Shield } from 'lucide-react';
 import request, { isRequestCanceled } from '../../utils/request';
 

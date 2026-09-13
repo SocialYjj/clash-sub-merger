@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Link, FileText, Check } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 

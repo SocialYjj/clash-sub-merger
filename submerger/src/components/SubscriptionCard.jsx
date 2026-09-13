@@ -1,5 +1,4 @@
 
-import React from 'react';
 import { RefreshCw, Trash2, Clock, Calendar, Edit2, GripVertical, Copy, FileText, AlertTriangle, List } from 'lucide-react';
 import { getTrafficInfo, getAvatarTheme, formatDate } from '../utils/format';
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FileCode, Upload, RotateCcw, Plus, Trash2, Edit3, Copy, X, Info } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
@@ -61,9 +61,7 @@ export default function Templates({ showToast }) {
   const [showEditModal, setShowEditModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [creating, setCreating] = useState(false);
-  const fileInputRef = useRef(null);
   const createFileInputRef = useRef(null);
-  const [showPlaceholderHelp, setShowPlaceholderHelp] = useState(true);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {

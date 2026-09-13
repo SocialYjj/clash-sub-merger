@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Clock } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 
@@ -140,7 +140,7 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
         try {
             const valueToSave = cronValue.trim() || null;
 
-            const response = await request.put(`${API_BASE}/scheduler/subscriptions/${sub.id}`, {
+            await request.put(`${API_BASE}/scheduler/subscriptions/${sub.id}`, {
                 cron_expr: valueToSave
             });
 

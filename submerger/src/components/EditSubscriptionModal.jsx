@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Copy, Check, FileText } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';

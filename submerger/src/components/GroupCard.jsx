@@ -1,7 +1,6 @@
-import React from 'react';
 import { Edit2 } from 'lucide-react';
 
-const GroupCard = ({ group, currentNodes, availableNodes, onEdit }) => {
+const GroupCard = ({ group, currentNodes, _availableNodes, onEdit }) => {
   const getTypeColor = (type) => {
     const colors = {
       'select': 'bg-blue-500/10 text-blue-400 border-blue-500/30',

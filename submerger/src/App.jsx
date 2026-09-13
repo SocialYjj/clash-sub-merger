@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
-import { Eye, EyeOff, Lock, X, Check } from 'lucide-react';
+import { Eye, EyeOff, Lock, X } from 'lucide-react';
 import request, { isRequestCanceled } from './utils/request';
 import { copyToClipboard } from './utils/clipboard';
 
@@ -247,7 +247,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await request.post(`${API_BASE}/auth/logout`);
-    } catch { }
+    } catch { /* 登出接口失败也继续清理本地会话 */ }
     localStorage.removeItem('session');
     setIsLoggedIn(false);
   };
@@ -308,8 +308,6 @@ export default function App() {
       await request.post(`${API_BASE}/subscriptions`, { name, url });
       await fetchSubscriptions();
       showToast('订阅添加成功');
-    } catch (err) {
-      throw err;
     } finally {
       setLoading(false);
     }
@@ -465,18 +463,6 @@ export default function App() {
     } catch (err) {
       showToast('复制失败', 'error');
     }
-  };
-
-  const regenerateUserToken = async (id) => {
-    showConfirm('重新生成 Token', '重新生成 token 后，旧的订阅地址将失效，确定继续？', async () => {
-      try {
-        await request.post(`${API_BASE}/users/${id}/regenerate-token`);
-        await fetchUsers();
-        showToast('Token 已重新生成');
-      } catch (err) {
-        showToast('生成失败', 'error');
-      }
-    }, 'warning');
   };
 
   const changePassword = async (currentPassword, newPassword) => {

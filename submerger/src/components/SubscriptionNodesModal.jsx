@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { FileText, Loader2, Server, X } from 'lucide-react';
 
 const getNodeDisplayName = (node) => node?.display_name || node?.name || '未命名节点';

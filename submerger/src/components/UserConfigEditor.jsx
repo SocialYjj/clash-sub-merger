@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Save, Loader2, RotateCcw } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import GroupCard from './GroupCard';
@@ -7,7 +7,7 @@ import NodeSelector from './NodeSelector';
 const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = false }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [templateId, setTemplateId] = useState('');
+  const [, setTemplateId] = useState('');
   const [templateName, setTemplateName] = useState('');
   const [groups, setGroups] = useState([]);
   const [groupConfig, setGroupConfig] = useState({});

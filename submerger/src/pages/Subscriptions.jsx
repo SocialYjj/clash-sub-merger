@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Plus, RefreshCw, Server } from 'lucide-react';
 import request from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';

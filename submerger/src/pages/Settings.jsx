@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Globe, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, Edit2, X, Play } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Globe, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, X, Play } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import { formatDate } from '../utils/format';
 import ConfirmModal from '../components/ConfirmModal';
@@ -28,7 +28,7 @@ export default function Settings({
   onChangePassword,
   showToast
 }) {
-  const [speedtestConfig, setSpeedtestConfig] = useState({});
+  const [, setSpeedtestConfig] = useState({});
   
   // Online GeoIP API config
   const [onlineGeoipConfig, setOnlineGeoipConfig] = useState({
@@ -523,12 +523,6 @@ export default function Settings({
       showToast('删除失败', 'error');
     }
     setDeleteApiConfirm(null);
-  };
-
-  const formatFileSize = (bytes) => {
-    if (!bytes) return '-';
-    const mb = bytes / 1024 / 1024;
-    return `${mb.toFixed(2)} MB`;
   };
 
   const selectedTranslationProviderId = translationConfig.preferred_provider || 'google';
