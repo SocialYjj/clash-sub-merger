@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { FileCode, Upload, RotateCcw, Plus, Trash2, Edit3, Copy, X, Info } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
+import { SkeletonCardGrid } from '../components/Skeleton';
 
 const API_BASE = '/api';
 
@@ -236,10 +237,10 @@ export default function Templates({ showToast }) {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">模版管理</h1>
-          <p className="text-gray-400 text-sm mt-1">管理多个 Clash 配置模版</p>
+          <h1 className="text-2xl font-bold text-ink">模版管理</h1>
+          <p className="text-ink-2 text-sm mt-1">管理多个 Clash 配置模版</p>
         </div>
         <button
           onClick={() => {
@@ -247,7 +248,7 @@ export default function Templates({ showToast }) {
             setTemplateContent(TEMPLATE_EXAMPLE);
             setShowCreateModal(true);
           }}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
         >
           <Plus size={18} />
           新建模版
@@ -256,21 +257,25 @@ export default function Templates({ showToast }) {
 
       {/* Templates Grid */}
       {loading ? (
-        <div className="flex items-center justify-center h-64 text-gray-500">
-          加载中...
+        <div className="animate-pulse" aria-busy="true" aria-label="加载中">
+          <SkeletonCardGrid
+            count={6}
+            gridClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+            cardClassName="h-40"
+          />
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {templates.map((template) => (
             <div
               key={template.id}
-              className={`bg-gray-800/50 border rounded-xl p-5 transition-all hover:border-blue-500/50 ${template.is_builtin ? 'border-yellow-500/30' : 'border-gray-700'
+              className={`bg-surface-2/50 border rounded-xl p-5 transition-all hover:border-blue-500/50 ${template.is_builtin ? 'border-yellow-500/30' : 'border-line'
                 }`}
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <FileCode size={20} className={template.is_builtin ? 'text-yellow-500' : 'text-blue-400'} />
-                  <h3 className="text-white font-medium">{template.name}</h3>
+                  <h3 className="text-ink font-medium">{template.name}</h3>
                   {template.is_builtin && (
                     <span className="px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded">
                       内置
@@ -284,12 +289,12 @@ export default function Templates({ showToast }) {
                 </div>
               </div>
 
-              <div className="text-xs text-gray-500 mb-4">
+              <div className="text-xs text-ink-3 mb-4">
                 <div className="flex items-center gap-2">
                   <span>ID: {template.id}</span>
                   <button
                     onClick={() => copyTemplateId(template.id)}
-                    className="text-gray-400 hover:text-white transition-colors"
+                    className="text-ink-2 hover:text-ink transition-colors"
                     title="复制 ID"
                   >
                     <Copy size={12} />
@@ -301,7 +306,7 @@ export default function Templates({ showToast }) {
               <div className="flex gap-2">
                 <button
                   onClick={() => openTemplate(template)}
-                  className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
+                  className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-surface-3 hover:bg-surface-4 text-ink text-sm rounded-lg transition-colors"
                 >
                   <Edit3 size={14} />
                   编辑
@@ -332,13 +337,13 @@ export default function Templates({ showToast }) {
 
       {/* Create Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-white">新建模版</h2>
+        <div className="fixed inset-0 bg-scrim/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface-2 rounded-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+              <h2 className="text-xl font-bold text-ink">新建模版</h2>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-ink-2 hover:text-ink transition-colors"
               >
                 <X size={20} />
               </button>
@@ -346,19 +351,19 @@ export default function Templates({ showToast }) {
 
             <div className="p-6 overflow-y-auto flex-1 space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-2">模版名称</label>
+                <label className="block text-sm text-ink-2 mb-2">模版名称</label>
                 <input
                   type="text"
                   value={newTemplateName}
                   onChange={(e) => setNewTemplateName(e.target.value)}
                   placeholder="例如：精简模版"
-                  className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-4 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm text-gray-400">模版内容</label>
+                  <label className="text-sm text-ink-2">模版内容</label>
                   <div className="flex gap-2">
                     <input
                       ref={createFileInputRef}
@@ -369,7 +374,7 @@ export default function Templates({ showToast }) {
                     />
                     <button
                       onClick={() => createFileInputRef.current?.click()}
-                      className="text-xs px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                      className="text-xs px-3 py-1 bg-surface-3 hover:bg-surface-4 text-ink-hi rounded transition-colors"
                     >
                       <Upload size={12} className="inline mr-1" />
                       导入文件
@@ -383,7 +388,7 @@ export default function Templates({ showToast }) {
                     <Info size={14} />
                     <span className="font-medium">提示</span>
                   </div>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-ink-3">
                     上传模板后，proxies 和 proxy-groups 的 proxies 列表会被清空，通过可视化编辑器配置。
                   </p>
                 </div>
@@ -392,23 +397,23 @@ export default function Templates({ showToast }) {
                   value={templateContent}
                   onChange={(e) => setTemplateContent(e.target.value)}
                   placeholder="# 模板内容..."
-                  className="w-full h-64 px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
+                  className="w-full h-64 px-4 py-3 bg-surface border border-line rounded-lg text-ink-hi font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
                   spellCheck={false}
                 />
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={createTemplate}
                 disabled={creating}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
               >
                 {creating ? '创建中...' : '创建'}
               </button>
@@ -419,11 +424,11 @@ export default function Templates({ showToast }) {
 
       {/* Edit Modal */}
       {showEditModal && selectedTemplate && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+        <div className="fixed inset-0 bg-scrim/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface-2 rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-line flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <h2 className="text-xl font-bold text-white">
+                <h2 className="text-xl font-bold text-ink">
                   编辑模版
                 </h2>
                 {selectedTemplate.is_builtin && (
@@ -434,7 +439,7 @@ export default function Templates({ showToast }) {
               </div>
               <button
                 onClick={() => setShowEditModal(false)}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-ink-2 hover:text-ink transition-colors"
               >
                 <X size={20} />
               </button>
@@ -444,13 +449,13 @@ export default function Templates({ showToast }) {
               <div className="space-y-4">
                 {/* Template Name */}
                 <div>
-                  <label className="block text-sm text-gray-400 mb-2">模版名称</label>
+                  <label className="block text-sm text-ink-2 mb-2">模版名称</label>
                   <input
                     type="text"
                     value={templateName}
                     onChange={(e) => setTemplateName(e.target.value)}
                     disabled={selectedTemplate.is_builtin}
-                    className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full px-4 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     placeholder={selectedTemplate.is_builtin ? '内置模版名称不可修改' : ''}
                   />
                 </div>
@@ -458,7 +463,7 @@ export default function Templates({ showToast }) {
                 {/* Template Content */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm text-gray-400">模版内容</label>
+                    <label className="block text-sm text-ink-2">模版内容</label>
                     <div className="flex items-center gap-2 text-blue-400 text-xs">
                       <Info size={14} />
                       <span>在 proxy-groups 中使用占位符，proxies 部分会自动填充</span>
@@ -467,15 +472,15 @@ export default function Templates({ showToast }) {
                   <textarea
                     value={templateContent}
                     onChange={(e) => setTemplateContent(e.target.value)}
-                    className="w-full h-[400px] px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-gray-300 font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
+                    className="w-full h-[400px] px-4 py-3 bg-surface border border-line rounded-lg text-ink-hi font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
                     spellCheck={false}
                   />
                 </div>
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-700 flex justify-between">
-              <div className="text-xs text-gray-500">
+            <div className="px-6 py-4 border-t border-line flex justify-between">
+              <div className="text-xs text-ink-3">
                 {selectedTemplate.is_builtin
                   ? '修改后可保存为自定义配置，也可随时重置为默认'
                   : '在 proxy-groups 中使用占位符，proxies 部分会自动填充'}
@@ -492,14 +497,14 @@ export default function Templates({ showToast }) {
                 )}
                 <button
                   onClick={() => setShowEditModal(false)}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
                 >
                   取消
                 </button>
                 <button
                   onClick={saveTemplate}
                   disabled={saving}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
                 >
                   {saving ? '保存中...' : '保存'}
                 </button>
@@ -511,20 +516,20 @@ export default function Templates({ showToast }) {
 
       {/* Reset Confirmation Modal */}
       {showResetConfirm && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-sm mx-4">
-            <h3 className="text-lg font-bold text-white mb-2">确认重置</h3>
-            <p className="text-gray-400 text-sm mb-4">确定要重置内置模版为默认状态吗？您的自定义修改将丢失。</p>
+        <div className="fixed inset-0 bg-scrim/70 flex items-center justify-center z-50">
+          <div className="bg-surface-2 rounded-xl p-6 max-w-sm mx-4">
+            <h3 className="text-lg font-bold text-ink mb-2">确认重置</h3>
+            <p className="text-ink-2 text-sm mb-4">确定要重置内置模版为默认状态吗？您的自定义修改将丢失。</p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setShowResetConfirm(false)}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={resetBuiltinTemplate}
-                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-ink rounded-lg transition-colors"
               >
                 重置
               </button>

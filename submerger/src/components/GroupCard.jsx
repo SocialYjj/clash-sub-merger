@@ -8,16 +8,16 @@ const GroupCard = ({ group, currentNodes, _availableNodes, onEdit }) => {
       'fallback': 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
       'load-balance': 'bg-purple-500/10 text-purple-400 border-purple-500/30',
     };
-    return colors[type] || 'bg-gray-500/10 text-gray-400 border-gray-500/30';
+    return colors[type] || 'bg-ink-3/10 text-ink-2 border-ink-3/30';
   };
 
   return (
-    <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700 hover:border-gray-600 transition-colors">
+    <div className="bg-surface-2/50 rounded-lg p-3 border border-line hover:border-line-strong transition-colors">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           {group.icon && <span className="text-lg flex-shrink-0">{group.icon}</span>}
-          <h3 className="text-white font-medium text-sm truncate">{group.name}</h3>
+          <h3 className="text-ink font-medium text-sm truncate">{group.name}</h3>
         </div>
         <span className={`px-2 py-0.5 rounded text-xs border flex-shrink-0 ${getTypeColor(group.type)}`}>
           {group.type}
@@ -26,16 +26,16 @@ const GroupCard = ({ group, currentNodes, _availableNodes, onEdit }) => {
 
       {/* Description */}
       {group.description && (
-        <p className="text-gray-400 text-xs mb-2 line-clamp-1">{group.description}</p>
+        <p className="text-ink-2 text-xs mb-2 line-clamp-1">{group.description}</p>
       )}
 
       {/* Node count and edit button */}
       <div className="flex items-center justify-between">
-        <div className="text-xs text-gray-400">
+        <div className="text-xs text-ink-2">
           {group.editable ? (
             <span>
               {currentNodes.length > 0 ? (
-                <>已选 <span className="text-white font-medium">{currentNodes.length}</span> 个</>
+                <>已选 <span className="text-ink font-medium">{currentNodes.length}</span> 个</>
               ) : (
                 <span className="text-yellow-400">未配置</span>
               )}
@@ -54,7 +54,7 @@ const GroupCard = ({ group, currentNodes, _availableNodes, onEdit }) => {
         {group.editable && (
           <button
             onClick={() => onEdit(group.name)}
-            className="flex items-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs transition-colors"
+            className="flex items-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-ink rounded text-xs transition-colors"
           >
             <Edit2 size={12} />
             <span>编辑</span>
@@ -64,15 +64,15 @@ const GroupCard = ({ group, currentNodes, _availableNodes, onEdit }) => {
 
       {/* Show first few nodes for non-editable groups */}
       {!group.editable && currentNodes.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-gray-700">
+        <div className="mt-2 pt-2 border-t border-line">
           <div className="flex flex-wrap gap-1">
             {currentNodes.slice(0, 3).map((node, idx) => (
-              <span key={idx} className="px-1.5 py-0.5 bg-gray-700/50 text-gray-300 text-xs rounded truncate max-w-[120px]" title={node}>
+              <span key={idx} className="px-1.5 py-0.5 bg-surface-3/50 text-ink-hi text-xs rounded truncate max-w-[120px]" title={node}>
                 {node}
               </span>
             ))}
             {currentNodes.length > 3 && (
-              <span className="px-1.5 py-0.5 text-gray-400 text-xs">
+              <span className="px-1.5 py-0.5 text-ink-2 text-xs">
                 +{currentNodes.length - 3}
               </span>
             )}

@@ -38,7 +38,7 @@ export default function SubscriptionCard({
             onDragOver={(e) => onDragOver(e, index)}
             onDrop={(e) => onDrop(e, index)}
             onDragEnd={onDragEnd}
-            className={`group relative bg-gray-800 rounded-xl transition-all duration-300 hover:shadow-xl hover:shadow-black/20 cursor-move border-t-4 ${sub.enabled !== false ? 'border-t-emerald-500' : 'border-t-gray-500'
+            className={`group relative bg-surface-2 rounded-xl transition-all duration-300 hover:shadow-xl hover:shadow-black/20 cursor-move border-t-4 ${sub.enabled !== false ? 'border-t-emerald-500' : 'border-t-ink-3'
                 } ${isDragging ? 'opacity-50 scale-95' : ''} ${isDragOver ? 'ring-2 ring-blue-500' : ''}`}
         >
             <div className="p-5 space-y-5">
@@ -50,7 +50,7 @@ export default function SubscriptionCard({
                             {firstChar}
                         </div>
                         <div>
-                            <h3 className="font-bold text-lg text-white mb-1 group-hover:text-blue-400 transition-colors">
+                            <h3 className="font-bold text-lg text-ink mb-1 group-hover:text-blue-400 transition-colors">
                                 {sub.name}
                             </h3>
                             <div className="flex items-center gap-2">
@@ -61,13 +61,13 @@ export default function SubscriptionCard({
                                     }}
                                     className={`px-2 py-0.5 text-xs rounded font-medium transition-colors ${sub.enabled !== false
                                         ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
-                                        : 'bg-gray-600/30 text-gray-400 hover:bg-gray-600/50'
+                                        : 'bg-surface-4/30 text-ink-2 hover:bg-surface-4/50'
                                         }`}
                                 >
                                     {sub.enabled !== false ? '启用' : '禁用'}
                                 </button>
                                 {sub.enabled === false ? (
-                                    <span className="px-2 py-0.5 text-[11px] rounded bg-gray-700/50 text-gray-400 border border-gray-600/30">
+                                    <span className="px-2 py-0.5 text-[11px] rounded bg-surface-3/50 text-ink-2 border border-line-strong/30">
                                         已停用
                                     </span>
                                 ) : sub.last_error ? (
@@ -90,7 +90,7 @@ export default function SubscriptionCard({
                         </div>
                     </div>
 
-                    <GripVertical className="text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing" size={20} />
+                    <GripVertical className="text-ink-4 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing" size={20} />
                 </div>
 
                 {/* Tags Row */}
@@ -124,39 +124,39 @@ export default function SubscriptionCard({
                 {/* Time Info */}
                 <div className={`grid ${isLocal ? 'grid-cols-2' : 'grid-cols-3'} gap-3 text-xs`}>
                     <div>
-                        <div className="text-gray-500 mb-1 flex items-center gap-1">
+                        <div className="text-ink-3 mb-1 flex items-center gap-1">
                             <Clock size={12} />
                             {isLocal ? '导入时间' : '最近尝试'}
                         </div>
-                        <div className="text-gray-300 font-medium">
+                        <div className="text-ink-hi font-medium">
                             {lastAttempt ? formatDate(lastAttempt).split(' ')[0] : '-'}
                         </div>
-                        <div className="text-gray-400 scale-90 origin-top-left">
+                        <div className="text-ink-2 scale-90 origin-top-left">
                             {lastAttempt ? formatDate(lastAttempt).split(' ')[1] : ''}
                         </div>
                     </div>
                     <div>
-                        <div className="text-gray-500 mb-1 flex items-center gap-1">
+                        <div className="text-ink-3 mb-1 flex items-center gap-1">
                             <Clock size={12} />
                             最近成功
                         </div>
-                        <div className="text-gray-300 font-medium">
+                        <div className="text-ink-hi font-medium">
                             {lastSuccess ? formatDate(lastSuccess).split(' ')[0] : '-'}
                         </div>
-                        <div className="text-gray-400 scale-90 origin-top-left">
+                        <div className="text-ink-2 scale-90 origin-top-left">
                             {lastSuccess ? formatDate(lastSuccess).split(' ')[1] : ''}
                         </div>
                     </div>
                     {!isLocal && (
                         <div>
-                            <div className="text-gray-500 mb-1 flex items-center gap-1">
+                            <div className="text-ink-3 mb-1 flex items-center gap-1">
                                 <Calendar size={12} />
                                 下次运行
                             </div>
-                            <div className="text-gray-300 font-medium">
+                            <div className="text-ink-hi font-medium">
                                 {sub.next_update ? formatDate(sub.next_update).split(' ')[0] : '-'}
                             </div>
-                            <div className="text-gray-400 scale-90 origin-top-left">
+                            <div className="text-ink-2 scale-90 origin-top-left">
                                 {sub.next_update ? formatDate(sub.next_update).split(' ')[1] : ''}
                             </div>
                         </div>
@@ -164,10 +164,10 @@ export default function SubscriptionCard({
                 </div>
 
                 {/* Settings / Usage Info */}
-                <div className="bg-gray-900/50 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 mb-2">用量信息</div>
+                <div className="bg-surface/50 rounded-lg p-3">
+                    <div className="text-xs text-ink-3 mb-2">用量信息</div>
                     {isLocal ? (
-                        <div className="text-sm text-gray-500 py-1">
+                        <div className="text-sm text-ink-3 py-1">
                             本地导入无用量信息
                         </div>
                     ) : traffic ? (
@@ -178,10 +178,10 @@ export default function SubscriptionCard({
                                     }`}>
                                     {traffic.used}
                                 </span>
-                                <span className="text-xs text-gray-400 mb-0.5">/ {traffic.total || '∞'}</span>
+                                <span className="text-xs text-ink-2 mb-0.5">/ {traffic.total || '∞'}</span>
                             </div>
                             {traffic.total && (
-                                <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                                <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
                                     <div
                                         className={`h-full rounded-full transition-all ${parseFloat(traffic.percent) > 90 ? 'bg-red-500' :
                                             parseFloat(traffic.percent) > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
@@ -190,22 +190,22 @@ export default function SubscriptionCard({
                                     />
                                 </div>
                             )}
-                            <div className="flex items-center justify-between text-xs pt-1 border-t border-gray-700/50">
-                                <span className="text-gray-500">过期时间</span>
-                                <span className="text-gray-300 font-medium">
+                            <div className="flex items-center justify-between text-xs pt-1 border-t border-line/50">
+                                <span className="text-ink-3">过期时间</span>
+                                <span className="text-ink-hi font-medium">
                                     {traffic.expire || '长期有效'}
                                 </span>
                             </div>
                         </div>
                     ) : (
-                        <div className="text-sm text-gray-500 py-1">
+                        <div className="text-sm text-ink-3 py-1">
                             未获取到用量
                         </div>
                     )}
                 </div>
 
                 {/* Actions Bar */}
-                <div className="flex items-center justify-center gap-3 pt-2 border-t border-gray-700/50">
+                <div className="flex items-center justify-center gap-3 pt-2 border-t border-line/50">
                     {/* Copy URL - Only for URL subscriptions */}
                     {!isLocal && (
                         <button
@@ -235,7 +235,7 @@ export default function SubscriptionCard({
                             onClick={() => onSchedule(sub)}
                             className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${sub.cron_expr
                                 ? 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
-                                : 'bg-gray-600/10 text-gray-400 hover:bg-gray-600/20'
+                                : 'bg-surface-4/10 text-ink-2 hover:bg-surface-4/20'
                                 }`}
                             title="定时设置"
                         >

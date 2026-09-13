@@ -159,8 +159,8 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
 
   if (loading) {
     return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-gray-800 rounded-lg p-8">
+      <div className="fixed inset-0 bg-scrim/50 flex items-center justify-center z-50">
+        <div className="bg-surface-2 rounded-lg p-8">
           <Loader2 className="animate-spin text-blue-500" size={48} />
         </div>
       </div>
@@ -169,22 +169,22 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-0 bg-scrim/50 z-40" onClick={onClose} />
       
-      <div className="fixed inset-8 md:inset-16 lg:inset-20 bg-gray-900 rounded-lg shadow-2xl z-50 flex flex-col max-w-7xl mx-auto">
+      <div className="fixed inset-8 md:inset-16 lg:inset-20 bg-surface rounded-lg shadow-2xl z-50 flex flex-col max-w-7xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-700 flex-shrink-0">
+        <div className="flex items-center justify-between p-4 border-b border-line flex-shrink-0">
           <div>
-            <h2 className="text-xl font-semibold text-white">
+            <h2 className="text-xl font-semibold text-ink">
               配置编辑器 - {isAdminToken ? '管理员 Token' : '用户'}: {user.name}
             </h2>
-            <p className="text-sm text-gray-400 mt-1">模板: {templateName}</p>
+            <p className="text-sm text-ink-2 mt-1">模板: {templateName}</p>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setShowResetConfirm(true)}
               disabled={saving}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-white rounded transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-surface-3 hover:bg-surface-4 disabled:bg-surface-4 text-ink rounded transition-colors"
               title="重置所有组配置到默认状态"
             >
               <RotateCcw size={18} />
@@ -193,7 +193,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-surface-4 text-ink rounded transition-colors"
             >
               {saving ? (
                 <>
@@ -209,7 +209,7 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
             </button>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-white transition-colors"
+              className="text-ink-2 hover:text-ink transition-colors"
             >
               <X size={24} />
             </button>
@@ -217,31 +217,31 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
         </div>
 
         {/* Main content */}
-        <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
           {/* Left: YAML Preview */}
-          <div className="w-1/2 border-r border-gray-700 flex flex-col min-h-0">
-            <div className="p-3 border-b border-gray-700 flex-shrink-0">
-              <h3 className="text-white font-medium text-sm">YAML 预览</h3>
-              <p className="text-xs text-gray-400 mt-1">自动生成，只读</p>
+          <div className="w-full md:w-1/2 border-b md:border-b-0 md:border-r border-line flex flex-col min-h-0">
+            <div className="p-3 border-b border-line flex-shrink-0">
+              <h3 className="text-ink font-medium text-sm">YAML 预览</h3>
+              <p className="text-xs text-ink-2 mt-1">自动生成，只读</p>
             </div>
             <div className="flex-1 overflow-auto p-3">
-              <pre className="text-xs text-gray-300 font-mono bg-gray-800/50 p-3 rounded whitespace-pre-wrap break-words">
+              <pre className="text-xs text-ink-hi font-mono bg-surface-2/50 p-3 rounded whitespace-pre-wrap break-words">
                 {yamlPreview || '加载中...'}
               </pre>
             </div>
           </div>
 
           {/* Right: Visual Editor */}
-          <div className="w-1/2 flex flex-col min-h-0">
-            <div className="p-3 border-b border-gray-700 flex-shrink-0">
-              <h3 className="text-white font-medium text-sm">可视化编辑</h3>
-              <p className="text-xs text-gray-400 mt-1">
+          <div className="w-full md:w-1/2 flex flex-col min-h-0">
+            <div className="p-3 border-b border-line flex-shrink-0">
+              <h3 className="text-ink font-medium text-sm">可视化编辑</h3>
+              <p className="text-xs text-ink-2 mt-1">
                 {groups.length > 0 ? `共 ${groups.length} 个分组` : '加载中...'}
               </p>
             </div>
             <div className="flex-1 overflow-auto p-3">
               {groups.length === 0 ? (
-                <div className="text-center text-gray-400 py-8">
+                <div className="text-center text-ink-2 py-8">
                   <p>没有可配置的分组</p>
                   <p className="text-xs mt-2">请检查模板配置</p>
                 </div>
@@ -265,27 +265,27 @@ const UserConfigEditor = ({ user, onClose, onSave, showToast, isAdminToken = fal
 
       {/* Reset Confirmation Modal */}
       {showResetConfirm && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-sm mx-4 border border-gray-700">
-            <h3 className="text-lg font-bold text-white mb-3">确认重置配置</h3>
-            <p className="text-gray-300 text-sm mb-2">
+        <div className="fixed inset-0 bg-scrim/70 flex items-center justify-center z-[60]">
+          <div className="bg-surface-2 rounded-xl p-6 max-w-sm mx-4 border border-line">
+            <h3 className="text-lg font-bold text-ink mb-3">确认重置配置</h3>
+            <p className="text-ink-hi text-sm mb-2">
               重置后，所有分组将恢复到默认状态（包含所有可用节点）。
             </p>
-            <p className="text-gray-400 text-xs mb-4">
+            <p className="text-ink-2 text-xs mb-4">
               此操作无法撤销，但您可以重新配置。
             </p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setShowResetConfirm(false)}
                 disabled={saving}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors disabled:opacity-50"
               >
                 取消
               </button>
               <button
                 onClick={handleReset}
                 disabled={saving}
-                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-ink rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
               >
                 {saving && <Loader2 className="animate-spin" size={16} />}
                 确认重置

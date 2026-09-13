@@ -66,33 +66,33 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[55] p-4">
-      <div className="bg-gray-800 rounded-xl w-full max-w-2xl border border-gray-700 max-h-[90vh] flex flex-col">
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="font-semibold text-white">{pool ? '编辑节点池' : '添加节点池'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white" aria-label="关闭">
+    <div className="fixed inset-0 bg-scrim/60 flex items-center justify-center z-[55] p-4">
+      <div className="bg-surface-2 rounded-xl w-full max-w-2xl border border-line max-h-[90vh] flex flex-col">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+          <h3 className="font-semibold text-ink">{pool ? '编辑节点池' : '添加节点池'}</h3>
+          <button onClick={onClose} className="text-ink-2 hover:text-ink" aria-label="关闭">
             <X size={20} />
           </button>
         </div>
 
         <div className="p-4 space-y-4 overflow-y-auto">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">名称</label>
+            <label className="block text-sm text-ink-2 mb-1">名称</label>
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="例如：美国直连池"
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
             />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-400 mb-1">策略类型</label>
+              <label className="block text-sm text-ink-2 mb-1">策略类型</label>
               <select
                 value={strategy}
                 onChange={(event) => setStrategy(event.target.value)}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
               >
                 <option value="select">手动选择</option>
                 <option value="url-test">自动测速</option>
@@ -102,11 +102,11 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
             </div>
             {strategy === 'load-balance' && (
               <div>
-                <label className="block text-sm text-gray-400 mb-1">负载均衡方式</label>
+                <label className="block text-sm text-ink-2 mb-1">负载均衡方式</label>
                 <select
                   value={lbStrategy}
                   onChange={(event) => setLbStrategy(event.target.value)}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 >
                   <option value="round-robin">轮询</option>
                   <option value="consistent-hashing">同目标固定</option>
@@ -119,33 +119,33 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
           {(strategy === 'url-test' || strategy === 'fallback') && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-2">
-                <label className="block text-sm text-gray-400 mb-1">检测地址</label>
+                <label className="block text-sm text-ink-2 mb-1">检测地址</label>
                 <input
                   value={groupUrl}
                   onChange={(event) => setGroupUrl(event.target.value)}
                   placeholder="https://cp.cloudflare.com/generate_204"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">间隔（秒）</label>
+                <label className="block text-sm text-ink-2 mb-1">间隔（秒）</label>
                 <input
                   type="number"
                   min={10}
                   value={groupInterval}
                   onChange={(event) => setGroupInterval(event.target.value)}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 />
               </div>
               {strategy === 'url-test' && (
                 <div>
-                  <label className="block text-sm text-gray-400 mb-1">容差</label>
+                  <label className="block text-sm text-ink-2 mb-1">容差</label>
                   <input
                     type="number"
                     min={0}
                     value={groupTolerance}
                     onChange={(event) => setGroupTolerance(event.target.value)}
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
                   />
                 </div>
               )}
@@ -154,24 +154,24 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
 
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-sm text-gray-400">成员节点（已选 {selectedKeys.size} 个）</label>
+              <label className="text-sm text-ink-2">成员节点（已选 {selectedKeys.size} 个）</label>
               <div className="flex items-center gap-2 text-xs">
                 <button type="button" onClick={selectFiltered} className="text-blue-400 hover:text-blue-300">全选当前</button>
-                <button type="button" onClick={() => setSelectedKeys(new Set())} className="text-gray-400 hover:text-gray-300">清空</button>
+                <button type="button" onClick={() => setSelectedKeys(new Set())} className="text-ink-2 hover:text-ink-hi">清空</button>
               </div>
             </div>
             <div className="relative mb-2">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="搜索节点或订阅"
-                className="w-full pl-9 pr-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                className="w-full pl-9 pr-3 py-2 bg-surface border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
               />
             </div>
-            <div className="max-h-64 overflow-y-auto border border-gray-700 rounded-lg divide-y divide-gray-700">
+            <div className="max-h-64 overflow-y-auto border border-line rounded-lg divide-y divide-line">
               {filteredNodes.length === 0 ? (
-                <div className="p-6 text-center text-sm text-gray-500">没有可加入节点池的节点</div>
+                <div className="p-6 text-center text-sm text-ink-3">没有可加入节点池的节点</div>
               ) : filteredNodes.map((node) => {
                 const key = nodeKey(node);
                 const checked = selectedKeys.has(key);
@@ -180,11 +180,11 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
                     type="button"
                     key={key}
                     onClick={() => toggle(key)}
-                    className="w-full px-3 py-2 text-left hover:bg-gray-700/50 flex items-center gap-2"
+                    className="w-full px-3 py-2 text-left hover:bg-surface-3/50 flex items-center gap-2"
                   >
-                    {checked ? <CheckSquare size={16} className="text-blue-400 shrink-0" /> : <Square size={16} className="text-gray-500 shrink-0" />}
-                    <span className="truncate text-sm text-white">{node.node_name || '未命名节点'}</span>
-                    <span className="ml-auto text-xs text-gray-500 shrink-0">{node.source_name || node.sub_id} · {String(node.node_type || '').toUpperCase()}</span>
+                    {checked ? <CheckSquare size={16} className="text-blue-400 shrink-0" /> : <Square size={16} className="text-ink-3 shrink-0" />}
+                    <span className="truncate text-sm text-ink">{node.node_name || '未命名节点'}</span>
+                    <span className="ml-auto text-xs text-ink-3 shrink-0">{node.source_name || node.sub_id} · {String(node.node_type || '').toUpperCase()}</span>
                   </button>
                 );
               })}
@@ -192,12 +192,12 @@ const NodePoolModal = ({ pool, availableNodes, onClose, onSave, saving = false }
           </div>
         </div>
 
-        <div className="px-4 py-3 border-t border-gray-700 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white transition-colors">取消</button>
+        <div className="px-4 py-3 border-t border-line flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-ink-2 hover:text-ink transition-colors">取消</button>
           <button
             onClick={save}
             disabled={saving || !name.trim() || selectedKeys.size === 0}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >
             {saving && <Loader2 size={16} className="animate-spin" />}
             保存

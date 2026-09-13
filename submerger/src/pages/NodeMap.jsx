@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import request, { isRequestCanceled } from '../utils/request';
 import * as echarts from 'echarts';
+import { useTheme } from '../utils/theme';
 import { RefreshCw, Globe, ExternalLink, X } from 'lucide-react';
 import { COUNTRY_COORDINATES, COUNTRY_NAME_MAP, COUNTRY_CHINESE_NAMES } from './countryData';
 
@@ -53,6 +54,8 @@ const findCountryCode = (name) => {
 
 export default function NodeMap() {
   const navigate = useNavigate();
+  const theme = useTheme();
+  const isLight = theme === 'light';
   const chartRef = useRef(null);
   const chartInstance = useRef(null);
   const mountedRef = useRef(false);
@@ -260,15 +263,42 @@ export default function NodeMap() {
       }
     });
 
+    // Chart palette keyed off the active UI theme. Data-point accents
+    // (#0cecdb / #38bdf8 / #fbbf24) are shared by both themes since they stay
+    // legible on light and dark surfaces alike.
+    const mapTheme = isLight ? {
+      areaColor: '#e2e8f0', // slate-200 landmass
+      borderColor: '#cbd5e1', // slate-300 borders
+      emphasisAreaColor: '#cbd5e1',
+      chinaAreaColor: '#cbd5e1',
+      hkAreaColor: '#94a3b8', // slate-400
+      tooltipBg: 'rgba(255, 255, 255, 0.97)',
+      tooltipText: '#0f172a',
+      tooltipMuted: '#64748b',
+      labelColor: '#334155',
+      trailColor: '#0ea5e9', // sky-500: white trail would vanish on light map
+    } : {
+      areaColor: '#1e293b',
+      borderColor: '#0f172a',
+      emphasisAreaColor: '#334155',
+      chinaAreaColor: '#334155',
+      hkAreaColor: '#475569',
+      tooltipBg: 'rgba(15, 23, 42, 0.95)',
+      tooltipText: '#fff',
+      tooltipMuted: '#9ca3af',
+      labelColor: '#fff',
+      trailColor: '#fff',
+    };
+
     const option = {
       backgroundColor: 'transparent',
       tooltip: {
         show: true,
         trigger: 'item',
-        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+        backgroundColor: mapTheme.tooltipBg,
         borderColor: '#0cecdb',
         borderWidth: 1,
-        textStyle: { color: '#fff', fontFamily: 'sans-serif' },
+        textStyle: { color: mapTheme.tooltipText, fontFamily: 'sans-serif' },
         padding: [10, 15],
         formatter: (params) => {
           // Disable tooltip for lines
@@ -277,9 +307,9 @@ export default function NodeMap() {
           // Handle CN target point
           if (params.name === 'CN' || (params.data && params.data.name === 'CN')) {
             const cnCount = rawData['CN'] || 0;
-            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">中国大陆 (本地区域)</div>
+            return `<div style="font-weight: bold; color: ${mapTheme.tooltipText}; font-size: 14px; margin-bottom: 8px;">中国大陆 (本地区域)</div>
                     ${cnCount > 0 ? `<div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
-                       <span style="color: #9ca3af;">节点数量</span>
+                       <span style="color: ${mapTheme.tooltipMuted};">节点数量</span>
                        <span style="font-weight: bold; color: #facc15;">${cnCount}</span>
                     </div>` : ''}`;
           }
@@ -292,9 +322,9 @@ export default function NodeMap() {
             const countryInfo = countryData.find(c => c.code === valCode);
             const countryName = countryInfo?.name || COUNTRY_CHINESE_NAMES[valCode] || valCode;
 
-            return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
+            return `<div style="font-weight: bold; color: ${mapTheme.tooltipText}; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
                     <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
-                      <span style="color: #9ca3af;">节点数量</span>
+                      <span style="color: ${mapTheme.tooltipMuted};">节点数量</span>
                       <span style="font-weight: bold; color: #22d3ee;">${count}</span>
                     </div>`;
           }
@@ -319,19 +349,19 @@ export default function NodeMap() {
         label: { emphasis: { show: false } },
         itemStyle: {
           normal: {
-            areaColor: '#1e293b', // slate-800
-            borderColor: '#0f172a', // slate-900
+            areaColor: mapTheme.areaColor,
+            borderColor: mapTheme.borderColor,
             borderWidth: 1
           },
           emphasis: {
-            areaColor: '#334155' // slate-700
+            areaColor: mapTheme.emphasisAreaColor
           }
         },
         regions: [
-          { name: 'China', itemStyle: { areaColor: '#334155' } },
-          { name: 'Hong Kong', itemStyle: { areaColor: '#475569', borderColor: '#0cecdb', borderWidth: 2 } },
-          { name: 'Macao', itemStyle: { areaColor: '#475569', borderColor: '#0cecdb', borderWidth: 2 } },
-          { name: 'Antarctica', itemStyle: { areaColor: '#1e293b', borderColor: '#0f172a' } }
+          { name: 'China', itemStyle: { areaColor: mapTheme.chinaAreaColor } },
+          { name: 'Hong Kong', itemStyle: { areaColor: mapTheme.hkAreaColor, borderColor: '#0cecdb', borderWidth: 2 } },
+          { name: 'Macao', itemStyle: { areaColor: mapTheme.hkAreaColor, borderColor: '#0cecdb', borderWidth: 2 } },
+          { name: 'Antarctica', itemStyle: { areaColor: mapTheme.areaColor, borderColor: mapTheme.borderColor } }
         ],
         tooltip: {
           show: true,
@@ -346,21 +376,21 @@ export default function NodeMap() {
               const countryInfo = countryData.find(c => c.code === code);
               const countryName = countryInfo?.name || COUNTRY_CHINESE_NAMES[code] || regionName;
               
-              return `<div style="font-weight: bold; color: #fff; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
+              return `<div style="font-weight: bold; color: ${mapTheme.tooltipText}; font-size: 14px; margin-bottom: 8px;">${countryName}</div>
                       <div style="font-size: 12px; display: flex; justify-content: space-between; width: 100px;">
-                        <span style="color: #9ca3af;">节点数量</span>
+                        <span style="color: ${mapTheme.tooltipMuted};">节点数量</span>
                         <span style="font-weight: bold; color: #22d3ee;">${count}</span>
                       </div>`;
             }
-            
+
             // Show country name even without nodes - use Chinese name from mapping
             if (code) {
               const chineseName = COUNTRY_CHINESE_NAMES[code] || regionName;
-              return `<div style="font-weight: bold; color: #fff; font-size: 14px;">${chineseName}</div>`;
+              return `<div style="font-weight: bold; color: ${mapTheme.tooltipText}; font-size: 14px;">${chineseName}</div>`;
             }
-            
+
             // Fallback to English name if no code found
-            return `<div style="font-weight: bold; color: #fff; font-size: 14px;">${regionName}</div>`;
+            return `<div style="font-weight: bold; color: ${mapTheme.tooltipText}; font-size: 14px;">${regionName}</div>`;
           }
         }
       },
@@ -373,7 +403,7 @@ export default function NodeMap() {
             show: true,
             period: 6,
             trailLength: 0.7,
-            color: '#fff',
+            color: mapTheme.trailColor,
             symbolSize: 3
           },
           lineStyle: {
@@ -422,7 +452,7 @@ export default function NodeMap() {
               return country ? country.name : code;
             },
             fontSize: 12,
-            color: '#fff',
+            color: mapTheme.labelColor,
             distance: 5
           },
           symbolSize: (val) => Math.max(6, Math.min(20, Math.log2(val[2] + 1) * 5)),
@@ -447,7 +477,7 @@ export default function NodeMap() {
             },
             position: 'right',
             fontSize: 12,
-            color: '#fff',
+            color: mapTheme.labelColor,
             distance: 5
           },
           data: [targetPoint]
@@ -475,7 +505,7 @@ export default function NodeMap() {
       // chartInstance.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 地图数据就绪后拉取一次；fetchCountryNodes 会更新 countryData/rawData，补依赖将形成拉取循环
-  }, [points, lines, targetPoint, loading, mapLoading, countryData, rawData]); // Re-run when data changes
+  }, [points, lines, targetPoint, loading, mapLoading, countryData, rawData, isLight]); // Re-run when data or theme changes
 
   // Dispose chart on unmount
   useEffect(() => {
@@ -492,10 +522,10 @@ export default function NodeMap() {
       {/* Header */}
       <div className="flex items-center justify-between shrink-0 mb-2">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-ink flex items-center gap-2">
             <Globe className="text-blue-500" /> 全球节点分布
           </h1>
-          <p className="text-gray-400 text-xs mt-1 font-mono text-cyan-500">
+          <p className="text-ink-2 text-xs mt-1 font-mono text-cyan-500">
             LIVE NODE MAP VISUALIZATION
           </p>
         </div>
@@ -504,7 +534,7 @@ export default function NodeMap() {
           <button
             onClick={fetchCountryData}
             disabled={loading}
-            className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded transition-colors text-sm"
+            className="flex items-center gap-2 px-3 py-1 bg-surface-2 hover:bg-surface-3 text-ink rounded transition-colors text-sm"
           >
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             刷新
@@ -513,7 +543,7 @@ export default function NodeMap() {
       </div>
 
       {/* Main Map Container */}
-      <div className="flex-1 relative bg-slate-900/50 rounded-xl border border-slate-800 overflow-hidden shadow-2xl">
+      <div className="flex-1 relative bg-surface/50 rounded-xl border border-line-soft overflow-hidden shadow-2xl">
         {/* Holographic grid background */}
         <div
           className="absolute inset-0 opacity-10 pointer-events-none"
@@ -528,7 +558,7 @@ export default function NodeMap() {
 
         {/* Loading Overlay */}
         {(loading || mapLoading) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-20">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface/80 z-20">
             <RefreshCw className="animate-spin text-cyan-500 mb-2" size={40} />
             <span className="text-cyan-500 font-mono tracking-widest">
               {mapLoading ? 'LOADING MAP DATA...' : 'INITIALIZING MAP...'}
@@ -538,7 +568,7 @@ export default function NodeMap() {
 
         {/* Stats Overlay Bottom Right */}
         <div className="absolute bottom-6 right-8 text-right z-10 pointer-events-none select-none">
-          <div className="text-gray-400 text-xs tracking-widest uppercase mb-1">Total Coverage</div>
+          <div className="text-ink-2 text-xs tracking-widest uppercase mb-1">Total Coverage</div>
           <div className="text-6xl font-black text-cyan-500 leading-none drop-shadow-[0_0_15px_rgba(6,182,212,0.5)]">
             {String(points.length + (targetPoint ? 1 : 0)).padStart(2, '0')}
           </div>
@@ -548,14 +578,14 @@ export default function NodeMap() {
 
       {/* Node List Modal */}
       {showNodeList && selectedCountry && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-800 rounded-xl w-full max-w-2xl border border-slate-700 max-h-[80vh] flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
-            <div className="px-6 py-4 border-b border-slate-700 flex items-center justify-between shrink-0 bg-slate-800/50">
+        <div className="fixed inset-0 bg-scrim/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-surface-2 rounded-xl w-full max-w-2xl border border-line max-h-[80vh] flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0 bg-surface-2/50">
               <div className="flex items-center gap-3">
-                <span className="text-3xl bg-slate-700/50 rounded p-1">{selectedCountry.flag}</span>
+                <span className="text-3xl bg-surface-3/50 rounded p-1">{selectedCountry.flag}</span>
                 <div>
-                  <h3 className="font-bold text-white text-lg">{selectedCountry.name} 节点列表</h3>
-                  <div className="text-xs text-gray-400 font-mono mt-0.5">
+                  <h3 className="font-bold text-ink text-lg">{selectedCountry.name} 节点列表</h3>
+                  <div className="text-xs text-ink-2 font-mono mt-0.5">
                     <span className="text-cyan-400 font-bold">{selectedCountry.count}</span> NODES AVAILABLE
                   </div>
                 </div>
@@ -570,7 +600,7 @@ export default function NodeMap() {
                 </button>
                 <button
                   onClick={() => setShowNodeList(false)}
-                  className="text-gray-400 hover:text-white p-2 hover:bg-slate-700 rounded-full transition-colors"
+                  className="text-ink-2 hover:text-ink p-2 hover:bg-surface-3 rounded-full transition-colors"
                 >
                   <X size={20} />
                 </button>
@@ -579,7 +609,7 @@ export default function NodeMap() {
 
             <div className="overflow-y-auto flex-1 p-0">
               {loadingNodes ? (
-                <div className="px-4 py-12 text-center text-gray-500 flex flex-col items-center">
+                <div className="px-4 py-12 text-center text-ink-3 flex flex-col items-center">
                   <RefreshCw className="animate-spin mb-2" />
                   加载数据中...
                 </div>
@@ -587,35 +617,35 @@ export default function NodeMap() {
                 <div className="px-4 py-12 text-center text-red-400">{countryNodesError}</div>
               ) : countryNodes.length > 0 ? (
                 <table className="w-full text-left border-collapse">
-                  <thead className="bg-slate-900/50 sticky top-0 z-10 backdrop-blur">
-                    <tr className="text-xs text-gray-400 uppercase tracking-wider">
+                  <thead className="bg-surface/50 sticky top-0 z-10 backdrop-blur">
+                    <tr className="text-xs text-ink-2 uppercase tracking-wider">
                       <th className="px-6 py-3 font-medium">节点名称</th>
                       <th className="px-6 py-3 font-medium">协议</th>
                       <th className="px-6 py-3 font-medium text-right">来源</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-700/50">
+                  <tbody className="divide-y divide-line/50">
                     {countryNodes.map((node, idx) => (
-                      <tr key={idx} className="hover:bg-slate-700/30 transition-colors group">
+                      <tr key={idx} className="hover:bg-surface-3/30 transition-colors group">
                         <td className="px-6 py-3">
-                          <div className="text-gray-200 font-medium truncate max-w-[280px]" title={node.name}>
+                          <div className="text-ink-hi font-medium truncate max-w-[280px]" title={node.name}>
                             {node.name || '未命名'}
                           </div>
                         </td>
                         <td className="px-6 py-3">
-                          <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-slate-700 text-gray-300 group-hover:bg-cyan-900/30 group-hover:text-cyan-300 transition-colors">
+                          <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-surface-3 text-ink-hi group-hover:bg-cyan-900/30 group-hover:text-cyan-300 transition-colors">
                             {node.type?.toUpperCase() || 'UNKNOWN'}
                           </span>
                         </td>
                         <td className="px-6 py-3 text-right">
-                          <span className="text-sm text-gray-500 font-mono">{node.source || 'Local'}</span>
+                          <span className="text-sm text-ink-3 font-mono">{node.source || 'Local'}</span>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               ) : (
-                <div className="px-4 py-12 text-center text-gray-500">
+                <div className="px-4 py-12 text-center text-ink-3">
                   暂无节点数据
                 </div>
               )}

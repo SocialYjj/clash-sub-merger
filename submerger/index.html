@@ -2,6 +2,19 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Apply the persisted (or system) theme before first paint to avoid a
+      // flash of the wrong theme. Mirrors the resolution logic in
+      // src/utils/theme.js: localStorage `theme`, else prefers-color-scheme.
+      (function () {
+        try {
+          var t = localStorage.getItem('theme');
+          if (t === 'light' || (t !== 'dark' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)) {
+            document.documentElement.classList.add('light');
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

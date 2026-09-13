@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { Server, Search, Plus, Trash2, RefreshCw, Clock, CheckSquare, Square, Settings, Play, Edit2, ChevronUp, ChevronDown, Globe, Link2, ToggleLeft, ToggleRight, ShieldCheck, Bot, ChevronDown as ChevronDownIcon } from 'lucide-react';
 import request, { isRequestCanceled } from '../utils/request';
 import ConfirmModal from '../components/ConfirmModal';
+import { SkeletonTableRows } from '../components/Skeleton';
 import NodeEditModal from '../components/NodeEditModal';
 import NodePoolModal from '../components/NodePoolModal';
 import { COUNTRY_CHINESE_NAMES } from './countryData';
@@ -855,7 +856,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       hysteria: 'bg-pink-500/20 text-pink-400',
       tuic: 'bg-cyan-500/20 text-cyan-400',
     };
-    return colors[type?.toLowerCase()] || 'bg-gray-500/20 text-gray-400';
+    return colors[type?.toLowerCase()] || 'bg-ink-3/20 text-ink-2';
   };
 
   const fetchNodePools = async (signal) => {
@@ -1464,8 +1465,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
         <div>
-          <h1 className="text-xl font-bold text-white">节点管理</h1>
-          <p className="text-gray-400 text-sm mt-0.5">查看和管理所有节点</p>
+          <h1 className="text-xl font-bold text-ink">节点管理</h1>
+          <p className="text-ink-2 text-sm mt-0.5">查看和管理所有节点</p>
           <div className={`text-xs mt-1 ${radarEnabled ? 'text-green-400' : 'text-amber-400'}`}>
             {radarEnabled ? (
               'Cloudflare Radar 已配置'
@@ -1483,7 +1484,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => { fetchAllPortMappings(); setShowPortMappingList(true); }}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
           >
             <Link2 size={18} />
             端口映射
@@ -1496,31 +1497,31 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <div className="relative add-dropdown">
             <button
               onClick={() => setShowAddDropdown(!showAddDropdown)}
-              className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+              className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
             >
               <Plus size={18} />
               添加节点
               <ChevronDownIcon size={16} />
             </button>
             {showAddDropdown && (
-              <div className="absolute right-0 top-full mt-2 w-40 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+              <div className="absolute right-0 top-full mt-2 w-40 bg-surface-2 border border-line rounded-lg shadow-xl z-20">
                 <button
                   onClick={() => { setShowAddDropdown(false); setShowAddModal(true); }}
-                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-t-lg transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 rounded-t-lg transition-colors flex items-center gap-2"
                 >
                   <Server size={16} />
                   自建节点
                 </button>
                 <button
                   onClick={() => { setShowAddDropdown(false); openChainModal(); }}
-                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 transition-colors flex items-center gap-2"
                 >
                   <Link2 size={16} />
                   链式代理
                 </button>
                 <button
                   onClick={() => { setShowAddDropdown(false); openNodePoolModal(); }}
-                  className="w-full px-4 py-2.5 text-left text-white hover:bg-gray-700 rounded-b-lg transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 rounded-b-lg transition-colors flex items-center gap-2"
                 >
                   <Settings size={16} />
                   节点池
@@ -1530,7 +1531,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           </div>
           <button
             onClick={() => setShowTestSettingsModal(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
           >
             <Settings size={18} />
             检测设置
@@ -1539,69 +1540,69 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
             <button
               onClick={() => setShowBatchTestMenu(!showBatchTestMenu)}
               disabled={batchTesting}
-              className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-ink rounded-lg transition-colors disabled:opacity-50"
             >
               <Play size={18} className={batchTesting ? 'animate-pulse' : ''} />
               {batchTesting ? `${batchTestProgress.phase}检测中 ${batchTestProgress.current}/${batchTestProgress.total}` : (selectedNodes.size > 0 ? `批量检测 (${selectedNodes.size})` : '批量检测')}
             </button>
             {showBatchTestMenu && !batchTesting && (
-              <div className="absolute right-0 top-full mt-2 w-72 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+              <div className="absolute right-0 top-full mt-2 w-72 bg-surface-2 border border-line rounded-lg shadow-xl z-20">
                 <div className="p-3 space-y-3">
-                  <div className="text-sm text-gray-400 font-medium">检测内容</div>
+                  <div className="text-sm text-ink-2 font-medium">检测内容</div>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={testLatency}
                       onChange={(e) => setTestLatency(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">延迟检测</span>
+                    <span className="text-ink text-sm">延迟检测</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={testRegion}
                       onChange={(e) => setTestRegion(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">IP/地区检测</span>
-                    <span className="text-xs text-gray-500">（出口 IP、地区）</span>
+                    <span className="text-ink text-sm">IP/地区检测</span>
+                    <span className="text-xs text-ink-3">（出口 IP、地区）</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={testIppure}
                       onChange={(e) => setTestIppure(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">IP 属性检测</span>
-                    <span className="text-xs text-gray-500">（来源、属性、IPPure）</span>
+                    <span className="text-ink text-sm">IP 属性检测</span>
+                    <span className="text-xs text-ink-3">（来源、属性、IPPure）</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={testRadar}
                       onChange={(e) => setTestRadar(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">人机流量比检测</span>
-                    <span className="text-xs text-gray-500">（Cloudflare Radar）</span>
+                    <span className="text-ink text-sm">人机流量比检测</span>
+                    <span className="text-xs text-ink-3">（Cloudflare Radar）</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={testSpeed}
                       onChange={(e) => setTestSpeed(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500 focus:ring-blue-500"
                     />
-                    <span className="text-white text-sm">速度检测</span>
-                    <span className="text-xs text-gray-500">(较慢)</span>
+                    <span className="text-ink text-sm">速度检测</span>
+                    <span className="text-xs text-ink-3">(较慢)</span>
                   </label>
-                  <div className="pt-2 border-t border-gray-700">
+                  <div className="pt-2 border-t border-line">
                     <button
                       onClick={handleBatchTestNodes}
                       disabled={!testLatency && !testRegion && !testIppure && !testRadar && !testSpeed}
-                      className="w-full px-3 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+                      className="w-full px-3 py-2 bg-green-600 hover:bg-green-500 text-ink text-sm rounded-lg transition-colors disabled:opacity-50"
                     >
                       开始检测
                     </button>
@@ -1613,7 +1614,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <button
             onClick={openBatchDeleteCustomNodes}
             disabled={selectedCustomCount === 0}
-            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-ink rounded-lg transition-colors disabled:opacity-50"
           >
             <Trash2 size={18} />
             {selectedCustomCount > 0 ? `批量删除 (${selectedCustomCount})` : '批量删除'}
@@ -1621,7 +1622,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
           <button
             onClick={refreshAllNodes}
             disabled={loadingNodes}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors disabled:opacity-50"
           >
             <RefreshCw size={18} className={loadingNodes ? 'animate-spin' : ''} />
           </button>
@@ -1629,20 +1630,20 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
       </div>
       <div className="flex flex-wrap gap-2 items-center flex-shrink-0">
         <div className="relative flex-1 min-w-[200px] max-w-md">
-          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
             type="text"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="搜索节点名称/服务器/地区..."
-            className="w-full pl-9 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            className="w-full pl-9 pr-3 py-1.5 bg-surface-2 border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
           />
         </div>
 
         <select
           value={filterSource}
           onChange={(e) => setFilterSource(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           {sourceOptions.map(source => (
             <option key={source.id} value={source.id}>{source.name}</option>
@@ -1652,7 +1653,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterIpSource}
           onChange={(e) => setFilterIpSource(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           {ipSourceOptions.map(option => (
             <option key={option.id || 'all-ip-source'} value={option.id}>{option.name}</option>
@@ -1662,7 +1663,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterIpProperty}
           onChange={(e) => setFilterIpProperty(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           {ipPropertyOptions.map(option => (
             <option key={option.id || 'all-ip-property'} value={option.id}>{option.name}</option>
@@ -1672,7 +1673,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterCountry}
           onChange={(e) => setFilterCountry(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           {countryOptions.map(option => (
             <option key={option.id || 'all-country'} value={option.id}>{option.name}</option>
@@ -1682,7 +1683,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           {nodeTypes.map(t => (
             <option key={t} value={t}>{t === 'all' ? '全部协议' : t.toUpperCase()}</option>
@@ -1692,7 +1693,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={filterLatencyStatus}
           onChange={(e) => setFilterLatencyStatus(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           <option value="all">延迟状态</option>
           <option value="untested">未测试</option>
@@ -1708,7 +1709,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           <option value="name">按名称</option>
           <option value="type">按类型</option>
@@ -1721,7 +1722,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-2.5 py-1.5 bg-surface-2 border border-line rounded-lg text-ink focus:outline-none focus:border-blue-500"
         >
           <option value="asc">升序 ↑</option>
           <option value="desc">降序 ↓</option>
@@ -1729,7 +1730,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
         <button
           onClick={clearFilters}
-          className="px-2.5 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+          className="px-2.5 py-1.5 text-sm text-ink-2 hover:text-ink transition-colors"
         >
           重置
         </button>
@@ -1737,40 +1738,39 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
       {/* Stats */}
       <div className="flex flex-wrap gap-3 text-sm flex-shrink-0">
-        <span className="text-gray-400">
-          共 <span className="text-white font-medium">{filteredNodes.length}</span> 个节点
+        <span className="text-ink-2">
+          共 <span className="text-ink font-medium">{filteredNodes.length}</span> 个节点
           {(search || filterSource !== 'all' || filterCountry || filterIpSource || filterIpProperty || filterType !== 'all' || filterLatencyStatus !== 'all') &&
-            <span className="text-gray-500"> (筛选自 {allNodes.length} 个)</span>
+            <span className="text-ink-3"> (筛选自 {allNodes.length} 个)</span>
           }
         </span>
-        <span className="text-gray-500">|</span>
-        <span className="text-gray-400">
+        <span className="text-ink-3">|</span>
+        <span className="text-ink-2">
           已测试: <span className="text-blue-400">{testedCount}</span>
         </span>
-        <span className="text-gray-400">
+        <span className="text-ink-2">
           成功: <span className="text-green-400">{successCount}</span>
         </span>
-        <span className="text-gray-400">
+        <span className="text-ink-2">
           失败: <span className="text-red-400">{failedCount}</span>
         </span>
         {selectedNodes.size > 0 && (
           <>
-            <span className="text-gray-500">|</span>
+            <span className="text-ink-3">|</span>
             <span className="text-blue-400">已选择 {selectedNodes.size} 个</span>
           </>
         )}
       </div>
       {/* Nodes Table */}
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
+      <div className="bg-surface-2/50 border border-line rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
         {loadingNodes ? (
-          <div className="p-12 text-center text-gray-500">
-            <RefreshCw size={24} className="animate-spin mx-auto mb-2" />
-            加载节点中...
+          <div className="animate-pulse" aria-busy="true" aria-label="加载中">
+            <SkeletonTableRows rows={10} />
           </div>
         ) : (
           <>
             <div className="overflow-x-auto overflow-y-auto flex-1">
-              <table className="w-full table-fixed text-sm">
+              <table className="w-full min-w-[1150px] table-fixed text-sm">
               <colgroup>
                 <col className="w-[2%]" />
                 <col className="w-[14%]" />
@@ -1786,12 +1786,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <col className="w-[7%]" />
                 <col className="w-[15%]" />
               </colgroup>
-              <thead className="sticky top-0 bg-gray-800 z-10">
-                <tr className="border-b border-gray-700 text-left">
-                  <th className="px-1 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">
+              <thead className="sticky top-0 bg-surface-2 z-10">
+                <tr className="border-b border-line text-left">
+                  <th className="px-1 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">
                     <button
                       onClick={toggleSelectAll}
-                      className="flex items-center hover:text-white transition-colors"
+                      className="flex items-center hover:text-ink transition-colors"
                       title="全选/取消全选"
                     >
                       {selectedNodes.size === filteredNodes.filter((node) => node.sourceType !== 'node_pool').length
@@ -1802,21 +1802,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                       )}
                     </button>
                   </th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">节点名称</th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">来源</th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">协议</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">节点名称</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">来源</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">协议</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-cyan-300 whitespace-nowrap">地区</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-cyan-300 whitespace-nowrap">IP</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IP来源</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IP属性</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-purple-300 whitespace-nowrap">IPPure系数</th>
                   <th className="px-2 py-1.5 text-xs font-medium text-orange-300 whitespace-nowrap">人机流量比</th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">延迟</th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">速度</th>
-                  <th className="px-2 py-1.5 text-xs font-medium text-gray-400 whitespace-nowrap">操作</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">延迟</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">速度</th>
+                  <th className="px-2 py-1.5 text-xs font-medium text-ink-2 whitespace-nowrap">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-700">
+              <tbody className="divide-y divide-line">
                 {paginatedNodes.length > 0 ? (
                   paginatedNodes.map((node, _idx) => {
                     const activeTestType = testingByNode[node.nodeKey];
@@ -1848,12 +1848,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                       || ipProfile?.radar_bot_ratio !== undefined;
 
                     return (
-                      <tr key={node.nodeKey} className={`hover:bg-gray-800/50 ${isSelected ? 'bg-blue-500/5' : ''} ${isDisabled ? 'opacity-60' : ''}`}>
+                      <tr key={node.nodeKey} className={`hover:bg-surface-2/50 ${isSelected ? 'bg-blue-500/5' : ''} ${isDisabled ? 'opacity-60' : ''}`}>
                         <td className="px-1 py-1.5">
                           <button
                             onClick={() => toggleSelectNode(node.nodeKey)}
                             disabled={isNodePool}
-                            className={`text-gray-400 transition-colors ${isNodePool ? 'opacity-30 cursor-not-allowed' : 'hover:text-white'}`}
+                            className={`text-ink-2 transition-colors ${isNodePool ? 'opacity-30 cursor-not-allowed' : 'hover:text-ink'}`}
                             title={isNodePool ? '节点池不参与单节点检测' : '选择节点'}
                           >
                             {isSelected ? (
@@ -1897,7 +1897,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {nodeFlag}
                               </span>
                             )}
-                            <span className={`min-w-0 max-w-[145px] truncate text-white ${isDisabled ? 'line-through decoration-gray-500' : ''}`} title={rawDisplayName}>
+                            <span className={`min-w-0 max-w-[145px] truncate text-ink ${isDisabled ? 'line-through decoration-ink-3' : ''}`} title={rawDisplayName}>
                               {visibleDisplayName || rawDisplayName}
                             </span>
                             {isIncompatible && (
@@ -1911,7 +1911,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {node.sourceType === 'subscription' || node.sourceType === 'custom' ? (
                               <button
                                 onClick={() => toggleNodeEnabled(node)}
-                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
+                                className="shrink-0 p-0 leading-none text-ink-2 hover:text-ink transition-colors"
                                 title={isDisabled ? '点击启用节点，重新加入聚合配置' : '点击禁用节点，从聚合配置中移除'}
                               >
                                 {isDisabled ? (
@@ -1924,7 +1924,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {node.sourceType === 'chain' && (
                               <button
                                 onClick={() => toggleChain(node.chainId)}
-                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
+                                className="shrink-0 p-0 leading-none text-ink-2 hover:text-ink transition-colors"
                                 title={node.enabled ? '点击禁用' : '点击启用'}
                               >
                                 {node.enabled ? (
@@ -1937,7 +1937,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {isNodePool && (
                               <button
                                 onClick={() => toggleNodePool(node.poolId)}
-                                className="shrink-0 p-0 leading-none text-gray-400 hover:text-white transition-colors"
+                                className="shrink-0 p-0 leading-none text-ink-2 hover:text-ink transition-colors"
                                 title={node.enabled ? '点击禁用节点池' : '点击启用节点池'}
                               >
                                 {node.enabled ? (
@@ -1948,7 +1948,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               </button>
                             )}
                             {isDisabled && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-600/30 text-gray-400 text-xs">
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-surface-4/30 text-ink-2 text-xs">
                                 已禁用
                               </span>
                             )}
@@ -1960,7 +1960,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </div>
                         </td>
                         <td className="px-2 py-1.5">
-                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : node.sourceType === 'node_pool' ? 'text-emerald-400' : node.sourceType === 'vpngate' ? 'text-cyan-400' : 'text-gray-400'}`}>
+                          <span className={`text-sm whitespace-nowrap ${node.sourceType === 'custom' ? 'text-orange-400' : node.sourceType === 'chain' ? 'text-blue-400' : node.sourceType === 'node_pool' ? 'text-emerald-400' : node.sourceType === 'vpngate' ? 'text-cyan-400' : 'text-ink-2'}`}>
                             {node.source}
                           </span>
                         </td>
@@ -1969,12 +1969,12 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             {getProtocolDisplayLabel(node.type)}
                           </span>
                         </td>
-                        <td className="px-2 py-1.5 text-gray-400 text-sm">
+                        <td className="px-2 py-1.5 text-ink-2 text-sm">
                           <span className="block w-full max-w-[180px] truncate" title={node.city ? `${node.region} ${node.city}` : node.region}>
                             {isNodePool ? node.region : `${node.region || getMetadataStatusLabel(ipStatus)}${node.city ? ` ${node.city}` : ''}`}
                           </span>
                         </td>
-                        <td className="px-2 py-1.5 text-gray-400 text-sm">
+                        <td className="px-2 py-1.5 text-ink-2 text-sm">
                           <span
                             className={`truncate inline-block max-w-[130px] font-mono text-xs ${displayedExitIp ? '' : getMetadataStatusClass(ipStatus)}`}
                             title={displayedExitIp || ''}
@@ -1983,23 +1983,23 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={isNodePool ? 'text-gray-500' : hasIpSource ? 'text-cyan-300' : getMetadataStatusClass(ippureStatus)}>
+                          <span className={isNodePool ? 'text-ink-3' : hasIpSource ? 'text-cyan-300' : getMetadataStatusClass(ippureStatus)}>
                             {isNodePool ? '-' : (hasIpSource ? getIpSourceLabel(ipProfile.ip_source) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={isNodePool ? 'text-gray-500' : hasNetworkType ? 'text-purple-300' : getMetadataStatusClass(ippureStatus)}>
+                          <span className={isNodePool ? 'text-ink-3' : hasNetworkType ? 'text-purple-300' : getMetadataStatusClass(ippureStatus)}>
                             {isNodePool ? '-' : (hasNetworkType ? getNetworkTypeLabel(ipProfile.network_type) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs whitespace-nowrap">
-                          <span className={isNodePool ? 'text-gray-500' : hasFraudScore ? 'text-amber-300 font-mono' : getMetadataStatusClass(ippureStatus)}>
+                          <span className={isNodePool ? 'text-ink-3' : hasFraudScore ? 'text-amber-300 font-mono' : getMetadataStatusClass(ippureStatus)}>
                             {isNodePool ? '-' : (hasFraudScore ? formatIppureScore(ipProfile.fraud_score) : getMetadataStatusLabel(ippureStatus))}
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-xs">
                           {isNodePool ? (
-                            <span className="text-gray-500">-</span>
+                            <span className="text-ink-3">-</span>
                           ) : hasRadarRatio ? (
                             <div className="flex flex-col gap-0.5 whitespace-nowrap">
                               {ipProfile?.radar_human_ratio !== undefined && (
@@ -2022,7 +2022,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-2 whitespace-nowrap">
                             {isNodePool ? (
-                              <span className="text-gray-500">-</span>
+                              <span className="text-ink-3">-</span>
                             ) : displayedLatency !== undefined && displayedLatency !== null && displayedLatency > 0 && !displayedError ? (
                               <span className={`font-mono text-sm ${getLatencyColor(displayedLatency)}`}>
                                 {displayedLatency}ms
@@ -2037,7 +2037,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           <div className="flex items-center gap-2 whitespace-nowrap">
 	                            {isNodePool ? (
-	                              <span className="text-gray-500">-</span>
+	                              <span className="text-ink-3">-</span>
 	                            ) : displayedSpeedError ? (
 	                              <span className="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">
 	                                失败
@@ -2047,7 +2047,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 	                                {node.speed.toFixed(1)} MB/s
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">
+                              <span className="px-2 py-0.5 rounded text-xs bg-ink-3/20 text-ink-2">
                                 未测
                               </span>
                             )}
@@ -2066,7 +2066,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                     setEditingNode(node);
                                   }
                                 }}
-                                className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
+                                className="p-0.5 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
                                 title="查看/编辑"
                               >
                                 <Edit2 size={14} />
@@ -2076,7 +2076,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             <button
                               onClick={() => testNode(node, true)}
                               disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
-                              className="p-0.5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
+                              className="p-0.5 text-ink-2 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测 IP/地区'}
                             >
                               {activeTestType === 'region' ? (
@@ -2089,7 +2089,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             <button
                               onClick={() => testNodeIppure(node)}
                               disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
-                              className="p-0.5 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors disabled:opacity-50"
+                              className="p-0.5 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测 IP 来源/属性/IPPure'}
                             >
                               {activeTestType === 'ippure' ? (
@@ -2102,7 +2102,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             <button
                               onClick={() => testNodeRadar(node)}
                               disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
-                              className="p-0.5 text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 rounded transition-colors disabled:opacity-50"
+                              className="p-0.5 text-ink-2 hover:text-orange-400 hover:bg-orange-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '检测人机流量比'}
                             >
                               {activeTestType === 'radar' ? (
@@ -2115,7 +2115,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             <button
                               onClick={() => testNode(node)}
                               disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
-                              className="p-0.5 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                              className="p-0.5 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '测试延迟'}
                             >
                               {activeTestType === 'latency' ? (
@@ -2128,7 +2128,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                             <button
                               onClick={() => testNodeSpeed(node)}
                               disabled={isNodePool || isTesting || batchTesting || node.sourceType === 'chain' || isIncompatible}
-                              className="p-0.5 text-gray-400 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
+                              className="p-0.5 text-ink-2 hover:text-green-400 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
                               title={isIncompatible ? invalidReasonLabel : '测试速度'}
                             >
                               {activeTestType === 'speed' ? (
@@ -2142,7 +2142,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 onClick={() => openPortMapping(node)}
                                 className={`p-0.5 rounded transition-colors ${currentMappedPort
                                   ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10'
-                                  : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                                  : 'text-ink-2 hover:text-green-400 hover:bg-green-500/10'
                                   }`}
                                 title={currentMappedPort ? `已绑定端口 ${currentMappedPort}` : '绑定端口'}
                               >
@@ -2153,21 +2153,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               <>
                                 <button
                                   onClick={() => moveCustomNode(node.id, 'up')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="上移"
                                 >
                                   <ChevronUp size={14} />
                                 </button>
                                 <button
                                   onClick={() => moveCustomNode(node.id, 'down')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="下移"
                                 >
                                   <ChevronDown size={14} />
                                 </button>
                                 <button
                                   onClick={() => confirmDeleteNode(node.id)}
-                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
                                   <Trash2 size={14} />
@@ -2178,21 +2178,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               <>
                                 <button
                                   onClick={() => moveChain(node.chainId, 'up')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="上移"
                                 >
                                   <ChevronUp size={14} />
                                 </button>
                                 <button
                                   onClick={() => moveChain(node.chainId, 'down')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="下移"
                                 >
                                   <ChevronDown size={14} />
                                 </button>
                                 <button
                                   onClick={() => setDeleteChainConfirm({ open: true, chainId: node.chainId })}
-                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
                                   <Trash2 size={14} />
@@ -2203,21 +2203,21 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                               <>
                                 <button
                                   onClick={() => moveNodePool(node.poolId, 'up')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="上移"
                                 >
                                   <ChevronUp size={14} />
                                 </button>
                                 <button
                                   onClick={() => moveNodePool(node.poolId, 'down')}
-                                  className="p-0.5 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded transition-colors"
                                   title="下移"
                                 >
                                   <ChevronDown size={14} />
                                 </button>
                                 <button
                                   onClick={() => setDeleteNodePoolConfirm({ open: true, poolId: node.poolId })}
-                                  className="p-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                  className="p-0.5 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                   title="删除"
                                 >
                                   <Trash2 size={14} />
@@ -2231,7 +2231,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   })
                 ) : (
                   <tr>
-                    <td colSpan={13} className="px-4 py-12 text-center text-gray-500">
+                    <td colSpan={13} className="px-4 py-12 text-center text-ink-3">
                       {allNodes.length === 0 ? '暂无节点，请先添加订阅或自建节点' : '没有匹配的节点'}
                     </td>
                   </tr>
@@ -2242,9 +2242,9 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
 
           {/* 分页控件 */}
           {filteredNodes.length > pageSize && (
-            <div className="mt-4 flex items-center justify-between px-4 py-3 bg-gray-800/50 rounded-lg border border-gray-700">
-              <div className="flex items-center gap-4">
-                <span className="text-sm text-gray-400">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-surface-2/50 rounded-lg border border-line">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="text-sm text-ink-2">
                   显示 {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredNodes.length)} / {filteredNodes.length}
                 </span>
                 <select
@@ -2253,7 +2253,7 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                     setPageSize(Number(e.target.value));
                     setCurrentPage(1);
                   }}
-                  className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+                  className="px-3 py-1 bg-surface-3 border border-line-strong rounded text-ink text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value={25}>25 / 页</option>
                   <option value={50}>50 / 页</option>
@@ -2266,31 +2266,31 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                 <button
                   onClick={() => setCurrentPage(1)}
                   disabled={currentPage === 1}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                  className="px-3 py-1 bg-surface-3 hover:bg-surface-4 disabled:opacity-50 disabled:cursor-not-allowed text-ink rounded transition-colors text-sm"
                 >
                   首页
                 </button>
                 <button
                   onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                   disabled={currentPage === 1}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                  className="px-3 py-1 bg-surface-3 hover:bg-surface-4 disabled:opacity-50 disabled:cursor-not-allowed text-ink rounded transition-colors text-sm"
                 >
                   上一页
                 </button>
-                <span className="px-3 py-1 text-sm text-gray-400">
+                <span className="px-3 py-1 text-sm text-ink-2">
                   {currentPage} / {totalPages}
                 </span>
                 <button
                   onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                   disabled={currentPage === totalPages}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                  className="px-3 py-1 bg-surface-3 hover:bg-surface-4 disabled:opacity-50 disabled:cursor-not-allowed text-ink rounded transition-colors text-sm"
                 >
                   下一页
                 </button>
                 <button
                   onClick={() => setCurrentPage(totalPages)}
                   disabled={currentPage === totalPages}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors text-sm"
+                  className="px-3 py-1 bg-surface-3 hover:bg-surface-4 disabled:opacity-50 disabled:cursor-not-allowed text-ink rounded transition-colors text-sm"
                 >
                   末页
                 </button>

@@ -219,7 +219,7 @@ export function buildEditedNode(node, formData) {
 function Field({ label, children }) {
     return (
         <div className="flex items-center gap-4 py-1.5">
-            <label className="text-sm text-gray-400 w-40 flex-shrink-0">{label}</label>
+            <label className="text-sm text-ink-2 w-40 flex-shrink-0">{label}</label>
             <div className="flex-1">{children}</div>
         </div>
     );
@@ -229,9 +229,9 @@ function Field({ label, children }) {
 function Divider({ title }) {
     return (
         <div className="flex items-center gap-3 py-3 mt-2">
-            <div className="h-px bg-gray-700 flex-1" />
-            <span className="text-xs text-gray-500 font-medium">{title}</span>
-            <div className="h-px bg-gray-700 flex-1" />
+            <div className="h-px bg-surface-3 flex-1" />
+            <span className="text-xs text-ink-3 font-medium">{title}</span>
+            <div className="h-px bg-surface-3 flex-1" />
         </div>
     );
 }
@@ -379,24 +379,24 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
 
     if (!node) return null;
 
-    const inputClass = (disabled) => `w-full px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : 'focus:border-blue-500 focus:outline-none'}`;
-    const selectClass = (disabled) => `w-full px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : 'focus:border-blue-500 focus:outline-none'}`;
+    const inputClass = (disabled) => `w-full px-3 py-1.5 bg-surface-3 border border-line-strong rounded text-ink text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : 'focus:border-blue-500 focus:outline-none'}`;
+    const selectClass = (disabled) => `w-full px-3 py-1.5 bg-surface-3 border border-line-strong rounded text-ink text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : 'focus:border-blue-500 focus:outline-none'}`;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="bg-gray-800 rounded-xl w-full max-w-xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+            <div className="bg-surface-2 rounded-xl w-full max-w-xl max-h-[90vh] flex flex-col">
                 {/* Header */}
-                <div className="p-4 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
+                <div className="p-4 border-b border-line flex items-center justify-between flex-shrink-0">
                     <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-lg ${isCustomNode ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-600/20 text-gray-400'}`}>
+                        <div className={`p-2 rounded-lg ${isCustomNode ? 'bg-blue-500/20 text-blue-400' : 'bg-surface-4/20 text-ink-2'}`}>
                             <Server size={20} />
                         </div>
                         <div>
-                            <h2 className="text-lg font-bold text-white">{formData.type?.toUpperCase() || 'VLESS'}</h2>
-                            <p className="text-xs text-gray-400">{isCustomNode ? '编辑节点' : '节点详情'}</p>
+                            <h2 className="text-lg font-bold text-ink">{formData.type?.toUpperCase() || 'VLESS'}</h2>
+                            <p className="text-xs text-ink-2">{isCustomNode ? '编辑节点' : '节点详情'}</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white"><X size={24} /></button>
+                    <button onClick={onClose} className="text-ink-2 hover:text-ink"><X size={24} /></button>
                 </div>
 
                 {/* Content */}
@@ -413,9 +413,9 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                     <Field label="别名 (remarks)">
                         <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
                         {Boolean(node?.name && formData.name !== node.name) && (
-                            <div className="mt-1.5 flex items-center gap-2 text-xs bg-gray-900/60 p-2 rounded-lg border border-gray-700/60 font-mono">
+                            <div className="mt-1.5 flex items-center gap-2 text-xs bg-surface/60 p-2 rounded-lg border border-line/60 font-mono">
                                 <span className="text-red-400 line-through truncate max-w-[45%]">{node.name}</span>
-                                <span className="text-gray-500">→</span>
+                                <span className="text-ink-3">→</span>
                                 <span className="text-emerald-400 font-medium truncate max-w-[45%]">{formData.name || '(空)'}</span>
                             </div>
                         )}
@@ -472,7 +472,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                                     placeholder="none 或其它加密名"
                                     className={inputClass(!isCustomNode)}
                                 />
-                                <p className="text-xs text-gray-500 mt-1">常见值: none / aes-128-gcm / chacha20-poly1305 / auto</p>
+                                <p className="text-xs text-ink-3 mt-1">常见值: none / aes-128-gcm / chacha20-poly1305 / auto</p>
                             </Field>
                         </>
                     )}
@@ -511,7 +511,7 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
                     {['vless', 'vmess', 'trojan'].includes(formData.type) && (
                         <Field label="开启 Mux 多路复用">
                             <label className="flex items-center gap-2 cursor-pointer">
-                                <input type="checkbox" checked={formData.muxEnabled} onChange={(e) => handleChange('muxEnabled', e.target.checked)} disabled={!isCustomNode} className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500" />
+                                <input type="checkbox" checked={formData.muxEnabled} onChange={(e) => handleChange('muxEnabled', e.target.checked)} disabled={!isCustomNode} className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-500" />
                             </label>
                         </Field>
                     )}
@@ -680,18 +680,18 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
 
                     {/* Raw JSON */}
                     <Divider title="原始配置" />
-                    <pre className="w-full p-3 bg-gray-900 border border-gray-700 rounded text-xs text-gray-400 overflow-x-auto max-h-32">
+                    <pre className="w-full p-3 bg-surface border border-line rounded text-xs text-ink-2 overflow-x-auto max-h-32">
                         {JSON.stringify(node, null, 2)}
                     </pre>
                 </div>
 
                 {/* Footer */}
-                <div className="p-4 border-t border-gray-700 flex justify-end flex-shrink-0">
+                <div className="p-4 border-t border-line flex justify-end flex-shrink-0">
                     <div className="flex gap-3">
-                        <button onClick={onClose} className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg">取消</button>
+                        <button onClick={onClose} className="px-4 py-2 bg-red-600 hover:bg-red-500 text-ink rounded-lg">取消</button>
                         {isCustomNode && (
-                            <button onClick={handleSave} disabled={saving} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg flex items-center gap-2 disabled:opacity-50">
-                                {saving && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+                            <button onClick={handleSave} disabled={saving} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg flex items-center gap-2 disabled:opacity-50">
+                                {saving && <div className="w-4 h-4 border-2 border-ink/30 border-t-ink37260 rounded-full animate-spin" />}
                                 <Save size={16} />
                                 确定
                             </button>

@@ -208,9 +208,9 @@ export default function AdminTokenSection({ showToast }) {
   };
 
   return (
-    <div className="bg-gray-800/50 border border-gray-700/60 ring-1 ring-white/5 rounded-xl p-6 shadow-lg shadow-black/20">
+    <div className="bg-surface-2/50 border border-line/60 ring-1 ring-ink/5 rounded-xl p-6 shadow-lg shadow-black/20">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
           <Key size={20} className="text-purple-400" />
           管理员订阅 Token
         </h2>
@@ -219,21 +219,21 @@ export default function AdminTokenSection({ showToast }) {
             resetForm();
             setShowCreateModal(true);
           }}
-          className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors font-medium"
+          className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-ink text-sm rounded-lg transition-colors font-medium"
         >
           <Plus size={16} />
           新建 Token
         </button>
       </div>
 
-      <p className="text-xs text-gray-500 mb-4">
+      <p className="text-xs text-ink-3 mb-4">
         创建多个管理员订阅 Token，每个可以使用不同的模版。
       </p>
 
       {loading ? (
-        <div className="text-center py-4 text-gray-500 text-sm">加载中...</div>
+        <div className="text-center py-4 text-ink-3 text-sm">加载中...</div>
       ) : tokens.length === 0 ? (
-        <div className="text-center py-8 text-gray-500">
+        <div className="text-center py-8 text-ink-3">
           <Key size={32} className="mx-auto mb-2 opacity-50" />
           <p>还没有创建管理员 Token</p>
           <p className="text-xs mt-1">点击"新建 Token"开始</p>
@@ -243,25 +243,25 @@ export default function AdminTokenSection({ showToast }) {
           {tokens.map((token) => (
             <div
               key={token.id}
-              className="bg-gray-700/50 rounded-lg p-4 flex items-center justify-between"
+              className="bg-surface-3/50 rounded-lg p-4 flex items-center justify-between"
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-white font-medium">{token.name}</span>
+                  <span className="text-ink font-medium">{token.name}</span>
                   <span
                     onClick={() => toggleTokenStatus(token)}
                     className={`px-2 py-0.5 text-xs rounded cursor-pointer select-none transition-colors ${token.enabled !== false
                       ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                      : 'bg-gray-600/20 text-gray-500 hover:bg-gray-600/30'
+                      : 'bg-surface-4/20 text-ink-3 hover:bg-surface-4/30'
                       }`}
                   >
                     {token.enabled !== false ? '启用' : '禁用'}
                   </span>
                 </div>
-                <div className="text-xs text-gray-500 mt-1">
+                <div className="text-xs text-ink-3 mt-1">
                   <span className="font-mono">{token.token}</span>
                 </div>
-                <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                <div className="text-xs text-ink-3 mt-1 flex items-center gap-2">
                   <FileCode size={12} />
                   模版: {getTemplateName(token.template_id)}
                 </div>
@@ -270,7 +270,7 @@ export default function AdminTokenSection({ showToast }) {
               <div className="flex items-center gap-2 ml-4">
                 <button
                   onClick={() => setShowFormatSelector(token.id)}
-                  className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                  className="p-2 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
                   title="复制订阅地址"
                 >
                   {copiedId === token.id ? <Check size={16} /> : <Copy size={16} />}
@@ -280,8 +280,8 @@ export default function AdminTokenSection({ showToast }) {
                   disabled={token.template_id === 'builtin'}
                   className={`p-2 rounded-lg transition-colors ${
                     token.template_id === 'builtin'
-                      ? 'text-gray-600 cursor-not-allowed'
-                      : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                      ? 'text-ink-4 cursor-not-allowed'
+                      : 'text-ink-2 hover:text-green-400 hover:bg-green-500/10'
                   }`}
                   title={token.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '可视化编辑'}
                 >
@@ -289,21 +289,21 @@ export default function AdminTokenSection({ showToast }) {
                 </button>
                 <button
                   onClick={() => openEditModal(token)}
-                  className="p-2 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
+                  className="p-2 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
                   title="编辑设置"
                 >
                   <Edit2 size={16} />
                 </button>
                 <button
                   onClick={() => regenerateToken(token.id)}
-                  className="p-2 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
+                  className="p-2 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
                   title="重新生成 Token"
                 >
                   <RefreshCw size={16} />
                 </button>
                 <button
                   onClick={() => setDeleteConfirm(token.id)}
-                  className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  className="p-2 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                   title="删除"
                 >
                   <Trash2 size={16} />
@@ -316,13 +316,13 @@ export default function AdminTokenSection({ showToast }) {
 
       {/* Create Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="text-lg font-bold text-white">新建管理员 Token</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+          <div className="bg-surface-2 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+              <h3 className="text-lg font-bold text-ink">新建管理员 Token</h3>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-gray-400 hover:text-white"
+                className="text-ink-2 hover:text-ink"
               >
                 <X size={20} />
               </button>
@@ -330,22 +330,22 @@ export default function AdminTokenSection({ showToast }) {
 
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-2">名称</label>
+                <label className="block text-sm text-ink-2 mb-2">名称</label>
                 <input
                   type="text"
                   value={newTokenName}
                   onChange={(e) => setNewTokenName(e.target.value)}
                   placeholder="例如：测试设备"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-sm text-gray-400 mb-2">使用模版</label>
+                <label className="block text-sm text-ink-2 mb-2">使用模版</label>
                 <select
                   value={newTokenTemplate}
                   onChange={(e) => setNewTokenTemplate(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 >
                   {templates.map((t) => (
                     <option key={t.id} value={t.id}>{t.name}</option>
@@ -360,9 +360,9 @@ export default function AdminTokenSection({ showToast }) {
                     id="useCustomToken"
                     checked={useCustomToken}
                     onChange={(e) => setUseCustomToken(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600"
+                    className="w-4 h-4 rounded border-line-strong bg-surface-3 text-blue-600"
                   />
-                  <label htmlFor="useCustomToken" className="text-sm text-gray-400">
+                  <label htmlFor="useCustomToken" className="text-sm text-ink-2">
                     自定义 Token 值
                   </label>
                 </div>
@@ -374,11 +374,11 @@ export default function AdminTokenSection({ showToast }) {
                       value={newTokenValue}
                       onChange={(e) => setNewTokenValue(e.target.value)}
                       placeholder="至少 8 个字符"
-                      className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500"
+                      className="flex-1 px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink font-mono text-sm focus:outline-none focus:border-blue-500"
                     />
                     <button
                       onClick={generateRandomToken}
-                      className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-400 rounded-lg transition-colors"
+                      className="px-3 py-2 bg-surface-3 hover:bg-surface-4 text-ink-2 rounded-lg transition-colors"
                       title="生成随机值"
                     >
                       <Shuffle size={18} />
@@ -387,44 +387,44 @@ export default function AdminTokenSection({ showToast }) {
                 )}
               </div>
 
-              <div className="border-t border-gray-700 pt-4">
-                <p className="text-xs text-gray-500 mb-3">订阅设置（可选，留空使用全局设置）</p>
+              <div className="border-t border-line pt-4">
+                <p className="text-xs text-ink-3 mb-3">订阅设置（可选，留空使用全局设置）</p>
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                    <label className="block text-sm text-ink-2 mb-1">配置名称</label>
                     <input
                       type="text"
                       value={newSubName}
                       onChange={(e) => setNewSubName(e.target.value)}
                       placeholder="客户端显示的配置名称"
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                    <label className="block text-sm text-ink-2 mb-1">订阅文件名</label>
                     <input
                       type="text"
                       value={newSubFilename}
                       onChange={(e) => setNewSubFilename(e.target.value)}
                       placeholder="下载时的文件名"
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={createToken}
                 disabled={saving}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
               >
                 {saving ? '创建中...' : '创建'}
               </button>
@@ -435,13 +435,13 @@ export default function AdminTokenSection({ showToast }) {
 
       {/* Edit Modal */}
       {showEditModal && editingToken && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="text-lg font-bold text-white">编辑管理员 Token</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+          <div className="bg-surface-2 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+              <h3 className="text-lg font-bold text-ink">编辑管理员 Token</h3>
               <button
                 onClick={() => { setShowEditModal(false); resetForm(); }}
-                className="text-gray-400 hover:text-white"
+                className="text-ink-2 hover:text-ink"
               >
                 <X size={20} />
               </button>
@@ -449,21 +449,21 @@ export default function AdminTokenSection({ showToast }) {
 
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-2">名称</label>
+                <label className="block text-sm text-ink-2 mb-2">名称</label>
                 <input
                   type="text"
                   value={newTokenName}
                   onChange={(e) => setNewTokenName(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-sm text-gray-400 mb-2">使用模版</label>
+                <label className="block text-sm text-ink-2 mb-2">使用模版</label>
                 <select
                   value={newTokenTemplate}
                   onChange={(e) => setNewTokenTemplate(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 >
                   {templates.map((t) => (
                     <option key={t.id} value={t.id}>{t.name}</option>
@@ -471,42 +471,42 @@ export default function AdminTokenSection({ showToast }) {
                 </select>
               </div>
 
-              <div className="border-t border-gray-700 pt-4">
-                <p className="text-xs text-gray-500 mb-3">订阅设置（留空使用全局设置）</p>
+              <div className="border-t border-line pt-4">
+                <p className="text-xs text-ink-3 mb-3">订阅设置（留空使用全局设置）</p>
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                    <label className="block text-sm text-ink-2 mb-1">配置名称</label>
                     <input
                       type="text"
                       value={newSubName}
                       onChange={(e) => setNewSubName(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                    <label className="block text-sm text-ink-2 mb-1">订阅文件名</label>
                     <input
                       type="text"
                       value={newSubFilename}
                       onChange={(e) => setNewSubFilename(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
               <button
                 onClick={() => { setShowEditModal(false); resetForm(); }}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={updateToken}
                 disabled={saving}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
               >
                 {saving ? '保存中...' : '保存'}
               </button>
@@ -517,20 +517,20 @@ export default function AdminTokenSection({ showToast }) {
 
       {/* Delete Confirmation Modal */}
       {deleteConfirm && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-sm mx-4">
-            <h3 className="text-lg font-bold text-white mb-2">确认删除</h3>
-            <p className="text-gray-400 text-sm mb-4">确定要删除这个 Token 吗？删除后无法恢复。</p>
+        <div className="fixed inset-0 bg-scrim/70 flex items-center justify-center z-50">
+          <div className="bg-surface-2 rounded-xl p-6 max-w-sm mx-4">
+            <h3 className="text-lg font-bold text-ink mb-2">确认删除</h3>
+            <p className="text-ink-2 text-sm mb-4">确定要删除这个 Token 吗？删除后无法恢复。</p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteConfirm(null)}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={() => deleteToken(deleteConfirm)}
-                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-ink rounded-lg transition-colors"
               >
                 删除
               </button>
@@ -560,42 +560,42 @@ export default function AdminTokenSection({ showToast }) {
 
       {/* Format Selector Popup */}
       {showFormatSelector && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowFormatSelector(null)}>
-          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4" onClick={() => setShowFormatSelector(null)}>
+          <div className="bg-surface-2 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-white">选择格式</h3>
-              <button onClick={() => setShowFormatSelector(null)} className="text-gray-400 hover:text-white">
+              <h3 className="text-lg font-bold text-ink">选择格式</h3>
+              <button onClick={() => setShowFormatSelector(null)} className="text-ink-2 hover:text-ink">
                 <X size={18} />
               </button>
             </div>
             <div className="space-y-2">
               <button
                 onClick={() => copySubUrl(showFormatSelector, 'v2ray')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">V2Ray</div>
-                <div className="text-xs text-gray-400 mt-1">用于导入 v2rayN 的订阅格式</div>
+                <div className="text-xs text-ink-2 mt-1">用于导入 v2rayN 的订阅格式</div>
               </button>
               <button
                 onClick={() => copySubUrl(showFormatSelector, 'clash')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">Clash</div>
-                <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
+                <div className="text-xs text-ink-2 mt-1">标准Clash配置格式</div>
               </button>
               <button
                 onClick={() => copySubUrl(showFormatSelector, 'singbox')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">Sing-box</div>
-                <div className="text-xs text-gray-400 mt-1">Sing-box JSON 配置格式</div>
+                <div className="text-xs text-ink-2 mt-1">Sing-box JSON 配置格式</div>
               </button>
               <button
                 onClick={() => setShowSocksExportModal(true)}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">SOCKS</div>
-                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口</div>
+                <div className="text-xs text-ink-2 mt-1">所有节点自动分配端口</div>
               </button>
             </div>
           </div>

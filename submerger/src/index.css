@@ -2,9 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens.
+ *
+ * The default `:root` block holds the DARK palette and matches the previously
+ * hardcoded gray classes 1:1, so the default look is pixel-identical.
+ * `:root.light` overrides the same variables with the light palette. The
+ * `light` class is set on <html> by an inline script in index.html before
+ * first paint (and toggled at runtime by src/utils/theme.js).
+ *
+ * Values are bare RGB triplets so Tailwind can inject the alpha channel
+ * (see tailwind.config.js: rgb(var(--c-x) / <alpha-value>)).
+ */
+:root {
+  --c-base: 3 7 18; /* #030717 */
+  --c-surface: 17 24 39; /* #111827 */
+  --c-surface-2: 31 41 55; /* #1f2937 */
+  --c-surface-3: 55 65 81; /* #374151 */
+  --c-surface-4: 75 85 99; /* #4b5563 */
+  --c-line: 55 65 81;
+  --c-line-strong: 75 85 99;
+  --c-line-soft: 31 41 55;
+  --c-ink: 255 255 255;
+  --c-ink-hi: 209 213 219; /* #d1d5db */
+  --c-ink-2: 156 163 175; /* #9ca3af */
+  --c-ink-3: 107 114 128; /* #6b7280 */
+  --c-ink-4: 75 85 99; /* #4b5563 */
+  --c-scrim: 0 0 0;
+  color-scheme: dark;
+}
+
+:root.light {
+  --c-base: 248 250 252; /* slate-50  #f8fafc */
+  --c-surface: 255 255 255;
+  --c-surface-2: 241 245 249; /* slate-100 #f1f5f9 */
+  --c-surface-3: 226 232 240; /* slate-200 #e2e8f0 */
+  --c-surface-4: 203 213 225; /* slate-300 #cbd5e1 */
+  --c-line: 226 232 240;
+  --c-line-strong: 203 213 225;
+  --c-line-soft: 226 232 240;
+  --c-ink: 15 23 42; /* slate-900 #0f172a (15.9:1 on base) */
+  --c-ink-hi: 51 65 85; /* slate-700 #334155 */
+  --c-ink-2: 71 85 105; /* slate-600 #475569 (6.8:1 on base) */
+  --c-ink-3: 100 116 139; /* slate-500 #64748b (4.5:1 on base) */
+  --c-ink-4: 148 163 184; /* slate-400 #94a3b8 (decorative only) */
+  --c-scrim: 15 23 42;
+  color-scheme: light;
+}
+
 @layer base {
   body {
-    @apply bg-gray-950 text-white min-h-screen overflow-x-hidden;
+    @apply bg-base text-ink min-h-screen overflow-x-hidden;
   }
 }
 
@@ -12,7 +60,7 @@
   .animate-fade-in {
     animation: fadeIn 0.2s ease-out;
   }
-  
+
   @keyframes fadeIn {
     from {
       opacity: 0;
@@ -26,11 +74,11 @@
 }
 
 .glass-panel {
-  @apply bg-white/10 backdrop-blur-lg border border-white/20 shadow-xl rounded-2xl;
+  @apply bg-ink/10 backdrop-blur-lg border border-ink/20 shadow-xl rounded-2xl;
 }
 
 .glass-input {
-  @apply bg-black/20 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all;
+  @apply bg-scrim/20 border border-ink/10 rounded-lg px-4 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all;
 }
 
 .glass-btn {

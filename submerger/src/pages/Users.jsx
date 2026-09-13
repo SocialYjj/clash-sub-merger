@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import request, { isRequestCanceled } from '../utils/request';
 import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
 import UserConfigEditor from '../components/UserConfigEditor';
+import { SkeletonHeader, SkeletonCardGrid } from '../components/Skeleton';
 
 const API_BASE = '/api';
 
@@ -54,35 +55,35 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+      <div className="bg-surface-2 rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <h2 className="text-xl font-bold text-ink flex items-center gap-2">
             <Settings className="text-purple-400" size={20} />
             用户设置
           </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
+          <button onClick={onClose} className="text-ink-2 hover:text-ink">
             <X size={20} />
           </button>
         </div>
 
-        <p className="text-sm text-gray-400 mb-4">
-          用户: <span className="text-white font-medium">{user.name}</span>
+        <p className="text-sm text-ink-2 mb-4">
+          用户: <span className="text-ink font-medium">{user.name}</span>
         </p>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-2 flex items-center gap-2">
+            <label className="block text-sm text-ink-2 mb-2 flex items-center gap-2">
               <FileCode size={14} />
               配置模版
             </label>
             {loading ? (
-              <div className="text-gray-500 text-sm">加载中...</div>
+              <div className="text-ink-3 text-sm">加载中...</div>
             ) : (
               <select
                 value={selectedTemplate}
                 onChange={(e) => setSelectedTemplate(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
               >
                 {templates.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -91,30 +92,30 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
                 ))}
               </select>
             )}
-            <p className="text-xs text-gray-500 mt-1">选择该用户使用的配置模版</p>
+            <p className="text-xs text-ink-3 mt-1">选择该用户使用的配置模版</p>
           </div>
 
-          <div className="border-t border-gray-700 pt-4">
-            <p className="text-xs text-gray-500 mb-3">订阅设置（留空使用全局设置）</p>
+          <div className="border-t border-line pt-4">
+            <p className="text-xs text-ink-3 mb-3">订阅设置（留空使用全局设置）</p>
             <div className="space-y-3">
               <div>
-                <label className="block text-sm text-gray-400 mb-1">配置名称</label>
+                <label className="block text-sm text-ink-2 mb-1">配置名称</label>
                 <input
                   type="text"
                   value={subName}
                   onChange={(e) => setSubName(e.target.value)}
                   placeholder="客户端显示的配置名称"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">订阅文件名</label>
+                <label className="block text-sm text-ink-2 mb-1">订阅文件名</label>
                 <input
                   type="text"
                   value={subFilename}
                   onChange={(e) => setSubFilename(e.target.value)}
                   placeholder="下载时的文件名"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
             </div>
@@ -123,16 +124,16 @@ const UserSettingsModal = ({ user, onClose, showToast, onSuccess }) => {
         <div className="flex justify-end gap-3 mt-6">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
           >
             取消
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >
-            {saving && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            {saving && <div className="w-4 h-4 border-2 border-ink/30 border-t-ink5481 rounded-full animate-spin" />}
             保存
           </button>
         </div>
@@ -174,20 +175,20 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+      <div className="bg-surface-2 rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <h2 className="text-xl font-bold text-ink flex items-center gap-2">
             <Key className="text-blue-400" size={20} />
             重新生成 Token
           </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
+          <button onClick={onClose} className="text-ink-2 hover:text-ink">
             <X size={20} />
           </button>
         </div>
 
-        <p className="text-sm text-gray-400 mb-4">
-          用户: <span className="text-white font-medium">{user.name}</span>
+        <p className="text-sm text-ink-2 mb-4">
+          用户: <span className="text-ink font-medium">{user.name}</span>
         </p>
 
         {/* Mode Selection */}
@@ -195,8 +196,8 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
           <button
             onClick={() => setMode('random')}
             className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${mode === 'random'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+              ? 'bg-blue-600 text-ink'
+              : 'bg-surface-3 text-ink-2 hover:bg-surface-4'
               }`}
           >
             <Shuffle size={16} className="inline mr-2" />
@@ -205,8 +206,8 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
           <button
             onClick={() => setMode('custom')}
             className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${mode === 'custom'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+              ? 'bg-blue-600 text-ink'
+              : 'bg-surface-3 text-ink-2 hover:bg-surface-4'
               }`}
           >
             <Key size={16} className="inline mr-2" />
@@ -217,18 +218,18 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
         {/* Custom Token Input */}
         {mode === 'custom' && (
           <div className="mb-6">
-            <label className="block text-sm text-gray-400 mb-2">自定义 Token（至少 8 个字符）</label>
+            <label className="block text-sm text-ink-2 mb-2">自定义 Token（至少 8 个字符）</label>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={customToken}
                 onChange={(e) => setCustomToken(e.target.value)}
                 placeholder="输入自定义 Token"
-                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                className="flex-1 px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 font-mono text-sm"
               />
               <button
                 onClick={generateRandomToken}
-                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white rounded-lg transition-colors"
+                className="px-3 py-2 bg-surface-3 hover:bg-surface-4 text-ink-2 hover:text-ink rounded-lg transition-colors"
                 title="生成随机 Token"
               >
                 <RefreshCw size={18} />
@@ -241,8 +242,8 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
         )}
 
         {mode === 'random' && (
-          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg border border-gray-600">
-            <p className="text-sm text-gray-300">
+          <div className="mb-6 p-4 bg-surface-3/50 rounded-lg border border-line-strong">
+            <p className="text-sm text-ink-hi">
               将为用户生成一个新的随机 Token，旧的订阅地址将失效。
             </p>
           </div>
@@ -252,16 +253,16 @@ const TokenModal = ({ user, onClose, showToast, onSuccess }) => {
         <div className="flex justify-end gap-3">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
           >
             取消
           </button>
           <button
             onClick={handleSave}
             disabled={saving || (mode === 'custom' && customToken.trim().length < 8)}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >
-            {saving && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            {saving && <div className="w-4 h-4 border-2 border-ink/30 border-t-ink10320 rounded-full animate-spin" />}
             确认更新
           </button>
         </div>
@@ -387,37 +388,37 @@ const AllocationModal = ({ user, onClose, showToast }) => {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-        <div className="bg-gray-800 rounded-xl p-8 text-center">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50">
+        <div className="bg-surface-2 rounded-xl p-8 text-center">
           <div className="animate-spin text-blue-500 mb-2">
             <Check size={24} />
           </div>
-          <div className="text-gray-400">加载中...</div>
+          <div className="text-ink-2">加载中...</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-gray-800 rounded-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b border-gray-700 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4">
+      <div className="bg-surface-2 rounded-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-line flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold text-white">编辑节点分配</h2>
-            <p className="text-gray-400 text-sm mt-1">用户: {user.name}</p>
+            <h2 className="text-xl font-bold text-ink">编辑节点分配</h2>
+            <p className="text-ink-2 text-sm mt-1">用户: {user.name}</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
+          <button onClick={onClose} className="text-ink-2 hover:text-ink">
             <X size={24} />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {Object.entries(sources).map(([subId, data]) => (
-            <div key={subId} className="bg-gray-700/30 rounded-lg border border-gray-700 overflow-hidden">
-              <div className="flex items-center p-3 bg-gray-700/50 hover:bg-gray-700 transition-colors">
+            <div key={subId} className="bg-surface-3/30 rounded-lg border border-line overflow-hidden">
+              <div className="flex items-center p-3 bg-surface-3/50 hover:bg-surface-3 transition-colors">
                 <button
                   onClick={() => toggleExpand(subId)}
-                  className="p-1 mr-2 text-gray-400 hover:text-white"
+                  className="p-1 mr-2 text-ink-2 hover:text-ink"
                 >
                   {expandedSubs[subId] ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                 </button>
@@ -427,36 +428,36 @@ const AllocationModal = ({ user, onClose, showToast }) => {
                   onClick={() => toggleSubscription(subId, data.nodes)}
                 >
                   <div className={`w-5 h-5 rounded border mr-3 flex items-center justify-center transition-colors ${isSubSelected(subId)
-                    ? 'bg-blue-600 border-blue-600 text-white'
+                    ? 'bg-blue-600 border-blue-600 text-ink'
                     : isSubPartial(subId, data.nodes)
-                      ? 'bg-blue-600/50 border-blue-600 text-white'
-                      : 'border-gray-500'
+                      ? 'bg-blue-600/50 border-blue-600 text-ink'
+                      : 'border-ink-3'
                     }`}>
                     {isSubSelected(subId) && <Check size={14} />}
-                    {isSubPartial(subId, data.nodes) && <div className="w-2 h-2 bg-white rounded-full" />}
+                    {isSubPartial(subId, data.nodes) && <div className="w-2 h-2 bg-ink rounded-full" />}
                   </div>
                   <div>
-                    <h3 className="text-white font-medium">{data.name}</h3>
-                    <p className="text-xs text-gray-400">{data.nodes.length} 个节点</p>
+                    <h3 className="text-ink font-medium">{data.name}</h3>
+                    <p className="text-xs text-ink-2">{data.nodes.length} 个节点</p>
                   </div>
                 </div>
               </div>
 
               {expandedSubs[subId] && (
-                <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-gray-800/50">
+                <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-surface-2/50">
                   {data.nodes.map(node => (
                     <div
                       key={node.id}
-                      className="flex items-center p-2 rounded hover:bg-gray-700/50 cursor-pointer"
+                      className="flex items-center p-2 rounded hover:bg-surface-3/50 cursor-pointer"
                       onClick={() => toggleNode(subId, node, data.nodes)}
                     >
                       <div className={`w-4 h-4 rounded border mr-2 flex items-center justify-center transition-colors ${isNodeSelected(subId, node)
-                        ? 'bg-blue-600 border-blue-600 text-white'
-                        : 'border-gray-500'
+                        ? 'bg-blue-600 border-blue-600 text-ink'
+                        : 'border-ink-3'
                         }`}>
                         {isNodeSelected(subId, node) && <Check size={12} />}
                       </div>
-                      <span className="text-sm text-gray-300 truncate" title={node.name}>
+                      <span className="text-sm text-ink-hi truncate" title={node.name}>
                         {node.name}
                       </span>
                     </div>
@@ -466,25 +467,25 @@ const AllocationModal = ({ user, onClose, showToast }) => {
             </div>
           ))}
           {Object.keys(sources).length === 0 && (
-            <div className="text-center text-gray-500 py-8">
+            <div className="text-center text-ink-3 py-8">
               暂无可分配的节点或订阅
             </div>
           )}
         </div>
 
-        <div className="p-6 border-t border-gray-700 flex justify-end gap-3">
+        <div className="p-6 border-t border-line flex justify-end gap-3">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
           >
             取消
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors flex items-center gap-2"
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors flex items-center gap-2"
           >
-            {saving && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            {saving && <div className="w-4 h-4 border-2 border-ink/30 border-t-ink18720 rounded-full animate-spin" />}
             保存配置
           </button>
         </div>
@@ -495,6 +496,7 @@ const AllocationModal = ({ user, onClose, showToast }) => {
 
 export default function Users({
   users,
+  initialLoading = false,
   onAdd,
   onDelete,
   onToggle,
@@ -555,17 +557,30 @@ export default function Users({
     return date.toLocaleDateString('zh-CN');
   };
 
+  // Initial fetch in flight: show a skeleton instead of an empty grid flash.
+  if (initialLoading) {
+    return (
+      <div className="space-y-6 animate-pulse p-1" aria-busy="true" aria-label="加载中">
+        <SkeletonHeader />
+        <SkeletonCardGrid
+          count={8}
+          gridClassName="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">用户管理</h1>
-          <p className="text-gray-400 text-sm mt-1">管理订阅用户和节点分配</p>
+          <h1 className="text-2xl font-bold text-ink">用户管理</h1>
+          <p className="text-ink-2 text-sm mt-1">管理订阅用户和节点分配</p>
         </div>
         <button
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
         >
           <Plus size={18} />
           添加用户
@@ -578,22 +593,22 @@ export default function Users({
           users.map((user) => (
             <div
               key={user.id}
-              className="bg-white/5 border border-gray-700/50 rounded-2xl overflow-hidden hover:border-blue-500/30 transition-all hover:shadow-lg hover:shadow-blue-500/5"
+              className="bg-ink/5 border border-line/50 rounded-2xl overflow-hidden hover:border-blue-500/30 transition-all hover:shadow-lg hover:shadow-blue-500/5"
             >
               {/* Header */}
-              <div className="p-4 border-b border-gray-700/30">
+              <div className="p-4 border-b border-line/30">
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${user.enabled !== false
-                    ? 'bg-gradient-to-br from-green-400 to-emerald-500 text-white'
-                    : 'bg-gray-600 text-gray-400'
+                    ? 'bg-gradient-to-br from-green-400 to-emerald-500 text-ink'
+                    : 'bg-surface-4 text-ink-2'
                     }`}>
                     {user.name.charAt(0).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-white truncate">{user.name}</h3>
+                    <h3 className="font-semibold text-ink truncate">{user.name}</h3>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${user.enabled !== false
                       ? 'bg-green-500/20 text-green-400'
-                      : 'bg-gray-600/20 text-gray-500'
+                      : 'bg-surface-4/20 text-ink-3'
                       }`}>
                       {user.enabled !== false ? '启用' : '禁用'}
                     </span>
@@ -605,22 +620,22 @@ export default function Users({
               <div className="p-4 space-y-3">
                 {/* Token Preview */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                  <span className="text-xs text-ink-3 flex items-center gap-1">
                     <Key size={12} /> Token
                   </span>
-                  <span className="text-xs font-mono text-gray-400 bg-gray-800 px-2 py-0.5 rounded">
+                  <span className="text-xs font-mono text-ink-2 bg-surface-2 px-2 py-0.5 rounded">
                     {user.token || '****...'}
                   </span>
                 </div>
 
                 {/* Expire Time */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                  <span className="text-xs text-ink-3 flex items-center gap-1">
                     <Calendar size={12} /> 到期时间
                   </span>
                   <span className={`text-xs font-medium ${user.expire_time && user.expire_time !== 0 && new Date(user.expire_time * 1000) < new Date()
                     ? 'text-red-400'
-                    : 'text-gray-300'
+                    : 'text-ink-hi'
                     }`}>
                     {formatExpire(user.expire_time)}
                   </span>
@@ -628,25 +643,25 @@ export default function Users({
 
                 {/* Created At */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                  <span className="text-xs text-ink-3 flex items-center gap-1">
                     <Clock size={12} /> 创建时间
                   </span>
-                  <span className="text-xs text-gray-400">
+                  <span className="text-xs text-ink-2">
                     {user.created_at ? new Date(user.created_at * 1000).toLocaleDateString('zh-CN') : '-'}
                   </span>
                 </div>
 
                 {/* Template */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">使用模版</span>
+                  <span className="text-xs text-ink-3">使用模版</span>
                   <span className="text-xs text-purple-400">
                     {getTemplateName(user.template_id)}
                   </span>
                 </div>
 
                 {/* Allocations Info - placeholder */}
-                <div className="pt-2 border-t border-gray-700/30">
-                  <span className="text-xs text-gray-500">节点分配</span>
+                <div className="pt-2 border-t border-line/30">
+                  <span className="text-xs text-ink-3">节点分配</span>
                   <p className="text-sm text-blue-400 mt-1">
                     {user.allocations && Object.keys(user.allocations).length > 0
                       ? `${Object.keys(user.allocations).length} 个来源`
@@ -656,11 +671,11 @@ export default function Users({
               </div>
 
               {/* Actions Footer */}
-              <div className="px-4 py-3 bg-gray-800/30 border-t border-gray-700/30 flex items-center justify-between">
+              <div className="px-4 py-3 bg-surface-2/30 border-t border-line/30 flex items-center justify-between">
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => onCopyUrl(user)}
-                    className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                    className="p-2 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
                     title="复制订阅地址"
                   >
                     <Copy size={16} />
@@ -669,7 +684,7 @@ export default function Users({
                     onClick={() => onToggle(user.id, user.enabled !== false)}
                     className={`p-2 rounded-lg transition-colors ${user.enabled !== false
                       ? 'text-green-400 hover:bg-green-500/10'
-                      : 'text-gray-500 hover:bg-gray-700'
+                      : 'text-ink-3 hover:bg-surface-3'
                       }`}
                     title={user.enabled !== false ? '禁用' : '启用'}
                   >
@@ -677,14 +692,14 @@ export default function Users({
                   </button>
                   <button
                     onClick={() => setTokenUser(user)}
-                    className="p-2 text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
+                    className="p-2 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
                     title="重新生成Token"
                   >
                     <Key size={16} />
                   </button>
                   <button
                     onClick={() => setEditingUser(user)}
-                    className="p-2 text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
+                    className="p-2 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
                     title="编辑分配"
                   >
                     <Edit2 size={16} />
@@ -694,8 +709,8 @@ export default function Users({
                     disabled={!user.template_id || user.template_id === 'builtin'}
                     className={`p-2 rounded-lg transition-colors ${
                       !user.template_id || user.template_id === 'builtin'
-                        ? 'text-gray-600 cursor-not-allowed'
-                        : 'text-gray-400 hover:text-green-400 hover:bg-green-500/10'
+                        ? 'text-ink-4 cursor-not-allowed'
+                        : 'text-ink-2 hover:text-green-400 hover:bg-green-500/10'
                     }`}
                     title={!user.template_id || user.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '配置节点'}
                   >
@@ -703,7 +718,7 @@ export default function Users({
                   </button>
                   <button
                     onClick={() => setSettingsUser(user)}
-                    className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                    className="p-2 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
                     title="用户设置"
                   >
                     <Settings size={16} />
@@ -711,7 +726,7 @@ export default function Users({
                 </div>
                 <button
                   onClick={() => onDelete(user.id)}
-                  className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  className="p-2 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                   title="删除"
                 >
                   <Trash2 size={16} />
@@ -720,12 +735,12 @@ export default function Users({
             </div>
           ))
         ) : (
-          <div className="col-span-full bg-gray-800/50 border border-gray-700 rounded-xl p-12 text-center">
-            <UsersIcon size={48} className="mx-auto text-gray-600 mb-4" />
-            <p className="text-gray-400 mb-4">还没有添加任何用户</p>
+          <div className="col-span-full bg-surface-2/50 border border-line rounded-xl p-12 text-center">
+            <UsersIcon size={48} className="mx-auto text-ink-4 mb-4" />
+            <p className="text-ink-2 mb-4">还没有添加任何用户</p>
             <button
               onClick={() => setShowAddModal(true)}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
             >
               添加第一个用户
             </button>
@@ -735,41 +750,41 @@ export default function Users({
 
       {/* Add Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-xl font-bold text-white mb-4">添加用户</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50">
+          <div className="bg-surface-2 rounded-xl p-6 w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold text-ink mb-4">添加用户</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-1">用户名</label>
+                <label className="block text-sm text-ink-2 mb-1">用户名</label>
                 <input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="输入用户名"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">过期时间（可选）</label>
+                <label className="block text-sm text-ink-2 mb-1">过期时间（可选）</label>
                 <input
                   type="date"
                   value={newExpire}
                   onChange={(e) => setNewExpire(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink focus:outline-none focus:border-blue-500"
                 />
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button
                 onClick={() => setShowAddModal(false)}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={handleAdd}
                 disabled={!newName.trim()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
               >
                 添加
               </button>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import request from '../utils/request';
+import { SkeletonHeader, SkeletonStatGrid, SkeletonPanel, SkeletonRows } from '../components/Skeleton';
 import {
   Server, Users, Router,
   Globe, Zap, Database
@@ -39,7 +40,7 @@ const COLOR_STYLES = {
 const StatCard = ({ title, value, subtext, icon: Icon, color = 'blue', children }) => {
   const styles = COLOR_STYLES[color] || COLOR_STYLES.blue;
   return (
-    <div className={`relative overflow-hidden rounded-2xl p-6 border border-gray-700/50 bg-gray-800/40 backdrop-blur-sm group ${styles.borderHover} ring-1 ring-white/5 transition-all duration-300 shadow-lg shadow-black/20 hover:shadow-black/40`}>
+    <div className={`relative overflow-hidden rounded-2xl p-6 border border-line/50 bg-surface-2/40 backdrop-blur-sm group ${styles.borderHover} ring-1 ring-ink/5 transition-all duration-300 shadow-lg shadow-black/20 hover:shadow-black/40`}>
       <div className={`absolute -right-6 -top-6 w-32 h-32 ${styles.glowBg} rounded-full blur-3xl transition-all`} />
 
       <div className="relative z-10">
@@ -55,8 +56,8 @@ const StatCard = ({ title, value, subtext, icon: Icon, color = 'blue', children 
         </div>
 
         <div className="space-y-1">
-          <h3 className="text-gray-400 text-sm font-medium">{title}</h3>
-          <div className="text-3xl font-bold text-white tracking-tight">
+          <h3 className="text-ink-2 text-sm font-medium">{title}</h3>
+          <div className="text-3xl font-bold text-ink tracking-tight">
             {value}
           </div>
           {children}
@@ -68,58 +69,15 @@ const StatCard = ({ title, value, subtext, icon: Icon, color = 'blue', children 
 
 const DashboardSkeleton = () => (
   <div className="h-[calc(100vh-80px)] overflow-y-auto space-y-6 animate-pulse p-1">
-    <div className="flex items-center justify-between mb-8">
-      <div className="space-y-2">
-        <div className="h-8 w-32 bg-gray-800 rounded-lg" />
-        <div className="h-4 w-48 bg-gray-800/60 rounded" />
-      </div>
-      <div className="h-8 w-36 bg-gray-800/50 rounded-lg hidden sm:block" />
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-      {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-36 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
-          <div className="flex justify-between items-center">
-            <div className="w-12 h-12 rounded-xl bg-gray-700/40" />
-            <div className="w-16 h-5 rounded-full bg-gray-700/30" />
-          </div>
-          <div className="space-y-2">
-            <div className="h-3 w-16 bg-gray-700/30 rounded" />
-            <div className="h-7 w-24 bg-gray-700/50 rounded" />
-          </div>
-        </div>
-      ))}
-    </div>
-
+    <SkeletonHeader actionClassName="hidden sm:block" />
+    <SkeletonStatGrid />
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="h-80 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
-        <div className="h-6 w-32 bg-gray-700/40 rounded" />
-        <div className="space-y-3 pt-2">
-          {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="space-y-2">
-              <div className="flex justify-between">
-                <div className="h-4 w-20 bg-gray-700/30 rounded" />
-                <div className="h-4 w-10 bg-gray-700/30 rounded" />
-              </div>
-              <div className="h-2 w-full bg-gray-700/20 rounded-full" />
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="h-80 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
-        <div className="h-6 w-32 bg-gray-700/40 rounded" />
-        <div className="space-y-3 pt-2">
-          {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="space-y-2">
-              <div className="flex justify-between">
-                <div className="h-4 w-20 bg-gray-700/30 rounded" />
-                <div className="h-4 w-10 bg-gray-700/30 rounded" />
-              </div>
-              <div className="h-2 w-full bg-gray-700/20 rounded-full" />
-            </div>
-          ))}
-        </div>
-      </div>
+      <SkeletonPanel>
+        <SkeletonRows rows={5} />
+      </SkeletonPanel>
+      <SkeletonPanel>
+        <SkeletonRows rows={5} />
+      </SkeletonPanel>
     </div>
   </div>
 );
@@ -187,8 +145,8 @@ export default function Dashboard({ showToast }) {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white mb-1">仪表盘</h1>
-          <p className="text-gray-400 text-sm">{loadError ? '部分数据加载失败' : '欢迎回来，系统运行正常'}</p>
+          <h1 className="text-2xl font-bold text-ink mb-1">仪表盘</h1>
+          <p className="text-ink-2 text-sm">{loadError ? '部分数据加载失败' : '欢迎回来，系统运行正常'}</p>
         </div>
         <div className="text-right hidden sm:block">
           <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
@@ -238,7 +196,7 @@ export default function Dashboard({ showToast }) {
               {overview.best_node.name}
             </p>
           ) : (
-            <p className="text-xs text-gray-500 mt-2">暂无测速数据</p>
+            <p className="text-xs text-ink-3 mt-2">暂无测速数据</p>
           )}
         </StatCard>
       </div>
@@ -246,22 +204,22 @@ export default function Dashboard({ showToast }) {
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Country Distribution */}
-        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-white/5">
+        <div className="bg-surface-2/40 border border-line/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-ink/5">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400">
                 <Globe size={18} />
               </div>
-              <h3 className="text-lg font-bold text-white">节点地区分布</h3>
+              <h3 className="text-lg font-bold text-ink">节点地区分布</h3>
             </div>
-            <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">Top 10</span>
+            <span className="text-xs text-ink-3 bg-surface-3/50 px-2 py-1 rounded">Top 10</span>
           </div>
 
           <div className="space-y-4">
             {(() => {
               const totalNodes = countryChartData.reduce((sum, c) => sum + c.value, 0);
               if (totalNodes === 0) {
-                return <div className="text-center py-8 text-gray-500 text-sm">暂无节点地区数据</div>;
+                return <div className="text-center py-8 text-ink-3 text-sm">暂无节点地区数据</div>;
               }
               return countryChartData.map((entry, index) => {
                 const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
@@ -270,16 +228,16 @@ export default function Dashboard({ showToast }) {
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <span className="text-2xl">{entry.flag}</span>
-                        <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                        <span className="text-sm text-ink-hi font-medium">{entry.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">{percentage}%</span>
-                        <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                        <span className="text-xs text-ink-3">{percentage}%</span>
+                        <span className="text-xs font-mono text-ink-3 bg-surface-2 px-2 py-1 rounded">
                           {entry.value}
                         </span>
                       </div>
                     </div>
-                    <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                    <div className="h-2 bg-surface-3/50 rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all duration-500 ease-out"
                         style={{
@@ -296,19 +254,19 @@ export default function Dashboard({ showToast }) {
         </div>
 
         {/* Protocol Distribution */}
-        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-white/5">
+        <div className="bg-surface-2/40 border border-line/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-ink/5">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-green-500/20 rounded-lg text-green-400">
                 <Router size={18} />
               </div>
-              <h3 className="text-lg font-bold text-white">节点协议分布</h3>
+              <h3 className="text-lg font-bold text-ink">节点协议分布</h3>
             </div>
           </div>
 
           <div className="space-y-3">
             {protocolData.length === 0 ? (
-              <div className="text-center py-8 text-gray-500 text-sm">暂无节点协议数据</div>
+              <div className="text-center py-8 text-ink-3 text-sm">暂无节点协议数据</div>
             ) : (
               protocolData.map((entry, index) => {
                 const totalNodes = protocolData.reduce((sum, p) => sum + p.value, 0);
@@ -318,16 +276,16 @@ export default function Dashboard({ showToast }) {
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                        <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                        <span className="text-sm text-ink-hi font-medium">{entry.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">{percentage}%</span>
-                        <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                        <span className="text-xs text-ink-3">{percentage}%</span>
+                        <span className="text-xs font-mono text-ink-3 bg-surface-2 px-2 py-1 rounded">
                           {entry.value}
                         </span>
                       </div>
                     </div>
-                    <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                    <div className="h-2 bg-surface-3/50 rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all duration-500 ease-out"
                         style={{

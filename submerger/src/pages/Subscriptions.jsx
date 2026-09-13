@@ -3,6 +3,7 @@ import { Plus, RefreshCw, Server } from 'lucide-react';
 import request from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 import SubscriptionCard from '../components/SubscriptionCard';
+import { SkeletonHeader, SkeletonCardGrid } from '../components/Skeleton';
 import AddSubscriptionModal from '../components/AddSubscriptionModal';
 import EditSubscriptionModal from '../components/EditSubscriptionModal';
 import ScheduleModal from '../components/ScheduleModal';
@@ -12,6 +13,7 @@ const API_BASE = '/api';
 
 export default function Subscriptions({
   subscriptions,
+  initialLoading = false,
   onAdd,
   onDelete,
   onRefresh,
@@ -145,26 +147,36 @@ export default function Subscriptions({
     showToast?.(copied ? '订阅地址已复制' : '复制失败', copied ? 'success' : 'error');
   };
 
+  // Initial fetch in flight: show a skeleton instead of an empty grid flash.
+  if (initialLoading) {
+    return (
+      <div className="space-y-6 animate-pulse p-1" aria-busy="true" aria-label="加载中">
+        <SkeletonHeader />
+        <SkeletonCardGrid count={8} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">机场管理</h1>
-          <p className="text-gray-400 text-sm mt-1">管理你的订阅源</p>
+          <h1 className="text-2xl font-bold text-ink">机场管理</h1>
+          <p className="text-ink-2 text-sm mt-1">管理你的订阅源</p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={onRefreshAll}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors disabled:opacity-50"
           >
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
             全部更新
           </button>
           <button
             onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
           >
             <Plus size={18} />
             添加订阅
@@ -197,17 +209,17 @@ export default function Subscriptions({
             />
           ))
         ) : (
-          <div className="col-span-full flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700 dashed rounded-2xl">
-            <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-6 text-gray-600">
+          <div className="col-span-full flex flex-col items-center justify-center py-20 bg-surface-2/30 border border-line dashed rounded-2xl">
+            <div className="w-20 h-20 bg-surface-2 rounded-full flex items-center justify-center mb-6 text-ink-4">
               <Server size={40} />
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">还没有添加订阅</h3>
-            <p className="text-gray-400 mb-8 max-w-sm text-center">
+            <h3 className="text-xl font-bold text-ink mb-2">还没有添加订阅</h3>
+            <p className="text-ink-2 mb-8 max-w-sm text-center">
               添加订阅后，系统会自动解析节点并合并。支持 Clash、V2Ray 等多种格式。
             </p>
             <button
               onClick={() => setShowAddModal(true)}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-colors flex items-center gap-2 shadow-lg shadow-blue-600/20"
+              className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-ink rounded-xl font-medium transition-colors flex items-center gap-2 shadow-lg shadow-blue-600/20"
             >
               <Plus size={20} />
               添加第一个订阅

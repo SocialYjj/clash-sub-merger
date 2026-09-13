@@ -157,39 +157,39 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="schedule-modal-title" tabIndex={-1} className="bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4 border border-gray-700">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="schedule-modal-title" tabIndex={-1} className="bg-surface-2 rounded-xl p-6 w-full max-w-md mx-4 border border-line max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between mb-2">
-                    <h2 id="schedule-modal-title" className="text-xl font-bold text-white">定时更新设置</h2>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white">
+                    <h2 id="schedule-modal-title" className="text-xl font-bold text-ink">定时更新设置</h2>
+                    <button onClick={onClose} className="text-ink-2 hover:text-ink">
                         <X size={20} />
                     </button>
                 </div>
-                <p className="text-gray-400 text-sm mb-4">{sub.name}</p>
+                <p className="text-ink-2 text-sm mb-4">{sub.name}</p>
 
                 <div className="space-y-4">
                     {/* Current status */}
                     <div className="flex items-center gap-2">
-                        <Clock size={16} className="text-gray-400" />
-                        <span className="text-sm text-gray-300">
+                        <Clock size={16} className="text-ink-2" />
+                        <span className="text-sm text-ink-hi">
                             {cronValue ? `当前设置: ${cronValue}` : '未设置定时更新'}
                         </span>
                     </div>
 
                     {/* Cron input */}
                     <div>
-                        <label className="block text-sm text-gray-400 mb-2">Cron 表达式</label>
+                        <label className="block text-sm text-ink-2 mb-2">Cron 表达式</label>
                         <input
                             type="text"
                             value={cronValue}
                             onChange={handleInputChange}
                             placeholder="分 时 日 月 周 (例: 0 */6 * * *)"
-                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm placeholder-ink-3 focus:outline-none focus:border-blue-500"
                         />
                     </div>
 
                     {/* Format hint */}
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-ink-3">
                         格式: 分钟(0-59) 小时(0-23) 日(1-31) 月(1-12) 周(0=周一...6=周日)
                     </p>
 
@@ -206,8 +206,8 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
                     )}
 
                     {/* Common examples */}
-                    <div className="text-xs text-gray-500 space-y-1 bg-gray-900/50 p-3 rounded-lg">
-                        <div className="font-medium text-gray-400 mb-2">常用示例 (点击填入):</div>
+                    <div className="text-xs text-ink-3 space-y-1 bg-surface/50 p-3 rounded-lg">
+                        <div className="font-medium text-ink-2 mb-2">常用示例 (点击填入):</div>
                         <div className="grid grid-cols-2 gap-2">
                             {[
                                 { expr: '0 * * * *', label: '每小时' },
@@ -221,10 +221,10 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
                                     key={expr}
                                     type="button"
                                     onClick={() => handleExampleClick(expr)}
-                                    className="text-left px-2 py-1 hover:bg-gray-700 rounded transition-colors"
+                                    className="text-left px-2 py-1 hover:bg-surface-3 rounded transition-colors"
                                 >
                                     <code className="text-cyan-400">{expr}</code>
-                                    <span className="text-gray-500 ml-1">{label}</span>
+                                    <span className="text-ink-3 ml-1">{label}</span>
                                 </button>
                             ))}
                         </div>
@@ -242,14 +242,14 @@ export default function ScheduleModal({ sub, onClose, onRefreshList, showToast }
                     <div className="flex gap-2">
                         <button
                             onClick={onClose}
-                            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                            className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
                         >
                             取消
                         </button>
                         <button
                             onClick={saveSchedule}
                             disabled={saving || !!error}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
                         >
                             {saving ? '保存中...' : '保存'}
                         </button>

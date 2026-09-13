@@ -21,7 +21,7 @@ export default function Toast({ show, message, type = 'success' }) {
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
       <div role={type === 'error' ? 'alert' : 'status'} aria-live="polite" className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${bgColors[type] || bgColors.info} backdrop-blur-sm`}>
         {icons[type] || icons.info}
-        <span className="text-white text-sm">{message}</span>
+        <span className="text-ink text-sm">{message}</span>
       </div>
     </div>
   );

@@ -531,8 +531,8 @@ export default function Settings({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">系统设置</h1>
-        <p className="text-gray-400 text-sm mt-1">配置系统参数</p>
+        <h1 className="text-2xl font-bold text-ink">系统设置</h1>
+        <p className="text-ink-2 text-sm mt-1">配置系统参数</p>
       </div>
 
       {/* Admin Token Management */}
@@ -542,25 +542,25 @@ export default function Settings({
       <SubscriptionProxySection showToast={showToast} />
 
       {/* Online GeoIP API Settings */}
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+      <div className="bg-surface-2/50 border border-line rounded-xl p-6">
+        <h2 className="text-lg font-semibold text-ink mb-4 flex items-center gap-2">
           <Globe size={20} />
           在线 IP 查询 API
         </h2>
         
         <div className="space-y-4">
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-ink-2">
             节点地区检测时使用在线 API 查询出口 IP 的地理位置
           </p>
 
           <div className="flex items-center gap-3">
-            <label className="text-sm text-gray-300" htmlFor="preferred-geoip-api">首选 API</label>
+            <label className="text-sm text-ink-hi" htmlFor="preferred-geoip-api">首选 API</label>
             <select
               id="preferred-geoip-api"
               value={onlineGeoipConfig.preferred_api || 'ip-api.com'}
               onChange={(event) => saveOnlineGeoipConfig(event.target.value)}
               disabled={savingOnlineConfig}
-              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+              className="px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm disabled:opacity-50"
             >
               {(onlineGeoipConfig.apis || [])
                 .filter(api => api.enabled !== false)
@@ -575,41 +575,41 @@ export default function Settings({
                 key={api.id}
                 className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer ${
                   api.enabled !== false
-                    ? 'bg-gray-700/50 border border-gray-600 hover:border-gray-500'
-                    : 'bg-gray-800/50 border border-gray-700 opacity-60'
+                    ? 'bg-surface-3/50 border border-line-strong hover:border-ink-3'
+                    : 'bg-surface-2/50 border border-line opacity-60'
                 }`}
                 onClick={() => openEditApiModal(api)}
               >
                 <div className="flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-white font-medium">{api.name}</span>
+                    <span className="text-ink font-medium">{api.name}</span>
                     {api.builtin ? (
                       <span className="text-xs px-1.5 py-0.5 bg-blue-600/30 text-blue-400 rounded">内置</span>
                     ) : (
                       <span className="text-xs px-1.5 py-0.5 bg-purple-600/30 text-purple-400 rounded">自定义</span>
                     )}
                     {api.limit && (
-                      <span className="text-xs px-1.5 py-0.5 bg-gray-600 rounded text-gray-300">{api.limit}</span>
+                      <span className="text-xs px-1.5 py-0.5 bg-surface-4 rounded text-ink-hi">{api.limit}</span>
                     )}
                   </div>
                   {api.description && (
-                    <div className="text-xs text-gray-400 mt-0.5">{api.description}</div>
+                    <div className="text-xs text-ink-2 mt-0.5">{api.description}</div>
                   )}
                   {!api.builtin && api.url && (
-                    <div className="text-xs text-gray-500 mt-0.5 truncate max-w-md">{api.url}</div>
+                    <div className="text-xs text-ink-3 mt-0.5 truncate max-w-md">{api.url}</div>
                   )}
                 </div>
                 
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => testGeoipApi(api.id)}
-                    className="px-2 py-1 text-xs text-blue-300 hover:bg-gray-600 rounded transition-colors"
+                    className="px-2 py-1 text-xs text-blue-300 hover:bg-surface-4 rounded transition-colors"
                   >
                     测试
                   </button>
                   <button
                     onClick={() => toggleApiEnabled(api.id, api.enabled !== false)}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${api.enabled !== false ? 'text-green-300 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-700'}`}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${api.enabled !== false ? 'text-green-300 hover:bg-surface-4' : 'text-ink-2 hover:bg-surface-3'}`}
                   >
                     {api.enabled !== false ? '已启用' : '已禁用'}
                   </button>
@@ -617,7 +617,7 @@ export default function Settings({
                   {!api.builtin && (
                     <button
                       onClick={() => setDeleteApiConfirm(api.id)}
-                      className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded transition-colors"
+                      className="p-1.5 text-ink-2 hover:text-red-400 hover:bg-surface-4 rounded transition-colors"
                       title="删除"
                     >
                       <Trash2 size={16} />
@@ -629,25 +629,25 @@ export default function Settings({
           </div>
 
           {/* GeoIP Cache */}
-          <div className="mt-4 p-4 bg-gray-900/40 border border-gray-700 rounded-lg">
+          <div className="mt-4 p-4 bg-surface/40 border border-line rounded-lg">
             <div className="flex items-center justify-between">
-              <div className="text-sm text-gray-300 font-medium">GeoIP 缓存</div>
+              <div className="text-sm text-ink-hi font-medium">GeoIP 缓存</div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => exportGeoipCache('csv')}
-                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                  className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-ink rounded"
                 >
                   导出 CSV
                 </button>
                 <button
                   onClick={() => exportGeoipCache('json')}
-                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                  className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-ink rounded"
                 >
                   导出 JSON
                 </button>
                 <button
                   onClick={() => refreshGeoipCache()}
-                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                  className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-ink rounded"
                 >
                   刷新
                 </button>
@@ -665,32 +665,32 @@ export default function Settings({
                       await fetchGeoipCacheEntries();
                     }
                   }}
-                  className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                  className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-ink rounded"
                 >
                   {geoipCacheExpanded ? '收起' : '展开'}
                 </button>
               </div>
             </div>
-            <div className="mt-2 text-xs text-gray-400 flex flex-wrap gap-4">
+            <div className="mt-2 text-xs text-ink-2 flex flex-wrap gap-4">
               <span>缓存条数: {geoipCacheStats?.cache_size ?? '-'}</span>
               <span>有效: {geoipCacheStats?.positive ?? '-'}</span>
               <span>负缓存: {geoipCacheStats?.negative ?? '-'}</span>
             </div>
 
             {geoipCacheExpanded && (
-              <div className="mt-3 max-h-64 overflow-y-auto border border-gray-700 rounded-lg">
-                <div className="p-3 border-b border-gray-700 bg-gray-800/70">
+              <div className="mt-3 max-h-64 overflow-y-auto border border-line rounded-lg">
+                <div className="p-3 border-b border-line bg-surface-2/70">
                   <div className="grid grid-cols-12 gap-2">
                     <input
                       value={geoipCacheFilters.q}
                       onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, q: e.target.value }))}
                       placeholder="搜索 IP/地区/城市"
-                      className="col-span-12 md:col-span-4 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="col-span-12 md:col-span-4 px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     />
                     <select
                       value={geoipCacheFilters.api_id}
                       onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, api_id: e.target.value }))}
-                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     >
                       <option value="all">全部 API</option>
                       {(onlineGeoipConfig.apis || []).map(api => (
@@ -700,7 +700,7 @@ export default function Settings({
                     <select
                       value={geoipCacheFilters.status}
                       onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, status: e.target.value }))}
-                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="col-span-6 md:col-span-3 px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     >
                       <option value="all">全部状态</option>
                       <option value="positive">命中</option>
@@ -709,7 +709,7 @@ export default function Settings({
                     <select
                       value={geoipCacheFilters.max_age}
                       onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, max_age: e.target.value }))}
-                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     >
                       <option value="">不限时间</option>
                       <option value="300">5分钟内</option>
@@ -722,7 +722,7 @@ export default function Settings({
                     <select
                       value={geoipCacheFilters.sort}
                       onChange={(e) => setGeoipCacheFilters(prev => ({ ...prev, sort: e.target.value }))}
-                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="col-span-6 md:col-span-2 px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     >
                       <option value="newest">最新优先</option>
                       <option value="oldest">最旧优先</option>
@@ -745,14 +745,14 @@ export default function Settings({
                         }
                         geoipFilterResetTimer.current = setTimeout(() => fetchGeoipCacheEntries(undefined, resetFilters), 0);
                       }}
-                      className="px-2 py-1 text-xs bg-gray-700 text-gray-200 rounded hover:bg-gray-600"
+                      className="px-2 py-1 text-xs bg-surface-3 text-ink-hi rounded hover:bg-surface-4"
                     >
                       重置
                     </button>
                     <select
                       value={geoipAutoRefresh}
                       onChange={(e) => setGeoipAutoRefresh(e.target.value)}
-                      className="ml-auto px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                      className="ml-auto px-2 py-1 text-xs bg-surface-2 border border-line rounded text-ink focus:outline-none focus:border-blue-500"
                     >
                       <option value="off">自动刷新: 关闭</option>
                       <option value="10000">自动刷新: 10秒</option>
@@ -762,10 +762,10 @@ export default function Settings({
                   </div>
                 </div>
                 {geoipCacheLoading ? (
-                  <div className="p-3 text-xs text-gray-400">加载中...</div>
+                  <div className="p-3 text-xs text-ink-2">加载中...</div>
                 ) : (
-                  <table className="w-full text-xs text-gray-300">
-                    <thead className="sticky top-0 bg-gray-800 text-gray-400">
+                  <table className="w-full text-xs text-ink-hi">
+                    <thead className="sticky top-0 bg-surface-2 text-ink-2">
                       <tr>
                         <th className="text-left px-3 py-2">IP</th>
                         <th className="text-left px-3 py-2">地区</th>
@@ -776,7 +776,7 @@ export default function Settings({
                     </thead>
                     <tbody>
                       {(geoipCacheEntries || []).map((entry, idx) => (
-                        <tr key={`${entry.ip}-${entry.api_id}-${idx}`} className="border-t border-gray-700">
+                        <tr key={`${entry.ip}-${entry.api_id}-${idx}`} className="border-t border-line">
                           <td className="px-3 py-2 truncate max-w-[200px]">{entry.ip}</td>
                           <td className="px-3 py-2">
                             {entry.negative ? '-' : `${entry.flag || ''} ${entry.country || ''} ${entry.city || ''}`}
@@ -785,7 +785,7 @@ export default function Settings({
                           <td className="px-3 py-2">{entry.age != null ? `${entry.age}s` : '-'}</td>
                           <td className="px-3 py-2">
                             {entry.negative ? (
-                              <span className="text-gray-500">负缓存</span>
+                              <span className="text-ink-3">负缓存</span>
                             ) : (
                               <span className="text-green-400">命中</span>
                             )}
@@ -794,7 +794,7 @@ export default function Settings({
                       ))}
                       {(!geoipCacheEntries || geoipCacheEntries.length === 0) && (
                         <tr>
-                          <td className="px-3 py-3 text-gray-500" colSpan={5}>暂无缓存记录</td>
+                          <td className="px-3 py-3 text-ink-3" colSpan={5}>暂无缓存记录</td>
                         </tr>
                       )}
                     </tbody>
@@ -807,7 +807,7 @@ export default function Settings({
           {/* Add custom API button */}
           <button
             onClick={() => setShowAddApiModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="flex items-center gap-2 px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
           >
             <Plus size={18} />
             添加自定义 API
@@ -816,25 +816,25 @@ export default function Settings({
       </div>
 
       {/* Cloudflare Radar configuration */}
-      <div id="cloudflare-radar-settings" className="bg-gray-800/50 border border-blue-500/30 rounded-xl p-6">
+      <div id="cloudflare-radar-settings" className="bg-surface-2/50 border border-blue-500/30 rounded-xl p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
               <Globe size={20} />
               Cloudflare Radar API
             </h2>
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-ink-2 mt-2">
               填写 Cloudflare API Token 后，节点地区/IP 信息检测会按 ASN 查询人类/机器人流量参考值。
             </p>
           </div>
           <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${onlineGeoipConfig.has_radar_token
             ? 'bg-green-500/20 text-green-300'
-            : 'bg-gray-700 text-gray-400'}`}>
+            : 'bg-surface-3 text-ink-2'}`}>
             {onlineGeoipConfig.has_radar_token ? '已配置' : '未配置'}
           </span>
         </div>
         <div className="space-y-3">
-          <label className="block text-sm text-gray-300" htmlFor="cloudflare-radar-token">
+          <label className="block text-sm text-ink-hi" htmlFor="cloudflare-radar-token">
             Cloudflare API Token
           </label>
           <div className="flex flex-wrap items-center gap-2">
@@ -848,13 +848,13 @@ export default function Settings({
               }}
               placeholder={onlineGeoipConfig.has_radar_token ? '已配置，输入新 Token 可覆盖' : '粘贴 Cloudflare API Token'}
               autoComplete="new-password"
-              className="flex-1 min-w-[260px] px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              className="flex-1 min-w-[260px] px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm placeholder-ink-3 focus:outline-none focus:border-blue-500"
               disabled={savingOnlineConfig}
             />
             <button
               onClick={saveCloudflareRadarToken}
               disabled={savingOnlineConfig || !cloudflareRadarToken.trim()}
-              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg"
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-surface-3 disabled:text-ink-3 text-ink text-sm rounded-lg"
             >
               保存 Token
             </button>
@@ -862,7 +862,7 @@ export default function Settings({
               <button
                 onClick={clearCloudflareRadarToken}
                 disabled={savingOnlineConfig}
-                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:text-gray-500 text-gray-200 text-sm rounded-lg"
+                className="px-3 py-2 bg-surface-3 hover:bg-surface-4 disabled:text-ink-3 text-ink-hi text-sm rounded-lg"
               >
                 清除
               </button>
@@ -872,45 +872,45 @@ export default function Settings({
       </div>
 
       {/* VPN Gate dynamic node source */}
-      <div className="bg-gray-800/50 border border-emerald-500/30 rounded-xl p-6">
+      <div className="bg-surface-2/50 border border-emerald-500/30 rounded-xl p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
               <Globe size={20} />
               VPN Gate 节点源
             </h2>
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-ink-2 mt-2">
               自动下载 VPN Gate 的 OpenVPN 节点，可在创建链式代理时按国家聚合为落地节点池。
             </p>
           </div>
           <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${vpnGateConfig.enabled
             ? 'bg-green-500/20 text-green-300'
-            : 'bg-gray-700 text-gray-400'}`}>
+            : 'bg-surface-3 text-ink-2'}`}>
             {vpnGateConfig.enabled ? '自动更新已启用' : '自动更新已停用'}
           </span>
         </div>
 
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-4">
-            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+            <label className="inline-flex items-center gap-2 text-sm text-ink-hi">
               <input
                 type="checkbox"
                 checked={vpnGateConfig.enabled === true}
                 onChange={(event) => saveVpnGateConfig({ enabled: event.target.checked })}
                 disabled={savingVpnGate || refreshingVpnGate}
-                className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-emerald-500 focus:ring-emerald-500"
+                className="h-4 w-4 rounded border-line-strong bg-surface-3 text-emerald-500 focus:ring-emerald-500"
               />
               自动更新
             </label>
 
-            <label className="flex items-center gap-2 text-sm text-gray-300" htmlFor="vpngate-interval">
+            <label className="flex items-center gap-2 text-sm text-ink-hi" htmlFor="vpngate-interval">
               更新间隔
               <select
                 id="vpngate-interval"
                 value={vpnGateConfig.interval_minutes || 60}
                 onChange={(event) => saveVpnGateConfig({ interval_minutes: Number(event.target.value) })}
                 disabled={savingVpnGate || refreshingVpnGate}
-                className="px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+                className="px-2 py-1.5 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm disabled:opacity-50"
               >
                 <option value={15}>15 分钟</option>
                 <option value={30}>30 分钟</option>
@@ -924,29 +924,29 @@ export default function Settings({
             <button
               onClick={refreshVpnGate}
               disabled={refreshingVpnGate || savingVpnGate}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-surface-3 disabled:text-ink-3 text-ink text-sm rounded-lg"
             >
               <RefreshCw size={15} className={refreshingVpnGate ? 'animate-spin' : ''} />
               {refreshingVpnGate ? '更新中...' : '立即更新'}
             </button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
-              <div className="text-xs text-gray-500">当前有效节点</div>
-              <div className="text-white mt-1">{vpnGateConfig.status?.active_node_count ?? 0}</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="rounded-lg bg-surface-3/40 px-3 py-2">
+              <div className="text-xs text-ink-3">当前有效节点</div>
+              <div className="text-ink mt-1">{vpnGateConfig.status?.active_node_count ?? 0}</div>
             </div>
-            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
-              <div className="text-xs text-gray-500">失效节点</div>
-              <div className="text-white mt-1">{vpnGateConfig.status?.stale_node_count ?? 0}</div>
+            <div className="rounded-lg bg-surface-3/40 px-3 py-2">
+              <div className="text-xs text-ink-3">失效节点</div>
+              <div className="text-ink mt-1">{vpnGateConfig.status?.stale_node_count ?? 0}</div>
             </div>
-            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
-              <div className="text-xs text-gray-500">最近成功</div>
-              <div className="text-white mt-1">{formatDate(vpnGateConfig.status?.last_success_at) || '暂无'}</div>
+            <div className="rounded-lg bg-surface-3/40 px-3 py-2">
+              <div className="text-xs text-ink-3">最近成功</div>
+              <div className="text-ink mt-1">{formatDate(vpnGateConfig.status?.last_success_at) || '暂无'}</div>
             </div>
-            <div className="rounded-lg bg-gray-700/40 px-3 py-2">
-              <div className="text-xs text-gray-500">下次更新</div>
-              <div className="text-white mt-1">{formatDate(vpnGateConfig.next_refresh_at) || '未安排'}</div>
+            <div className="rounded-lg bg-surface-3/40 px-3 py-2">
+              <div className="text-xs text-ink-3">下次更新</div>
+              <div className="text-ink mt-1">{formatDate(vpnGateConfig.next_refresh_at) || '未安排'}</div>
             </div>
           </div>
 
@@ -959,14 +959,14 @@ export default function Settings({
       </div>
 
       {/* Location translation providers */}
-      <div className="bg-gray-800/50 border border-purple-500/30 rounded-xl p-6">
+      <div className="bg-surface-2/50 border border-purple-500/30 rounded-xl p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
               <Globe size={20} />
               地点名称翻译 API
             </h2>
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-ink-2 mt-2">
               将 GeoIP 返回的英文国家、地区和城市名称翻译为简体中文。已是中文的结果不会重复请求。
             </p>
           </div>
@@ -976,13 +976,13 @@ export default function Settings({
         </div>
 
         <div className="flex items-center gap-3 mb-4">
-          <label className="text-sm text-gray-300" htmlFor="preferred-translation-provider">首选服务</label>
+          <label className="text-sm text-ink-hi" htmlFor="preferred-translation-provider">首选服务</label>
           <select
             id="preferred-translation-provider"
             value={translationConfig.preferred_provider || 'google'}
             onChange={(event) => savePreferredTranslationProvider(event.target.value)}
             disabled={savingTranslation}
-            className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm disabled:opacity-50"
+            className="px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm disabled:opacity-50"
           >
             {(translationConfig.providers || []).map(provider => (
               <option key={provider.id} value={provider.id}>
@@ -996,12 +996,12 @@ export default function Settings({
           {(translationConfig.providers || []).filter(provider => provider.id === selectedTranslationProviderId).map(provider => {
             const pendingValues = translationInputs[provider.id] || {};
             return (
-              <div key={provider.id} className="p-3 rounded-lg bg-gray-700/40 border border-gray-600">
+              <div key={provider.id} className="p-3 rounded-lg bg-surface-3/40 border border-line-strong">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-white font-medium">{provider.name}</span>
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${provider.configured ? 'bg-green-500/20 text-green-300' : 'bg-gray-600 text-gray-400'}`}>
+                      <span className="text-ink font-medium">{provider.name}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${provider.configured ? 'bg-green-500/20 text-green-300' : 'bg-surface-4 text-ink-2'}`}>
                         {provider.configured ? '已配置' : '未配置'}
                       </span>
                       {provider.id === translationConfig.preferred_provider && (
@@ -1013,14 +1013,14 @@ export default function Settings({
                     <button
                       onClick={() => testTranslationProvider(provider.id)}
                       disabled={!provider.configured || savingTranslation}
-                      className="px-2 py-1 text-xs text-blue-300 hover:bg-gray-600 disabled:text-gray-500 rounded"
+                      className="px-2 py-1 text-xs text-blue-300 hover:bg-surface-4 disabled:text-ink-3 rounded"
                     >
                       测试
                     </button>
                     <button
                       onClick={() => toggleTranslationProvider(provider)}
                       disabled={savingTranslation || (!provider.enabled && !provider.configured)}
-                      className={`px-2 py-1 text-xs rounded ${provider.enabled ? 'text-green-300 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-700'}`}
+                      className={`px-2 py-1 text-xs rounded ${provider.enabled ? 'text-green-300 hover:bg-surface-4' : 'text-ink-2 hover:bg-surface-3'}`}
                     >
                       {provider.enabled ? '已启用' : '已禁用'}
                     </button>
@@ -1032,7 +1032,7 @@ export default function Settings({
                     const isSecret = translationSecretFields.has(fieldName);
                     return (
                       <div key={fieldName}>
-                        <label className="block text-xs text-gray-400 mb-1">
+                        <label className="block text-xs text-ink-2 mb-1">
                           {translationFieldLabels[fieldName] || fieldName}
                         </label>
                         <input
@@ -1047,7 +1047,7 @@ export default function Settings({
                           }))}
                           placeholder={isSecret && provider.has_credentials ? '已配置，留空保持不变' : (provider[fieldName] || '')}
                           autoComplete="new-password"
-                          className="w-full px-2 py-1.5 bg-gray-800 border border-gray-600 rounded text-white text-xs placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                          className="w-full px-2 py-1.5 bg-surface-2 border border-line-strong rounded text-ink text-xs placeholder-ink-4 focus:outline-none focus:border-purple-500"
                           disabled={savingTranslation}
                         />
                       </div>
@@ -1058,7 +1058,7 @@ export default function Settings({
                   <button
                     onClick={() => saveTranslationSettings(provider.id, pendingValues)}
                     disabled={savingTranslation || Object.keys(pendingValues).length === 0}
-                    className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded"
+                    className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-surface-3 disabled:text-ink-3 text-ink rounded"
                   >
                     保存此服务
                   </button>
@@ -1071,13 +1071,13 @@ export default function Settings({
 
       {/* Add/Edit Custom API Modal */}
       {(showAddApiModal || editingApi) && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-scrim/50 flex items-center justify-center z-50">
+          <div className="bg-surface-2 border border-line rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-white">
+              <h3 className="text-lg font-semibold text-ink">
                 {editingApi?.builtin ? `${editingApi.name} 配置` : (editingApi ? '编辑自定义 API' : '添加自定义 API')}
               </h3>
-              <button onClick={closeApiModal} className="text-gray-400 hover:text-white">
+              <button onClick={closeApiModal} className="text-ink-2 hover:text-ink">
                 <X size={20} />
               </button>
             </div>
@@ -1085,22 +1085,22 @@ export default function Settings({
             <div className="space-y-4">
               {/* 1. Name */}
               <div>
-                <label className="block text-sm text-gray-400 mb-1">名称</label>
+                <label className="block text-sm text-ink-2 mb-1">名称</label>
                 <input
                   type="text"
                   value={customApiForm.name}
                   onChange={(e) => setCustomApiForm({...customApiForm, name: e.target.value})}
                   placeholder="例如: ipgeolocation.io"
                   disabled={editingApi?.builtin}
-                  className={`w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  className={`w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
                 />
               </div>
               
               {/* 2. API URL */}
               <div>
-                <label className="block text-sm text-gray-400 mb-1">
+                <label className="block text-sm text-ink-2 mb-1">
                   接口地址
-                  <span className="text-gray-500 ml-1">（用 {'{ip}'} 和 {'{key}'} 作为占位符）</span>
+                  <span className="text-ink-3 ml-1">（用 {'{ip}'} 和 {'{key}'} 作为占位符）</span>
                 </label>
                 <input
                   type="text"
@@ -1108,16 +1108,16 @@ export default function Settings({
                   onChange={(e) => setCustomApiForm({...customApiForm, url: e.target.value})}
                   placeholder="例如: https://api.ipgeolocation.io/ipgeo?apiKey={key}&ip={ip}&lang=cn"
                   disabled={editingApi?.builtin}
-                  className={`w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  className={`w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 font-mono text-sm ${editingApi?.builtin ? 'opacity-60 cursor-not-allowed' : ''}`}
                 />
               </div>
               
               {/* 3. Token/API Key (optional) */}
               {(!editingApi?.builtin || editingApi?.needs_token) && (
                 <div>
-                  <label className="block text-sm text-gray-400 mb-1">
+                  <label className="block text-sm text-ink-2 mb-1">
                     Token / API Key
-                    <span className="text-gray-500 ml-1">（可选，如不需要留空）</span>
+                    <span className="text-ink-3 ml-1">（可选，如不需要留空）</span>
                   </label>
                   <input
                     type="password"
@@ -1125,11 +1125,11 @@ export default function Settings({
                     value={customApiForm.token || ''}
                     onChange={(e) => setCustomApiForm({...customApiForm, token: e.target.value})}
                     placeholder={editingApi?.has_token ? '已配置，留空则不修改' : '如果API需要认证，填入Token或API Key'}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                    className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 font-mono text-sm"
                   />
                   {/* Preview URL - mask the key */}
                   {customApiForm.url && (
-                    <p className="text-xs text-gray-500 mt-1 font-mono break-all">
+                    <p className="text-xs text-ink-3 mt-1 font-mono break-all">
                       预览: {customApiForm.url
                         .replace('{ip}', customApiForm.test_ip || '8.8.8.8')
                         .replace('{key}', (customApiForm.token || editingApi?.has_token) ? '***' : '')
@@ -1141,29 +1141,29 @@ export default function Settings({
               
               {/* 4. Test IP */}
               <div>
-                <label className="block text-sm text-gray-400 mb-1">测试 IP</label>
+                <label className="block text-sm text-ink-2 mb-1">测试 IP</label>
                 <input
                   type="text"
                   value={customApiForm.test_ip || '8.8.8.8'}
                   onChange={(e) => setCustomApiForm({...customApiForm, test_ip: e.target.value})}
                   placeholder="8.8.8.8"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                  className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 font-mono text-sm"
                 />
               </div>
               
               {/* 5. Usage Limit (custom APIs only) */}
               {!editingApi?.builtin && (
                 <div>
-                  <label className="block text-sm text-gray-400 mb-1">
+                  <label className="block text-sm text-ink-2 mb-1">
                     用量限制
-                    <span className="text-gray-500 ml-1">（可选，仅作显示用）</span>
+                    <span className="text-ink-3 ml-1">（可选，仅作显示用）</span>
                   </label>
                   <input
                     type="text"
                     value={customApiForm.limit || ''}
                     onChange={(e) => setCustomApiForm({...customApiForm, limit: e.target.value})}
                     placeholder="例如: 1000次/天 或 30000次/月"
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 text-sm"
+                    className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 text-sm"
                   />
                 </div>
               )}
@@ -1179,8 +1179,8 @@ export default function Settings({
                       </div>
                       {customApiTestResult.raw_response && (
                         <details className="text-xs">
-                          <summary className="text-gray-400 cursor-pointer hover:text-gray-300">查看原始响应</summary>
-                          <pre className="mt-2 p-2 bg-gray-900/50 rounded text-gray-300 overflow-x-auto max-h-40 overflow-y-auto">
+                          <summary className="text-ink-2 cursor-pointer hover:text-ink-hi">查看原始响应</summary>
+                          <pre className="mt-2 p-2 bg-surface/50 rounded text-ink-hi overflow-x-auto max-h-40 overflow-y-auto">
                             {JSON.stringify(customApiTestResult.raw_response, null, 2)}
                           </pre>
                         </details>
@@ -1200,7 +1200,7 @@ export default function Settings({
               <button
                 onClick={testCustomApi}
                 disabled={testingCustomApi || !customApiForm.url}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
               >
                 <Play size={16} className={testingCustomApi ? 'animate-pulse' : ''} />
                 {testingCustomApi ? '测试中...' : '测试'}
@@ -1208,7 +1208,7 @@ export default function Settings({
               <div className="flex gap-2">
                 <button
                   onClick={closeApiModal}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors"
                 >
                   {editingApi?.builtin ? '关闭' : '取消'}
                 </button>
@@ -1220,7 +1220,7 @@ export default function Settings({
                       || (!editingApi?.builtin && (!customApiForm.name || !customApiForm.url || !customApiTestResult?.success))
                       || (editingApi?.id === 'ipinfo' && !customApiForm.token && !editingApi?.has_token)
                     }
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
                     title={!editingApi?.builtin && !customApiTestResult?.success ? '请先测试成功后再保存' : ''}
                   >
                     {savingOnlineConfig ? '保存中...' : '保存'}

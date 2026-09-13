@@ -53,31 +53,31 @@ export default function ConfirmModal({
   const styles = typeStyles[type] || typeStyles.warning;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"
         tabIndex={-1}
-        className="bg-gray-800 rounded-xl p-6 w-full max-w-sm mx-4 border border-gray-700"
+        className="bg-surface-2 rounded-xl p-6 w-full max-w-sm mx-4 border border-line max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-start gap-4">
-          <div className={`p-2 rounded-full bg-gray-700 ${styles.icon}`}>
+          <div className={`p-2 rounded-full bg-surface-3 ${styles.icon}`}>
             <AlertTriangle size={24} />
           </div>
           <div className="flex-1">
-            <h3 id="confirm-modal-title" className="text-lg font-semibold text-white mb-2">{title}</h3>
-            <p className="text-gray-400 text-sm">{message}</p>
+            <h3 id="confirm-modal-title" className="text-lg font-semibold text-ink mb-2">{title}</h3>
+            <p className="text-ink-2 text-sm">{message}</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
+          <button onClick={onClose} className="text-ink-2 hover:text-ink">
             <X size={20} />
           </button>
         </div>
         <div className="flex justify-end gap-2 mt-6">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
           >
             {cancelText}
           </button>
@@ -86,7 +86,7 @@ export default function ConfirmModal({
               onConfirm();
               onClose();
             }}
-            className={`px-4 py-2 text-white rounded-lg transition-colors ${styles.button}`}
+            className={`px-4 py-2 text-ink rounded-lg transition-colors ${styles.button}`}
           >
             {confirmText}
           </button>

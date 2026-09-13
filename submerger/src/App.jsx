@@ -46,17 +46,17 @@ function LoginPage({ hasPassword, onLogin, statusError = false }) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-base flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="bg-gray-900 rounded-2xl p-8 border border-gray-800">
+        <div className="bg-surface rounded-2xl p-8 border border-line-soft">
           <div className="text-center mb-8">
             <div className="w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
               <Lock size={32} className="text-blue-500" />
             </div>
-            <h1 className="text-2xl font-bold text-white">
+            <h1 className="text-2xl font-bold text-ink">
               {statusError ? '无法连接服务器' : (hasPassword ? '登录' : '管理员未初始化')}
             </h1>
-            <p className="text-gray-400 mt-2">
+            <p className="text-ink-2 mt-2">
               {statusError
                 ? '认证状态检查失败，请确认服务正在运行后刷新页面'
                 : (hasPassword ? '请输入密码以继续' : '请在 .env 中配置 INITIAL_ADMIN_PASSWORD，然后重启服务')}
@@ -70,13 +70,13 @@ function LoginPage({ hasPassword, onLogin, statusError = false }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="输入密码"
-                className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 pr-12"
+                className="w-full px-4 py-3 bg-surface-2 border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 pr-12"
                 autoFocus
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-ink-2 hover:text-ink"
               >
                 {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
               </button>
@@ -89,7 +89,7 @@ function LoginPage({ hasPassword, onLogin, statusError = false }) {
             <button
               type="submit"
               disabled={!password.trim() || loading}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+              className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-ink font-medium rounded-lg transition-colors disabled:opacity-50"
             >
               {loading ? '处理中...' : '登录'}
             </button>
@@ -111,6 +111,9 @@ export default function App() {
   const [customNodes, setCustomNodes] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
+  // True while the initial post-login fetch of subscriptions/nodes/users is
+  // in flight; pages show skeletons instead of empty states.
+  const [dataLoading, setDataLoading] = useState(true);
   const dataRequestVersions = useRef({ subscriptions: 0, customNodes: 0, users: 0 });
   const mountedRef = useRef(true);
 
@@ -254,11 +257,18 @@ export default function App() {
   };
 
   const fetchAllData = async (signal) => {
-    await Promise.all([
-      fetchSubscriptions(signal),
-      fetchCustomNodes(signal),
-      fetchUsers(signal),
-    ]);
+    setDataLoading(true);
+    try {
+      await Promise.all([
+        fetchSubscriptions(signal),
+        fetchCustomNodes(signal),
+        fetchUsers(signal),
+      ]);
+    } finally {
+      if (!signal?.aborted) {
+        setDataLoading(false);
+      }
+    }
   };
 
   const fetchSubscriptions = async (signal) => {
@@ -485,8 +495,8 @@ export default function App() {
   // Loading state
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-gray-400">加载中...</div>
+      <div className="min-h-screen bg-base flex items-center justify-center">
+        <div className="text-ink-2">加载中...</div>
       </div>
     );
   }
@@ -503,7 +513,7 @@ export default function App() {
         <Layout onLogout={handleLogout}>
           <Suspense fallback={
             <div className="flex items-center justify-center h-screen">
-              <div className="text-gray-400">加载中...</div>
+              <div className="text-ink-2">加载中...</div>
             </div>
           }>
             <Routes>
@@ -513,6 +523,7 @@ export default function App() {
               <Route path="/subscriptions" element={
                 <Subscriptions
                   subscriptions={subscriptions}
+                  initialLoading={dataLoading}
                   onAdd={addSubscription}
                   onDelete={deleteSubscription}
                   onRefresh={refreshSubscription}
@@ -535,6 +546,7 @@ export default function App() {
             <Route path="/users" element={
               <Users
                 users={users}
+                initialLoading={dataLoading}
                 onAdd={addUser}
                 onDelete={deleteUser}
                 onToggle={toggleUser}
@@ -569,42 +581,42 @@ export default function App() {
       
       {/* Format Selector for User Subscription */}
       {formatSelectorUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setFormatSelectorUser(null)}>
-          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4" onClick={() => setFormatSelectorUser(null)}>
+          <div className="bg-surface-2 rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-white">选择格式</h3>
-              <button onClick={() => setFormatSelectorUser(null)} className="text-gray-400 hover:text-white">
+              <h3 className="text-lg font-bold text-ink">选择格式</h3>
+              <button onClick={() => setFormatSelectorUser(null)} className="text-ink-2 hover:text-ink">
                 <X size={18} />
               </button>
             </div>
             <div className="space-y-2">
               <button
                 onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'v2ray')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">V2Ray</div>
-                <div className="text-xs text-gray-400 mt-1">用于导入 v2rayN 的订阅格式</div>
+                <div className="text-xs text-ink-2 mt-1">用于导入 v2rayN 的订阅格式</div>
               </button>
               <button
                 onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'clash')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">Clash</div>
-                <div className="text-xs text-gray-400 mt-1">标准Clash配置格式</div>
+                <div className="text-xs text-ink-2 mt-1">标准Clash配置格式</div>
               </button>
               <button
                 onClick={() => copyUserSubUrlWithFormat(formatSelectorUser, 'singbox')}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">Sing-box</div>
-                <div className="text-xs text-gray-400 mt-1">Sing-box JSON 配置格式</div>
+                <div className="text-xs text-ink-2 mt-1">Sing-box JSON 配置格式</div>
               </button>
               <button
                 onClick={() => setShowUserSocksExportModal(true)}
-                className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-left"
+                className="w-full px-4 py-3 bg-surface-3 hover:bg-surface-4 text-ink rounded-lg transition-colors text-left"
               >
                 <div className="font-medium">SOCKS</div>
-                <div className="text-xs text-gray-400 mt-1">所有节点自动分配端口</div>
+                <div className="text-xs text-ink-2 mt-1">所有节点自动分配端口</div>
               </button>
             </div>
           </div>

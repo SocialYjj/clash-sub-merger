@@ -116,7 +116,7 @@ export const getNodeInvalidReasonLabel = (reason) => {
 
 // Latency color helper
 export const getLatencyColor = (latency) => {
-  if (latency === null || latency === undefined) return 'text-gray-500';
+  if (latency === null || latency === undefined) return 'text-ink-3';
   if (latency < 100) return 'text-green-400';
   if (latency < 200) return 'text-lime-400';
   if (latency < 500) return 'text-yellow-400';
@@ -130,7 +130,7 @@ export const getLatencyBadge = (latency, error) => {
   if (latency === -2) return { text: '失败', color: 'bg-red-500/20 text-red-400' };  // Error
   if (latency === -1) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Timeout - red
   if (latency === null) return { text: '超时', color: 'bg-red-500/20 text-red-400' };  // Legacy timeout - red
-  if (latency === undefined) return { text: '未测', color: 'bg-gray-500/20 text-gray-400' };
+  if (latency === undefined) return { text: '未测', color: 'bg-ink-3/20 text-ink-2' };
   if (latency < 200) return { text: '优秀', color: 'bg-green-500/20 text-green-400' };
   if (latency < 500) return { text: '良好', color: 'bg-lime-500/20 text-lime-400' };
   if (latency < 1000) return { text: '一般', color: 'bg-yellow-500/20 text-yellow-400' };
@@ -209,6 +209,6 @@ export const getMetadataStatusClass = (status, hasValue = false) => {
   if (hasValue) return '';
   if (status === 'failed') return 'text-red-400';
   if (status === 'not_configured') return 'text-amber-400';
-  if (status === 'no_data' || status === 'success') return 'text-gray-500';
-  return 'text-gray-500';
+  if (status === 'no_data' || status === 'success') return 'text-ink-3';
+  return 'text-ink-3';
 };

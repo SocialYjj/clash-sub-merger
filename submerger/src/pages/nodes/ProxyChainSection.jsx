@@ -439,16 +439,16 @@ export default function ProxyChainSection({
   return (
     <>
       {showChainModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-scrim/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface-2 border border-line rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
-              <h2 className="text-lg font-medium text-white">
+            <div className="flex items-center justify-between p-4 border-b border-line">
+              <h2 className="text-lg font-medium text-ink">
                 {editingChain ? '编辑链式代理' : '添加链式代理'}
               </h2>
               <button
                 onClick={closeChainModal}
-                className="p-1 text-gray-400 hover:text-white transition-colors"
+                className="p-1 text-ink-2 hover:text-ink transition-colors"
               >
                 <X size={20} />
               </button>
@@ -458,29 +458,29 @@ export default function ProxyChainSection({
             <div className="p-4 space-y-4">
               {/* Name Input */}
               <div>
-                <label className="block text-sm text-gray-400 mb-1">名称</label>
+                <label className="block text-sm text-ink-2 mb-1">名称</label>
                 <input
                   type="text"
                   value={chainName}
                   onChange={(e) => setChainName(e.target.value)}
                   placeholder="例如：美国家宽链路"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-surface border border-line rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               {/* Chain Rows - Vertical Layout */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm text-gray-400">链路配置</label>
+                  <label className="text-sm text-ink-2">链路配置</label>
                 </div>
 
                 <div className="space-y-4">
                   {chainRows.map((row, rowIndex) => (
-                    <div key={rowIndex} className="bg-gray-900/50 rounded-lg p-3">
+                    <div key={rowIndex} className="bg-surface/50 rounded-lg p-3">
 
                       {/* Vertical Node Selectors */}
                       <div className="space-y-2">
-                        <div className="text-sm text-gray-500 text-center">我</div>
+                        <div className="text-sm text-ink-3 text-center">我</div>
                         
                         {row.map((node, colIndex) => {
                           const isLast = colIndex === row.length - 1;
@@ -492,15 +492,15 @@ export default function ProxyChainSection({
                           return (
                             <React.Fragment key={colIndex}>
                               <div className="flex justify-center">
-                                <ArrowRight size={16} className="text-gray-600 rotate-90" />
+                                <ArrowRight size={16} className="text-ink-4 rotate-90" />
                               </div>
                               <div className="relative space-y-2">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-500">类型</span>
+                                  <span className="text-xs text-ink-3">类型</span>
                                   <select
                                     value={cellType}
                                     onChange={(e) => updateChainCellType(rowIndex, colIndex, e.target.value)}
-                                    className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white focus:outline-none focus:border-blue-500"
+                                    className="px-2 py-1 bg-surface-2 border border-line rounded text-xs text-ink focus:outline-none focus:border-blue-500"
                                   >
                                     <option value="node">节点</option>
                                     <option value="group">{groupLabel}</option>
@@ -519,12 +519,12 @@ export default function ProxyChainSection({
                                       value={node?.group_name || ''}
                                       onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_name: e.target.value })}
                                       placeholder={isLast ? '落地池名称' : '中转池名称'}
-                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                      className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                                     />
                                     <select
                                       value={node?.group_strategy || 'load-balance'}
                                       onChange={(e) => updateChainGroup(rowIndex, colIndex, { group_strategy: e.target.value })}
-                                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                      className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                                     >
                                       <option value="select">手动选择</option>
                                       <option value="load-balance">负载均衡(随机/轮询)</option>
@@ -536,7 +536,7 @@ export default function ProxyChainSection({
                                       <select
                                         value={node?.lb_strategy || 'round-robin'}
                                         onChange={(e) => updateChainGroup(rowIndex, colIndex, { lb_strategy: e.target.value })}
-                                        className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                        className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                                       >
                                         <option value="round-robin">轮询 (round-robin)</option>
                                         <option value="consistent-hashing">同目标固定 (consistent-hashing)</option>
@@ -549,7 +549,7 @@ export default function ProxyChainSection({
                                         <select
                                           value={node?.vpngate_country_code || ''}
                                           onChange={(e) => updateVpngateCountry(rowIndex, colIndex, e.target.value)}
-                                          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                          className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                                         >
                                           <option value="">全部国家（{vpngatePool.active_node_count ?? 0} 个）</option>
                                           {vpngatePools.map(pool => (
@@ -590,15 +590,15 @@ export default function ProxyChainSection({
                                       if (!isEditing) {
                                         return (
                                           <div className="space-y-2">
-                                            <div className="text-xs text-gray-500">已选 {selectedNames.length} 个</div>
+                                            <div className="text-xs text-ink-3">已选 {selectedNames.length} 个</div>
                                             {selectedNames.length > 0 ? (
                                               <div className="flex flex-wrap gap-1">
                                                 {selectedNames.map((name, i) => (
-                                                  <span key={`${name}-${i}`} className="px-2 py-0.5 bg-gray-700 text-gray-200 rounded text-xs">{name}</span>
+                                                  <span key={`${name}-${i}`} className="px-2 py-0.5 bg-surface-3 text-ink-hi rounded text-xs">{name}</span>
                                                 ))}
                                               </div>
                                             ) : (
-                                              <div className="text-xs text-gray-500">尚未选择组内节点</div>
+                                              <div className="text-xs text-ink-3">尚未选择组内节点</div>
                                             )}
                                             <button
                                               type="button"
@@ -613,7 +613,7 @@ export default function ProxyChainSection({
 
                                       return (
                                         <div className="space-y-2">
-                                          <div className="flex items-center justify-between text-xs text-gray-500">
+                                          <div className="flex items-center justify-between text-xs text-ink-3">
                                             <span>点击选择，已选 {draftKeys.length} 个</span>
                                             <div className="flex gap-2">
                                               <button
@@ -626,7 +626,7 @@ export default function ProxyChainSection({
                                               <button
                                                 type="button"
                                                 onClick={() => setGroupDraftKeys(rowIndex, colIndex, [])}
-                                                className="text-gray-400 hover:text-gray-300"
+                                                className="text-ink-2 hover:text-ink-hi"
                                               >
                                                 清空
                                               </button>
@@ -636,9 +636,9 @@ export default function ProxyChainSection({
                                             value={searchValue}
                                             onChange={(e) => setGroupSearch(prev => ({ ...prev, [cellKey]: e.target.value }))}
                                             placeholder="搜索节点/订阅"
-                                            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                                            className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500"
                                           />
-                                          <div className="max-h-40 overflow-y-auto border border-gray-700 rounded-lg bg-gray-800">
+                                          <div className="max-h-40 overflow-y-auto border border-line rounded-lg bg-surface-2">
                                             {filteredNodes.map(n => {
                                               const key = makeChainNodeKey(n.sub_id, n.node_id, n.node_name ?? n.display_name ?? n.name, n.node_index);
                                               const checked = draftKeys.includes(key);
@@ -646,16 +646,16 @@ export default function ProxyChainSection({
                                                 <div
                                                   key={key}
                                                   onClick={() => toggleGroupDraft(rowIndex, colIndex, key)}
-                                                  className="px-3 py-2 text-sm text-white hover:bg-gray-700/50 cursor-pointer flex items-center justify-between"
+                                                  className="px-3 py-2 text-sm text-ink hover:bg-surface-3/50 cursor-pointer flex items-center justify-between"
                                                 >
                                                   <span className="truncate">{getChainNodeLabel(n)}</span>
-                                                  <span className={checked ? 'text-blue-400' : 'text-gray-600'}>{checked ? '已选' : ''}</span>
+                                                  <span className={checked ? 'text-blue-400' : 'text-ink-4'}>{checked ? '已选' : ''}</span>
                                                 </div>
                                               );
                                             })}
                                           </div>
                                           <div className="flex items-center justify-between">
-                                            <span className="text-xs text-gray-500">选择组内节点，系统会自动生成链路组</span>
+                                            <span className="text-xs text-ink-3">选择组内节点，系统会自动生成链路组</span>
                                             <button
                                               type="button"
                                               onClick={() => confirmGroupDraft(rowIndex, colIndex)}
@@ -672,7 +672,7 @@ export default function ProxyChainSection({
                                   <select
                                     value={getChainNodeKey(node)}
                                     onChange={(e) => updateChainNode(rowIndex, colIndex, e.target.value)}
-                                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 appearance-none"
+                                    className="w-full px-3 py-2 bg-surface-2 border border-line rounded-lg text-ink text-sm focus:outline-none focus:border-blue-500 appearance-none"
                                   >
                                     <option value="">选择节点</option>
                                     {/* Use flat list like node management page */}
@@ -690,7 +690,7 @@ export default function ProxyChainSection({
                                 {row.length > 2 && (
                                   <button
                                     onClick={() => removeChainColumn(rowIndex, colIndex)}
-                                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-400"
+                                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-ink rounded-full text-xs flex items-center justify-center hover:bg-red-400"
                                   >
                                     ×
                                   </button>
@@ -701,9 +701,9 @@ export default function ProxyChainSection({
                         })}
 
                         <div className="flex justify-center">
-                          <ArrowRight size={16} className="text-gray-600 rotate-90" />
+                          <ArrowRight size={16} className="text-ink-4 rotate-90" />
                         </div>
-                        <div className="text-sm text-gray-500 text-center">服务</div>
+                        <div className="text-sm text-ink-3 text-center">服务</div>
 
                         <button
                           onClick={() => addChainColumn(rowIndex)}
@@ -714,7 +714,7 @@ export default function ProxyChainSection({
                       </div>
 
                       {/* Preview */}
-                      <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
+                      <div className="mt-3 pt-2 border-t border-line text-xs text-ink-3">
                         预览: 我 → {row.map((n, colIndex) => {
                           if (n?.type === 'group') {
                             const groupName = n?.group_name || '落地池';
@@ -741,16 +741,16 @@ export default function ProxyChainSection({
             </div>
 
             {/* Modal Footer */}
-            <div className="flex items-center justify-end gap-2 p-4 border-t border-gray-700">
+            <div className="flex items-center justify-end gap-2 p-4 border-t border-line">
               <button
                 onClick={closeChainModal}
-                className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={saveChain}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
               >
                 保存
               </button>

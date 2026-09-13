@@ -52,15 +52,15 @@ export default function LazyImage({
     <div ref={imgRef} className={`relative ${className}`} {...props}>
       {/* Placeholder while loading */}
       {!isLoaded && !hasError && (
-        <div className="absolute inset-0 bg-gray-800 animate-pulse rounded">
+        <div className="absolute inset-0 bg-surface-2 animate-pulse rounded">
           {placeholder}
         </div>
       )}
 
       {/* Error state */}
       {hasError && (
-        <div className="absolute inset-0 bg-gray-800 flex items-center justify-center rounded">
-          <span className="text-gray-500 text-sm">加载失败</span>
+        <div className="absolute inset-0 bg-surface-2 flex items-center justify-center rounded">
+          <span className="text-ink-3 text-sm">加载失败</span>
         </div>
       )}
 

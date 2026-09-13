@@ -95,8 +95,8 @@ export default function CronEditor({ value, onChange }) {
     <div className="space-y-3">
       {/* Current status */}
       <div className="flex items-center gap-2">
-        <Clock size={16} className="text-gray-400" />
-        <span className="text-sm text-gray-300">
+        <Clock size={16} className="text-ink-2" />
+        <span className="text-sm text-ink-hi">
           {value ? `已设置: ${value}` : '未设置定时更新'}
         </span>
       </div>
@@ -109,7 +109,7 @@ export default function CronEditor({ value, onChange }) {
           onChange={handleInputChange}
           onBlur={handleBlur}
           placeholder="分 时 日 月 周 (例: 0 */6 * * *)"
-          className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          className="flex-1 px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink text-sm placeholder-ink-3 focus:outline-none focus:border-blue-500"
         />
         {cronInput && (
           <button
@@ -124,7 +124,7 @@ export default function CronEditor({ value, onChange }) {
       </div>
 
       {/* Format hint */}
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-ink-3">
         格式: 分钟(0-59) 小时(0-23) 日(1-31) 月(1-12) 周(0-6)
       </p>
 
@@ -141,8 +141,8 @@ export default function CronEditor({ value, onChange }) {
       )}
 
       {/* Common examples */}
-      <div className="text-xs text-gray-500 space-y-1">
-        <div className="font-medium text-gray-400">常用示例:</div>
+      <div className="text-xs text-ink-3 space-y-1">
+        <div className="font-medium text-ink-2">常用示例:</div>
         <div className="grid grid-cols-2 gap-1">
           <span><code className="text-cyan-400">0 */6 * * *</code> 每6小时</span>
           <span><code className="text-cyan-400">0 0 * * *</code> 每天凌晨</span>

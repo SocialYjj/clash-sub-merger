@@ -97,11 +97,11 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
     );
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-subscription-title" tabIndex={-1} className="bg-gray-800 rounded-xl p-6 w-full max-w-lg mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-subscription-title" tabIndex={-1} className="bg-surface-2 rounded-xl p-6 w-full max-w-lg mx-4 border border-line max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between mb-4">
-                    <h2 id="add-subscription-title" className="text-xl font-bold text-white">添加订阅</h2>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white">
+                    <h2 id="add-subscription-title" className="text-xl font-bold text-ink">添加订阅</h2>
+                    <button onClick={onClose} className="text-ink-2 hover:text-ink">
                         <X size={20} />
                     </button>
                 </div>
@@ -113,7 +113,7 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                         className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-all ${
                             type === 'url'
                                 ? 'bg-blue-600/20 border-blue-500 text-blue-400'
-                                : 'bg-gray-700/50 border-gray-600 text-gray-400 hover:border-gray-500'
+                                : 'bg-surface-3/50 border-line-strong text-ink-2 hover:border-ink-3'
                         }`}
                     >
                         <Link size={18} />
@@ -124,7 +124,7 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                         className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-all ${
                             type === 'local'
                                 ? 'bg-purple-600/20 border-purple-500 text-purple-400'
-                                : 'bg-gray-700/50 border-gray-600 text-gray-400 hover:border-gray-500'
+                                : 'bg-surface-3/50 border-line-strong text-ink-2 hover:border-ink-3'
                         }`}
                     >
                         <FileText size={18} />
@@ -135,26 +135,26 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                 <div className="space-y-4">
                     {/* Name input */}
                     <div>
-                        <label className="block text-sm text-gray-400 mb-1">订阅名称</label>
+                        <label className="block text-sm text-ink-2 mb-1">订阅名称</label>
                         <input
                             type="text"
                             value={name}
                             onChange={(e) => setName(e.target.value)}
                             placeholder="例如：我的机场"
-                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
                         />
                     </div>
 
                     {/* URL input (for URL type) */}
                     {type === 'url' && (
                         <div>
-                            <label className="block text-sm text-gray-400 mb-1">订阅地址</label>
+                            <label className="block text-sm text-ink-2 mb-1">订阅地址</label>
                             <input
                                 type="text"
                                 value={url}
                                 onChange={(e) => setUrl(e.target.value)}
                                 placeholder="https://..."
-                                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
                             />
                         </div>
                     )}
@@ -163,16 +163,16 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                     {type === 'local' && (
                         <>
                             <div>
-                                <label className="block text-sm text-gray-400 mb-1">
+                                <label className="block text-sm text-ink-2 mb-1">
                                     订阅内容
-                                    <span className="text-gray-500 ml-2">(自动识别 YAML / V2Ray / 节点链接)</span>
+                                    <span className="text-ink-3 ml-2">(自动识别 YAML / V2Ray / 节点链接)</span>
                                 </label>
                                 <textarea
                                     value={content}
                                     onChange={(e) => setContent(e.target.value)}
                                     placeholder="粘贴订阅内容..."
                                     rows={8}
-                                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                                    className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 font-mono text-sm"
                                 />
                             </div>
 
@@ -200,14 +200,14 @@ export default function AddSubscriptionModal({ onClose, onAdd, onRefreshList, sh
                 <div className="flex justify-end gap-2 mt-6">
                     <button
                         onClick={onClose}
-                        className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                        className="px-4 py-2 text-ink-2 hover:text-ink transition-colors"
                     >
                         取消
                     </button>
                     <button
                         onClick={handleAdd}
                         disabled={!isValid || loading}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50"
                     >
                         {loading ? '添加中...' : '添加'}
                     </button>

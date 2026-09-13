@@ -83,26 +83,26 @@ export default function SubscriptionProxySection({ showToast }) {
   };
 
   return (
-    <div className="bg-gray-800/50 border border-gray-700/60 ring-1 ring-white/5 rounded-xl p-6 shadow-lg shadow-black/20">
-      <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-surface-2/50 border border-line/60 ring-1 ring-ink/5 rounded-xl p-6 shadow-lg shadow-black/20">
+      <h2 className="text-lg font-semibold text-ink mb-4 flex items-center gap-2">
         <Shield size={20} className="text-blue-400" />
         订阅获取代理
       </h2>
 
       {loading ? (
-        <div className="text-center py-4 text-gray-500 text-sm">加载中...</div>
+        <div className="text-center py-4 text-ink-3 text-sm">加载中...</div>
       ) : (
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-2">代理地址</label>
+            <label className="block text-sm text-ink-2 mb-2">代理地址</label>
             <input
               type="text"
               value={proxyUrl}
               onChange={(e) => setProxyUrl(e.target.value)}
               placeholder="socks5://warp:1080 或 http://proxy:8080"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2 bg-surface-3 border border-line-strong rounded-lg text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-ink-3 mt-1">
               支持 socks5://、http:// 和 https://
             </p>
           </div>
@@ -111,7 +111,7 @@ export default function SubscriptionProxySection({ showToast }) {
             <button
               onClick={saveSetting}
               disabled={saving}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
             >
               {saving ? '保存中...' : '保存'}
             </button>
@@ -119,7 +119,7 @@ export default function SubscriptionProxySection({ showToast }) {
               <button
                 onClick={clearSetting}
                 disabled={saving}
-                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-ink rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
               >
                 清除
               </button>
@@ -127,7 +127,7 @@ export default function SubscriptionProxySection({ showToast }) {
             <button
               onClick={testProxy}
               disabled={testing || !proxyUrl}
-              className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              className="px-4 py-2 bg-green-600 hover:bg-green-500 text-ink rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
             >
               {testing ? '测试中...' : '测试代理'}
             </button>
