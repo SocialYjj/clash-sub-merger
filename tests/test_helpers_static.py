@@ -52,7 +52,8 @@ class HelpersStaticTests(unittest.TestCase):
             "core/config.py",
             "helpers.py",
             "services/region_history.py",
-            "geoip_service.py",
+            "geoip_service/cache.py",
+            "geoip_service/custom_api.py",
             "server.py",
         ):
             with self.subTest(file=path):
