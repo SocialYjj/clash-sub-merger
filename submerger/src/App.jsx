@@ -170,6 +170,26 @@ export default function App() {
     setConfirmModal({ open: false, title: '', message: '', type: 'warning', onConfirm: null });
   };
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (confirmModal.open) {
+          closeConfirm();
+        }
+      } else if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+        const searchInput = document.querySelector('input[placeholder*="搜索"]') ||
+                            document.querySelector('input[type="text"]');
+        if (searchInput) {
+          e.preventDefault();
+          searchInput.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [confirmModal.open]);
+
   // Check auth status on mount
   useEffect(() => {
     const controller = new AbortController();

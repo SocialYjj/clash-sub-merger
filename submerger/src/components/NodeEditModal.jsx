@@ -412,6 +412,13 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
 
                     <Field label="别名 (remarks)">
                         <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} disabled={!isCustomNode} className={inputClass(!isCustomNode)} />
+                        {Boolean(node?.name && formData.name !== node.name) && (
+                            <div className="mt-1.5 flex items-center gap-2 text-xs bg-gray-900/60 p-2 rounded-lg border border-gray-700/60 font-mono">
+                                <span className="text-red-400 line-through truncate max-w-[45%]">{node.name}</span>
+                                <span className="text-gray-500">→</span>
+                                <span className="text-emerald-400 font-medium truncate max-w-[45%]">{formData.name || '(空)'}</span>
+                            </div>
+                        )}
                     </Field>
                     
                     <Field label="地址 (address)">

@@ -67,6 +67,26 @@ export default function SubscriptionCard({
                                 >
                                     {sub.enabled !== false ? '启用' : '禁用'}
                                 </button>
+                                {sub.enabled === false ? (
+                                    <span className="px-2 py-0.5 text-[11px] rounded bg-gray-700/50 text-gray-400 border border-gray-600/30">
+                                        已停用
+                                    </span>
+                                ) : sub.last_error ? (
+                                    <span className="px-2 py-0.5 text-[11px] rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1 font-medium" title={sub.last_error}>
+                                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                                        同步异常
+                                    </span>
+                                ) : (sub.node_count || 0) === 0 ? (
+                                    <span className="px-2 py-0.5 text-[11px] rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 font-medium">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                        无节点
+                                    </span>
+                                ) : (
+                                    <span className="px-2 py-0.5 text-[11px] rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 font-medium">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                        健康
+                                    </span>
+                                )}
                             </div>
                         </div>
                     </div>

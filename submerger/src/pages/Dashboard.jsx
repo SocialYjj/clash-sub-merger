@@ -1,35 +1,123 @@
 import React, { useState, useEffect } from 'react';
 import request from '../utils/request';
 import {
-  Server, Users, Activity, Router,
+  Server, Users, Router,
   Globe, Zap, Database
 } from 'lucide-react';
-
 
 const API_BASE = '/api';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
-const StatCard = ({ title, value, subtext, icon: Icon, color, gradient }) => (
-  <div className={`relative overflow-hidden rounded-2xl p-6 border border-gray-700/50 bg-gray-800/40 backdrop-blur-sm group hover:border-${color}-500/50 transition-all duration-300`}>
-    <div className={`absolute -right-6 -top-6 w-32 h-32 bg-${color}-500/10 rounded-full blur-3xl group-hover:bg-${color}-500/20 transition-all`} />
+const COLOR_STYLES = {
+  blue: {
+    borderHover: 'hover:border-blue-500/50',
+    glowBg: 'bg-blue-500/10 group-hover:bg-blue-500/20',
+    iconBg: 'bg-blue-500/20 text-blue-400',
+    subtext: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  },
+  cyan: {
+    borderHover: 'hover:border-cyan-500/50',
+    glowBg: 'bg-cyan-500/10 group-hover:bg-cyan-500/20',
+    iconBg: 'bg-cyan-500/20 text-cyan-400',
+    subtext: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  },
+  purple: {
+    borderHover: 'hover:border-purple-500/50',
+    glowBg: 'bg-purple-500/10 group-hover:bg-purple-500/20',
+    iconBg: 'bg-purple-500/20 text-purple-400',
+    subtext: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+  },
+  orange: {
+    borderHover: 'hover:border-orange-500/50',
+    glowBg: 'bg-orange-500/10 group-hover:bg-orange-500/20',
+    iconBg: 'bg-orange-500/20 text-orange-400',
+    subtext: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  },
+};
 
-    <div className="relative z-10">
-      <div className="flex items-center justify-between mb-4">
-        <div className={`p-3 rounded-xl bg-${color}-500/20 text-${color}-400 group-hover:scale-110 transition-transform`}>
-          <Icon size={24} />
+const StatCard = ({ title, value, subtext, icon: Icon, color = 'blue', children }) => {
+  const styles = COLOR_STYLES[color] || COLOR_STYLES.blue;
+  return (
+    <div className={`relative overflow-hidden rounded-2xl p-6 border border-gray-700/50 bg-gray-800/40 backdrop-blur-sm group ${styles.borderHover} ring-1 ring-white/5 transition-all duration-300 shadow-lg shadow-black/20 hover:shadow-black/40`}>
+      <div className={`absolute -right-6 -top-6 w-32 h-32 ${styles.glowBg} rounded-full blur-3xl transition-all`} />
+
+      <div className="relative z-10">
+        <div className="flex items-center justify-between mb-4">
+          <div className={`p-3 rounded-xl ${styles.iconBg} group-hover:scale-110 transition-transform`}>
+            <Icon size={24} />
+          </div>
+          {subtext && (
+            <span className={`text-xs font-medium px-2 py-1 rounded-full border ${styles.subtext}`}>
+              {subtext}
+            </span>
+          )}
         </div>
-        {subtext && (
-          <span className={`text-xs font-medium px-2 py-1 rounded-full bg-${color}-500/10 text-${color}-400 border border-${color}-500/20`}>
-            {subtext}
-          </span>
-        )}
-      </div>
 
-      <div className="space-y-1">
-        <h3 className="text-gray-400 text-sm font-medium">{title}</h3>
-        <div className="text-3xl font-bold text-white tracking-tight">
-          {value}
+        <div className="space-y-1">
+          <h3 className="text-gray-400 text-sm font-medium">{title}</h3>
+          <div className="text-3xl font-bold text-white tracking-tight">
+            {value}
+          </div>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DashboardSkeleton = () => (
+  <div className="h-[calc(100vh-80px)] overflow-y-auto space-y-6 animate-pulse p-1">
+    <div className="flex items-center justify-between mb-8">
+      <div className="space-y-2">
+        <div className="h-8 w-32 bg-gray-800 rounded-lg" />
+        <div className="h-4 w-48 bg-gray-800/60 rounded" />
+      </div>
+      <div className="h-8 w-36 bg-gray-800/50 rounded-lg hidden sm:block" />
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} className="h-36 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
+          <div className="flex justify-between items-center">
+            <div className="w-12 h-12 rounded-xl bg-gray-700/40" />
+            <div className="w-16 h-5 rounded-full bg-gray-700/30" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 w-16 bg-gray-700/30 rounded" />
+            <div className="h-7 w-24 bg-gray-700/50 rounded" />
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="h-80 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
+        <div className="h-6 w-32 bg-gray-700/40 rounded" />
+        <div className="space-y-3 pt-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="space-y-2">
+              <div className="flex justify-between">
+                <div className="h-4 w-20 bg-gray-700/30 rounded" />
+                <div className="h-4 w-10 bg-gray-700/30 rounded" />
+              </div>
+              <div className="h-2 w-full bg-gray-700/20 rounded-full" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="h-80 rounded-2xl border border-gray-800 bg-gray-800/30 p-6 space-y-4">
+        <div className="h-6 w-32 bg-gray-700/40 rounded" />
+        <div className="space-y-3 pt-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="space-y-2">
+              <div className="flex justify-between">
+                <div className="h-4 w-20 bg-gray-700/30 rounded" />
+                <div className="h-4 w-10 bg-gray-700/30 rounded" />
+              </div>
+              <div className="h-2 w-full bg-gray-700/20 rounded-full" />
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -90,11 +178,7 @@ export default function Dashboard({ showToast }) {
   }));
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin text-blue-500"><Activity size={32} /></div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   return (
@@ -141,40 +225,27 @@ export default function Dashboard({ showToast }) {
           icon={Users}
           color="purple"
         />
-        <div className="relative overflow-hidden rounded-2xl p-6 border border-gray-700/50 bg-gray-800/40 backdrop-blur-sm group hover:border-orange-500/50 transition-all duration-300">
-          <div className="absolute -right-6 -top-6 w-32 h-32 bg-orange-500/10 rounded-full blur-3xl group-hover:bg-orange-500/20 transition-all" />
-
-          <div className="relative z-10">
-            <div className="flex items-center justify-between mb-4">
-              <div className="p-3 rounded-xl bg-orange-500/20 text-orange-400 group-hover:scale-110 transition-transform">
-                <Zap size={24} />
-              </div>
-              <span className="text-xs font-medium px-2 py-1 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                最优节点
-              </span>
-            </div>
-
-            <div className="space-y-1">
-              <h3 className="text-gray-400 text-sm font-medium">最低延迟</h3>
-              <div className="text-3xl font-bold text-white tracking-tight">
-                {overview.best_node ? `${overview.best_node.latency} ms` : '--'}
-              </div>
-              {overview.best_node && (
-                <p className="text-xs text-orange-400 truncate mt-2" title={overview.best_node.name}>
-                  {overview.best_node.name.length > 20
-                    ? overview.best_node.name.substring(0, 20) + '...'
-                    : overview.best_node.name}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+        <StatCard
+          title="最低延迟"
+          value={overview.best_node ? `${overview.best_node.latency} ms` : '--'}
+          subtext="最优节点"
+          icon={Zap}
+          color="orange"
+        >
+          {overview.best_node ? (
+            <p className="text-xs text-orange-400 truncate mt-2 font-medium" title={overview.best_node.name}>
+              {overview.best_node.name}
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 mt-2">暂无测速数据</p>
+          )}
+        </StatCard>
       </div>
 
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Country Distribution */}
-        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm">
+        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-white/5">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400">
@@ -188,6 +259,9 @@ export default function Dashboard({ showToast }) {
           <div className="space-y-4">
             {(() => {
               const totalNodes = countryChartData.reduce((sum, c) => sum + c.value, 0);
+              if (totalNodes === 0) {
+                return <div className="text-center py-8 text-gray-500 text-sm">暂无节点地区数据</div>;
+              }
               return countryChartData.map((entry, index) => {
                 const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
                 return (
@@ -221,7 +295,7 @@ export default function Dashboard({ showToast }) {
         </div>
 
         {/* Protocol Distribution */}
-        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm">
+        <div className="bg-gray-800/40 border border-gray-700/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-white/5">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-green-500/20 rounded-lg text-green-400">
@@ -232,40 +306,42 @@ export default function Dashboard({ showToast }) {
           </div>
 
           <div className="space-y-3">
-            {protocolData.map((entry, index) => {
-              const totalNodes = protocolData.reduce((sum, p) => sum + p.value, 0);
-              const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
-              return (
-                <div key={index} className="group">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                      <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+            {protocolData.length === 0 ? (
+              <div className="text-center py-8 text-gray-500 text-sm">暂无节点协议数据</div>
+            ) : (
+              protocolData.map((entry, index) => {
+                const totalNodes = protocolData.reduce((sum, p) => sum + p.value, 0);
+                const percentage = totalNodes ? ((entry.value / totalNodes) * 100).toFixed(1) : 0;
+                return (
+                  <div key={index} className="group">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                        <span className="text-sm text-gray-300 font-medium">{entry.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{percentage}%</span>
+                        <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
+                          {entry.value}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">{percentage}%</span>
-                      <span className="text-xs font-mono text-gray-500 bg-gray-800 px-2 py-1 rounded">
-                        {entry.value}
-                      </span>
+                    <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        style={{
+                          width: `${percentage}%`,
+                          backgroundColor: COLORS[index % COLORS.length]
+                        }}
+                      />
                     </div>
                   </div>
-                  <div className="h-2 bg-gray-700/50 rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-500 ease-out"
-                      style={{
-                        width: `${percentage}%`,
-                        backgroundColor: COLORS[index % COLORS.length]
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
       </div>
-
-
-    </div >
+    </div>
   );
 }
