@@ -202,7 +202,7 @@ const NodeTrendChart = ({ history }) => {
     };
   }, []);
 
-  return <div ref={chartRef} className="w-full h-64" />;
+  return <div ref={chartRef} className="w-full min-w-0 h-64" />;
 };
 
 const DashboardSkeleton = () => (  <div className="h-[calc(100vh-80px)] overflow-y-auto space-y-6 animate-pulse p-1">
@@ -350,7 +350,7 @@ export default function Dashboard({ showToast }) {
       </div>
 
       {/* Node Trend */}
-      <div className="bg-surface-2/40 border border-line/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-ink/5">
+      <div className="bg-surface-2/40 border border-line/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-ink/5 overflow-hidden min-w-0">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-purple-500/20 rounded-lg text-purple-400">
