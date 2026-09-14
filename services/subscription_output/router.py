@@ -167,6 +167,32 @@ def create_subscription_output_router(
             # Priority: user's sub_name > admin_token's sub_name > global sub_name
             sub_name = resolve_sub_name(auth=auth, user_info=user_info, admin_token_info=admin_token_info)
 
+            # V2Ray/v2rayN format exports standalone leaf nodes as a Base64-encoded
+            # share URI list. It does not output Clash proxy groups, dialer-proxy
+            # chains, or transit pools (which cannot be represented without losing
+            # routing semantics). For admin requests (user_allocations is None),
+            # short-circuit here to avoid heavy chain/pool expansion and prevent
+            # client timeouts on low-spec servers.
+            if format == "v2ray" and user_allocations is None:
+                total_upload, total_download, total_traffic, total_expire = compute_traffic_totals(enabled_subs)
+                render_context = RenderContext(
+                    sub_name=sub_name,
+                    user_info=user_info,
+                    admin_token_info=admin_token_info,
+                    auth=auth,
+                    total_upload=total_upload,
+                    total_download=total_download,
+                    total_traffic=total_traffic,
+                    total_expire=total_expire,
+                )
+                return render_v2ray_response(
+                    proxies=proxies,
+                    user_allocations=None,
+                    chain_dependency_names=set(),
+                    ctx=render_context,
+                    logger=logger,
+                )
+
             # Generate traffic info nodes for each subscription
             traffic_info_nodes, traffic_info_names = build_traffic_info_nodes(enabled_subs)
 
@@ -526,9 +552,7 @@ def create_subscription_output_router(
                 total_expire=total_expire,
             )
 
-            # V2Ray/v2rayN subscription output. The response is still the
-            # standard Base64-encoded URI list expected by v2rayN; ``v2ray``
-            # makes that protocol choice explicit in the URL and UI.
+            # V2Ray/v2rayN subscription output for user-allocated profiles
             if format == "v2ray":
                 return render_v2ray_response(
                     proxies=proxies,

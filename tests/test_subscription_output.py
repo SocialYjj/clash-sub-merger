@@ -226,6 +226,51 @@ class SubscriptionOutputRouterTest(unittest.TestCase):
         self.assertIn("vless://11111111-1111-1111-1111-111111111111@example.com:443", decoded)
         self.assertNotIn("NYC", decoded)
 
+    def test_admin_v2ray_export_bypasses_heavy_chain_assembly(self):
+        leaf = {
+            "name": "Leaf Node",
+            "type": "vless",
+            "server": "example.com",
+            "port": 443,
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "tls": True,
+        }
+        with tempfile.TemporaryDirectory() as tempdir:
+            Path(tempdir, "custom_nodes.yaml").write_text(
+                yaml.safe_dump({"proxies": [leaf]}, sort_keys=False),
+                encoding="utf-8",
+            )
+            config = {
+                "auth": {},
+                "subscriptions": [],
+                "custom_nodes": [leaf],
+                "users": [],
+                "admin_tokens": [
+                    {
+                        "id": "admin_1",
+                        "name": "Admin",
+                        "token": "admin-token",
+                        "enabled": True,
+                        "template_id": "builtin",
+                    }
+                ],
+                "templates": [],
+                "source_order": ["custom_nodes"],
+                "proxy_chains": [
+                    {
+                        "id": "chain_1",
+                        "name": "Heavy Chain",
+                        "enabled": True,
+                        "rows": [{"nodes": [{"type": "node", "node_id": "nonexistent_hop"}]}],
+                    }
+                ],
+            }
+            response = self.make_client(config, yaml_source_dir=tempdir).get("/sub?token=admin-token&format=v2ray")
+
+        self.assertEqual(response.status_code, 200)
+        decoded = base64.b64decode(response.text).decode()
+        self.assertIn("vless://11111111-1111-1111-1111-111111111111@example.com:443", decoded)
+
     def test_legacy_base64_alias_still_returns_v2ray_payload(self):
         node = {
             "name": "Leaf Node",
