@@ -15,7 +15,7 @@ RUN go mod download
 COPY *.go ./
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o speedtest .
+RUN CGO_ENABLED=0 GOOS=linux go build -tags with_gvisor -o speedtest .
 
 # Final image
 FROM alpine:3.23.3

@@ -75,6 +75,28 @@ func TestDelayHandlerFallsBackWhenDefaultURLFails(t *testing.T) {
 	}
 }
 
+func TestSpeedtestPanicRecoveryReturnsJSON(t *testing.T) {
+	original := runNodeDelayRequest
+	t.Cleanup(func() { runNodeDelayRequest = original })
+
+	runNodeDelayRequest = func(map[string]interface{}, string, time.Duration, string) (int, error) {
+		panic("adapter panic")
+	}
+
+	body := bytes.NewBufferString(`{"node":{"name":"target","type":"http","server":"127.0.0.1","port":8080}}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/delay", body)
+	response := httptest.NewRecorder()
+	recoverSpeedtestPanic(handleDelay)(response, request)
+
+	var payload DelayResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode recovered response: %v", err)
+	}
+	if payload.Success || payload.Error == "" {
+		t.Fatalf("unexpected recovered response: %#v", payload)
+	}
+}
+
 func TestTargetAdapterReceivesDialerOption(t *testing.T) {
 	original := parseProxyAdapter
 	t.Cleanup(func() { parseProxyAdapter = original })

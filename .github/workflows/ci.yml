@@ -119,7 +119,7 @@ jobs:
         run: go test ./...
 
       - name: Build Linux speedtest binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/speedtest-ci .
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_gvisor -o /tmp/speedtest-ci .
 
   frontend:
     name: Frontend tests and build

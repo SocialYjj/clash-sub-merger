@@ -16,6 +16,9 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
+	// Import Mihomo's config package for its init hook, which initializes
+	// dns.ParseNameServer used by OpenVPN's remote DNS options.
+	_ "github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
 )

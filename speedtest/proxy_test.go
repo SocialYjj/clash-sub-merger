@@ -116,6 +116,30 @@ func TestGetProxyAdapterNormalizesTrojanServernameBeforeParsing(t *testing.T) {
 	}
 }
 
+func TestOpenVPNRemoteDNSConfigurationDoesNotPanic(t *testing.T) {
+	node := map[string]interface{}{
+		"name":               "openvpn-dns",
+		"type":               "openvpn",
+		"server":             "127.0.0.1",
+		"port":               1194,
+		"proto":              "udp",
+		"ca":                 "invalid-certificate",
+		"cert":               "invalid-certificate",
+		"key":                "invalid-key",
+		"username":           "vpn",
+		"password":           "vpn",
+		"remote-dns-resolve": true,
+		"dns":                []string{"1.1.1.1", "8.8.8.8"},
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("OpenVPN adapter panicked with remote DNS options: %v", recovered)
+		}
+	}()
+	_, _ = getProxyAdapterFromNode(node)
+}
+
 func TestProxySourceDoesNotDisableTLSVerification(t *testing.T) {
 	source, err := os.ReadFile("proxy.go")
 	if err != nil {

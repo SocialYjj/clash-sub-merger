@@ -95,10 +95,10 @@ func main() {
 		port = "9876"
 	}
 
-	http.HandleFunc("/api/delay", handleDelay)
-	http.HandleFunc("/api/ip", handleIP)
-	http.HandleFunc("/api/speed", handleSpeed)
-	http.HandleFunc("/api/fetch-url", handleFetchURL)
+	http.HandleFunc("/api/delay", recoverSpeedtestPanic(handleDelay))
+	http.HandleFunc("/api/ip", recoverSpeedtestPanic(handleIP))
+	http.HandleFunc("/api/speed", recoverSpeedtestPanic(handleSpeed))
+	http.HandleFunc("/api/fetch-url", recoverSpeedtestPanic(handleFetchURL))
 	http.HandleFunc("/health", handleHealth)
 
 	server := &http.Server{
@@ -127,6 +127,25 @@ func main() {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+// recoverSpeedtestPanic keeps malformed or unsupported proxy profiles from
+// terminating the HTTP connection without a response. Mihomo adapters are
+// third-party parsing code and may panic for an invalid combination of fields;
+// callers should receive the same JSON-shaped failure as any other test error.
+func recoverSpeedtestPanic(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("speedtest request panic on %s: %v", r.URL.Path, recovered)
+				sendJSON(w, map[string]interface{}{
+					"success": false,
+					"error":   "Speedtest service failed while parsing the proxy configuration",
+				})
+			}
+		}()
+		handler(w, r)
+	}
 }
 
 func handleDelay(w http.ResponseWriter, r *http.Request) {

@@ -17,7 +17,7 @@ WORKDIR /app/speedtest
 COPY speedtest/go.mod speedtest/go.sum ./
 RUN go mod download
 COPY speedtest/*.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o speedtest .
+RUN CGO_ENABLED=0 GOOS=linux go build -tags with_gvisor -ldflags="-s -w" -o speedtest .
 
 # Final image - Python backend + Go speedtest
 FROM python:3.12.11-slim-bookworm AS runtime
