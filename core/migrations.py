@@ -189,6 +189,16 @@ def migrate_subscription_fields() -> None:
             )
             updated = True
 
+        if "refresh_retry_count" not in sub:
+            sub["refresh_retry_count"] = 0
+            updated = True
+        if "refresh_retry_at" not in sub:
+            sub["refresh_retry_at"] = None
+            updated = True
+        if "refresh_retry_error" not in sub:
+            sub["refresh_retry_error"] = None
+            updated = True
+
     if updated:
         _save_config(config)
         logger.info("Subscription refresh fields migrated for %s subscriptions", len(subs))

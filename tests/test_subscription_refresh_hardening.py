@@ -6,7 +6,7 @@ import copy
 import inspect
 import tempfile
 import unittest
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -30,6 +30,11 @@ from services.subscription_state import refresh_failure_fields
 
 @asynccontextmanager
 async def _unlocked_refresh(_subscription_id: str):
+    yield
+
+
+@contextmanager
+def _unlocked_scheduled_refresh(_subscription_id: str):
     yield
 
 
@@ -502,6 +507,40 @@ class SchedulerConsistencyRegressionTests(unittest.TestCase):
             server.refresh_subscription_job("sub_1")
 
         record_failure.assert_not_called()
+
+    def test_scheduled_transient_failure_registers_bounded_retry(self):
+        subscription = {
+            "id": "sub_1",
+            "name": "Provider",
+            "type": "url",
+            "enabled": True,
+            "cron_expr": "0 0 * * *",
+            "url": "https://provider.example/sub",
+        }
+        scheduler = Mock()
+        scheduler.jobs = {}
+        scheduler.add_one_time_job.return_value = "task_sub_refresh_retry_sub_1"
+        update_fields = Mock()
+
+        with (
+            patch.object(server, "load_config", return_value={"subscriptions": [subscription]}),
+            patch.object(server, "wait_for_scheduled_refresh_slot", _unlocked_scheduled_refresh),
+            patch.object(server, "record_refresh_failure"),
+            patch.object(server, "update_subscription_fields", update_fields),
+            patch.object(server.asyncio, "run", side_effect=FetchError("Direct subscription fetch failed: HTTP 503")),
+            patch.object(server, "get_scheduler", return_value=scheduler),
+        ):
+            server.refresh_subscription_job("sub_1")
+
+        scheduler.add_one_time_job.assert_called_once()
+        retry_call = scheduler.add_one_time_job.call_args
+        self.assertEqual(retry_call.args[0], "sub_refresh_retry_sub_1")
+        self.assertEqual(retry_call.args[3:], ("sub_1", 1))
+        update_fields.assert_called_once()
+        self.assertEqual(
+            update_fields.call_args.args[1]["refresh_retry_count"],
+            1,
+        )
 
     def test_scheduled_refresh_recounts_processed_valid_nodes(self):
         content = """proxies:

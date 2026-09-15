@@ -93,7 +93,7 @@ export default function Sidebar({ collapsed, setCollapsed, onLogout }) {
   const SidebarContent = () => (
     <div className="flex flex-col h-full">
       {/* Logo */}
-      <div className="flex items-center justify-between h-16 px-4 border-b border-line-soft">
+      <div className="flex items-center justify-between h-16 px-4 pr-14 lg:pr-4 border-b border-line-soft">
         {!collapsed && (
           <div className="flex items-center gap-2">
             <Globe className="w-8 h-8 text-blue-500" />

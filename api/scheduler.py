@@ -128,6 +128,12 @@ def _set_subscription_schedule(sub_id: str, cron_expression: Optional[str]) -> d
     previous_cron = current_subscription.get("cron_expr")
     subscription_enabled = current_subscription.get("enabled", True)
 
+    from services.subscription_refresh_jobs import cancel_subscription_refresh_retry
+
+    # Changing or removing the cron schedule starts a new refresh lifecycle;
+    # do not let a retry from the old schedule fire against the new one.
+    cancel_subscription_refresh_retry(sub_id, scheduler)
+
     def restore_previous_job() -> None:
         scheduler.remove_job(task_id)
         if previous_cron and subscription_enabled:
@@ -159,6 +165,9 @@ def _set_subscription_schedule(sub_id: str, cron_expression: Optional[str]) -> d
             raise HTTPException(status_code=404, detail="Subscription not found")
         sub["cron_expr"] = requested_cron
         sub["next_update"] = next_update
+        sub["refresh_retry_count"] = 0
+        sub["refresh_retry_at"] = None
+        sub["refresh_retry_error"] = None
         return {
             "cron_expr": sub.get("cron_expr"),
             "next_update": sub.get("next_update"),

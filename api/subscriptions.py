@@ -265,6 +265,9 @@ async def _refresh_remote_subscription(
                 AppConfig.YAML_SOURCE_DIR,
                 lambda: update_config(commit_refreshed_subscription),
             )
+            from services.subscription_refresh_jobs import cancel_subscription_refresh_retry
+
+            cancel_subscription_refresh_retry(subscription_id)
             invalidate_stats_cache()
             logger.info("Successfully refreshed subscription %s, got %s nodes", subscription_id, node_count)
             return updated_subscription
@@ -462,6 +465,9 @@ async def add_subscription(data: AddSubscription, _: bool = Depends(verify_sessi
             "update_status": "success",
             "cron_expr": None,
             "next_update": None,
+            "refresh_retry_count": 0,
+            "refresh_retry_at": None,
+            "refresh_retry_error": None,
         }
 
         if inherited:
@@ -524,6 +530,9 @@ def add_local_subscription(data: AddLocalSubscription, _: bool = Depends(verify_
             "update_status": "success",
             "cron_expr": None,
             "next_update": None,
+            "refresh_retry_count": 0,
+            "refresh_retry_at": None,
+            "refresh_retry_error": None,
         }
 
         if inherited:
@@ -707,7 +716,11 @@ async def delete_subscription(sub_id: str, _: bool = Depends(verify_session)):
 
         from scheduler_service import get_scheduler
 
-        get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+        scheduler = get_scheduler()
+        scheduler.remove_job(f"sub_refresh_{sub_id}")
+        from services.subscription_refresh_jobs import cancel_subscription_refresh_retry
+
+        cancel_subscription_refresh_retry(sub_id, scheduler)
         invalidate_stats_cache()
         logger.info("Deleted subscription %s and its persisted references", sub_id)
 
@@ -726,6 +739,9 @@ async def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
                     subscription["enabled"] = not subscription.get("enabled", True)
                     if not subscription["enabled"]:
                         subscription["next_update"] = None
+                        subscription["refresh_retry_count"] = 0
+                        subscription["refresh_retry_at"] = None
+                        subscription["refresh_retry_error"] = None
                     return {
                         "enabled": subscription["enabled"],
                         "cron_expr": subscription.get("cron_expr"),
@@ -754,7 +770,11 @@ async def toggle_subscription(sub_id: str, _: bool = Depends(verify_session)):
         elif not toggle_state["enabled"]:
             from scheduler_service import get_scheduler
 
-            get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+            scheduler = get_scheduler()
+            scheduler.remove_job(f"sub_refresh_{sub_id}")
+            from services.subscription_refresh_jobs import cancel_subscription_refresh_retry
+
+            cancel_subscription_refresh_retry(sub_id, scheduler)
 
         invalidate_stats_cache()
 

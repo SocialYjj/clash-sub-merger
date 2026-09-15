@@ -4,7 +4,7 @@ Provides cron-based task scheduling using APScheduler.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import RLock
 from typing import Callable, Dict, Optional
 
@@ -141,14 +141,7 @@ class SchedulerManager:
                 return None
 
             # Remove existing job if any (inline to avoid deadlock)
-            if task_id in self.jobs:
-                old_job_id = self.jobs[task_id]
-                try:
-                    self.scheduler.remove_job(old_job_id)
-                except Exception as e:
-                    logger.debug(f"Failed to remove old job {old_job_id}: {e}")
-                del self.jobs[task_id]
-                logger.info(f"Removed existing job {task_id}")
+            self._remove_registered_job_locked(task_id)
 
             try:
                 trigger = CronTrigger.from_crontab(cleaned)
@@ -166,6 +159,66 @@ class SchedulerManager:
                 logger.error(f"Failed to add job {task_id}: {e}")
                 return None
 
+    def add_one_time_job(
+        self,
+        task_id: str,
+        delay_seconds: int | float,
+        func: Callable,
+        *args,
+        **kwargs,
+    ) -> Optional[str]:
+        """Schedule one execution after a relative delay."""
+
+        try:
+            delay = max(0.0, float(delay_seconds))
+        except (TypeError, ValueError):
+            logger.warning("Invalid one-time delay for task %s: %r", task_id, delay_seconds)
+            return None
+        return self.add_one_time_job_at(task_id, datetime.now() + timedelta(seconds=delay), func, *args, **kwargs)
+
+    def add_one_time_job_at(
+        self,
+        task_id: str,
+        run_at: datetime,
+        func: Callable,
+        *args,
+        **kwargs,
+    ) -> Optional[str]:
+        """Schedule one execution at a concrete local timestamp."""
+
+        with self._lock:
+            self._remove_registered_job_locked(task_id)
+            try:
+                from apscheduler.triggers.date import DateTrigger
+
+                job = self.scheduler.add_job(
+                    func,
+                    trigger=DateTrigger(run_date=run_at),
+                    args=args,
+                    kwargs=kwargs,
+                    id=f"task_{task_id}",
+                    replace_existing=True,
+                )
+                self.jobs[task_id] = job.id
+                logger.info("Added one-time job %s, run at: %s", task_id, getattr(job, "next_run_time", run_at))
+                return job.id
+            except Exception as exc:
+                logger.error("Failed to add one-time job %s: %s", task_id, exc)
+                return None
+
+    def _remove_registered_job_locked(self, task_id: str) -> bool:
+        """Remove a task while the scheduler manager lock is held."""
+
+        job_id = self.jobs.pop(task_id, None)
+        if not job_id:
+            return False
+        try:
+            self.scheduler.remove_job(job_id)
+        except Exception as exc:
+            logger.debug("Failed to remove old job %s: %s", job_id, exc)
+        logger.info("Removed existing job %s", task_id)
+        return True
+
     def remove_job(self, task_id: str) -> bool:
         """
         Remove a scheduled job.
@@ -177,15 +230,7 @@ class SchedulerManager:
             if task_id not in self.jobs:
                 return False
 
-            job_id = self.jobs[task_id]
-            try:
-                self.scheduler.remove_job(job_id)
-            except Exception as e:
-                logger.debug(f"Failed to remove job {job_id}: {e}")
-
-            del self.jobs[task_id]
-            logger.info(f"Removed job {task_id}")
-            return True
+            return self._remove_registered_job_locked(task_id)
 
     def update_job(self, task_id: str, cron_expr: str, enabled: bool, func: Callable, *args, **kwargs) -> bool:
         """

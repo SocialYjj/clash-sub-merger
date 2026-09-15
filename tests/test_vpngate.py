@@ -48,6 +48,26 @@ TLS DATA
 </tls-crypt>
 """
 
+OPENVPN_TLS_AUTH_PROFILE = """client
+dev tun
+proto udp
+remote 198.51.100.11 1194
+auth SHA256
+key-direction 1
+<ca>
+CA DATA
+</ca>
+<cert>
+CERT DATA
+</cert>
+<key>
+KEY DATA
+</key>
+<tls-auth>
+TLS AUTH DATA
+</tls-auth>
+"""
+
 
 def _record(**overrides):
     record = {
@@ -129,6 +149,20 @@ class VpnGateParsingTests(unittest.TestCase):
                     OpenVPN_ConfigData_Base64=base64.b64encode(b"client\nremote 198.51.100.10 1194\n").decode(),
                 )
             )
+
+    def test_record_preserves_tls_auth_and_key_direction(self):
+        proxy = parse_vpngate_record(
+            _record(
+                IP="198.51.100.11",
+                OpenVPN_ConfigData_Base64=base64.b64encode(OPENVPN_TLS_AUTH_PROFILE.encode()).decode(),
+            )
+        )
+
+        self.assertEqual(proxy["tls-auth"], "TLS AUTH DATA")
+        self.assertEqual(proxy["key-direction"], "1")
+        self.assertNotIn("tls-crypt", proxy)
+        self.assertNotIn("tls-crypt-v2", proxy)
+        self.assertTrue(ProxyFilter.is_valid_proxy(proxy))
 
 
 class VpnGateCacheTests(unittest.TestCase):

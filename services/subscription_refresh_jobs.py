@@ -8,6 +8,7 @@ and the same pattern core.migrations and the API routers already use.
 
 import asyncio
 import os
+import re
 import time
 
 from fastapi import HTTPException
@@ -25,6 +26,9 @@ from services.subscription_fetcher import FetchError, SubscriptionFetcher
 from services.subscription_node_count import count_effective_subscription_nodes
 from services.subscription_refresh_lock import SubscriptionRefreshInProgress
 from services.subscription_state import (
+    REFRESH_RETRY_AT_FIELD,
+    REFRESH_RETRY_COUNT_FIELD,
+    REFRESH_RETRY_ERROR_FIELD,
     describe_refresh_error,
     record_refresh_attempt,
     refresh_success_fields,
@@ -33,6 +37,100 @@ from services.subscription_storage import persist_subscription_content_and_recor
 from services.vpngate import get_vpngate_settings, run_scheduled_vpngate_refresh
 
 logger = get_logger(__name__)
+
+# A failed cron refresh should recover quickly without turning a provider
+# outage into an unbounded request loop.  The normal cron schedule remains the
+# source of truth after these bounded retries are exhausted.
+SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS = (60, 5 * 60, 15 * 60)
+
+
+def subscription_retry_task_id(sub_id: str) -> str:
+    return f"sub_refresh_retry_{sub_id}"
+
+
+def cancel_subscription_refresh_retry(sub_id: str, scheduler_manager=None) -> bool:
+    """Cancel a pending retry job when a refresh succeeds or is disabled."""
+
+    if scheduler_manager is None:
+        import server as srv
+
+        scheduler_manager = srv.get_scheduler()
+    scheduler = scheduler_manager
+    registered_jobs = getattr(scheduler, "jobs", None)
+    task_id = subscription_retry_task_id(sub_id)
+    if not isinstance(registered_jobs, dict) or task_id not in registered_jobs:
+        return False
+    return bool(scheduler.remove_job(task_id))
+
+
+def _is_retryable_scheduled_failure(exc: BaseException) -> bool:
+    """Keep deterministic authentication/configuration failures from looping."""
+
+    if bool(getattr(exc, "retryable", False)):
+        return True
+    if not isinstance(exc, FetchError):
+        return False
+    message = describe_refresh_error(exc).lower()
+    return bool(
+        re.search(r"\b(?:408|429|5\d{2})\b", message)
+        or any(
+            marker in message
+            for marker in (
+                "timed out",
+                "network transport",
+                "connection failed",
+                "response is empty",
+                "no valid",
+                "returned an html page",
+            )
+        )
+    )
+
+
+def _schedule_subscription_retry(sub: dict, retry_attempt: int, exc: BaseException) -> tuple[int, int | None]:
+    """Schedule the next bounded retry and return its persisted state."""
+
+    if retry_attempt >= len(SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS) or not _is_retryable_scheduled_failure(exc):
+        cancel_subscription_refresh_retry(str(sub.get("id") or ""))
+        return 0, None
+
+    import server as srv
+
+    delay_seconds = SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS[retry_attempt]
+    next_retry_count = retry_attempt + 1
+    retry_at = int(time.time() + delay_seconds)
+    scheduler = srv.get_scheduler()
+    add_one_time_job = getattr(scheduler, "add_one_time_job", None)
+    if not callable(add_one_time_job):
+        logger.error("Scheduler cannot register one-time retry for subscription %s", sub.get("id"))
+        return 0, None
+    job_id = add_one_time_job(
+        subscription_retry_task_id(str(sub.get("id") or "")),
+        delay_seconds,
+        refresh_subscription_job,
+        str(sub.get("id") or ""),
+        next_retry_count,
+    )
+    if not job_id:
+        logger.error("Failed to register retry for subscription %s", sub.get("id"))
+        return 0, None
+    logger.warning(
+        "Scheduled refresh for subscription %s failed; retry %s/%s in %ss",
+        sub.get("id"),
+        next_retry_count,
+        len(SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS),
+        delay_seconds,
+    )
+    return next_retry_count, retry_at
+
+
+def _retry_state_updates(retry_count: int, retry_at: int | None, exc: BaseException | None = None) -> dict:
+    return {
+        REFRESH_RETRY_COUNT_FIELD: retry_count,
+        REFRESH_RETRY_AT_FIELD: retry_at,
+        REFRESH_RETRY_ERROR_FIELD: describe_refresh_error(exc) if retry_at and exc else None,
+        **({"next_update": retry_at} if retry_at else {}),
+    }
 
 
 def _restore_scheduled_jobs():
@@ -43,11 +141,20 @@ def _restore_scheduled_jobs():
         config = srv.load_config()
         scheduler = srv.get_scheduler()
         restored_count = 0
-        desired_task_ids = {
-            f"sub_refresh_{sub['id']}"
-            for sub in config.get("subscriptions", [])
-            if sub.get("id") and sub.get("type") != "local" and sub.get("enabled", True) and sub.get("cron_expr")
-        }
+        desired_task_ids = set()
+        for sub in config.get("subscriptions", []):
+            if not sub.get("id") or sub.get("type") == "local" or not sub.get("enabled", True):
+                continue
+            if sub.get("cron_expr"):
+                desired_task_ids.add(f"sub_refresh_{sub['id']}")
+            try:
+                retry_count = int(sub.get(REFRESH_RETRY_COUNT_FIELD) or 0)
+                retry_at = int(sub.get(REFRESH_RETRY_AT_FIELD) or 0)
+            except (TypeError, ValueError):
+                retry_count = 0
+                retry_at = 0
+            if 0 < retry_count <= len(SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS) and retry_at:
+                desired_task_ids.add(subscription_retry_task_id(sub["id"]))
 
         for existing_task_id in list(scheduler.jobs):
             if existing_task_id.startswith("sub_refresh_") and existing_task_id not in desired_task_ids:
@@ -57,9 +164,12 @@ def _restore_scheduled_jobs():
             if sub.get("type") == "local" or not sub.get("enabled", True):
                 if sub.get("next_update") is not None:
                     srv.update_subscription_fields(sub["id"], {"next_update": None})
+                if sub.get(REFRESH_RETRY_COUNT_FIELD) or sub.get(REFRESH_RETRY_AT_FIELD):
+                    srv.update_subscription_fields(sub["id"], _retry_state_updates(0, None))
                 continue
 
             cron_expr = sub.get("cron_expr")
+            cron_registered = False
             if cron_expr:
                 try:
                     task_id = f"sub_refresh_{sub['id']}"
@@ -71,6 +181,7 @@ def _restore_scheduled_jobs():
                         next_update = int(job_info["next_run"].timestamp())
                         srv.update_subscription_fields(sub["id"], {"next_update": next_update})
                         restored_count += 1
+                        cron_registered = True
                         logger.info(
                             f"Restored schedule for subscription '{sub.get('name')}': {cron_expr}, next run: {job_info['next_run']}"
                         )
@@ -82,6 +193,43 @@ def _restore_scheduled_jobs():
                     srv.update_subscription_fields(sub["id"], {"next_update": None})
             elif sub.get("next_update") is not None:
                 srv.update_subscription_fields(sub["id"], {"next_update": None})
+            if not cron_expr and (sub.get(REFRESH_RETRY_COUNT_FIELD) or sub.get(REFRESH_RETRY_AT_FIELD)):
+                srv.update_subscription_fields(sub["id"], _retry_state_updates(0, None))
+
+            # Restore a retry that was persisted before a process restart. A
+            # missed retry runs immediately; a future retry keeps its deadline.
+            try:
+                retry_count = int(sub.get(REFRESH_RETRY_COUNT_FIELD) or 0)
+                retry_at = int(sub.get(REFRESH_RETRY_AT_FIELD) or 0)
+            except (TypeError, ValueError):
+                retry_count = 0
+                retry_at = 0
+            if cron_registered and 0 < retry_count <= len(SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS) and retry_at:
+                from datetime import datetime
+
+                run_at_timestamp = max(retry_at, int(time.time()))
+                add_one_time_job_at = getattr(scheduler, "add_one_time_job_at", None)
+                retry_job_id = (
+                    add_one_time_job_at(
+                        subscription_retry_task_id(sub["id"]),
+                        datetime.fromtimestamp(run_at_timestamp),
+                        refresh_subscription_job,
+                        sub["id"],
+                        retry_count,
+                    )
+                    if callable(add_one_time_job_at)
+                    else None
+                )
+                if retry_job_id:
+                    srv.update_subscription_fields(sub["id"], {"next_update": run_at_timestamp})
+                    logger.info(
+                        "Restored retry %s for subscription '%s' at %s",
+                        retry_count,
+                        sub.get("name"),
+                        datetime.fromtimestamp(run_at_timestamp),
+                    )
+                else:
+                    srv.update_subscription_fields(sub["id"], _retry_state_updates(0, None))
 
         if restored_count > 0:
             logger.info(f"Restored {restored_count} scheduled job(s)")
@@ -292,7 +440,10 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
         finally:
             fetch_coroutine.close()
     except Exception as exc:
-        raise FetchError(f"Failed to fetch subscription: {exc}") from None
+        raise FetchError(
+            f"Failed to fetch subscription: {exc}",
+            retryable=bool(getattr(exc, "retryable", False)),
+        ) from None
 
     # Apply region history
     content, remembered, inherited = srv.apply_region_history_to_yaml_content(
@@ -320,7 +471,7 @@ def _fetch_and_process_subscription(sub: dict) -> tuple:
     processed_nodes = subscription_nodes_from_yaml_content(content)
     node_count = count_effective_subscription_nodes(processed_nodes)
     if node_count <= 0:
-        raise FetchError("Subscription contains no valid proxy nodes")
+        raise FetchError("Subscription contains no valid proxy nodes", retryable=True)
 
     return (
         content,
@@ -350,14 +501,18 @@ def _build_success_updates(sub_info: dict, node_count: int, subscription: dict, 
     }
 
 
-def refresh_subscription_job(sub_id: str):
+def refresh_subscription_job(sub_id: str, retry_attempt: int = 0):
     """
     Job function for scheduled subscription refresh.
     This is called by the scheduler and runs in a background thread.
     """
     import server as srv
 
-    logger.info("Scheduled refresh triggered for subscription %s", sub_id)
+    logger.info(
+        "Scheduled refresh triggered for subscription %s%s",
+        sub_id,
+        f" (retry {retry_attempt}/{len(SCHEDULED_REFRESH_RETRY_DELAYS_SECONDS)})" if retry_attempt else "",
+    )
     attempted_at = int(time.time())
     current_subscription = None
     try:
@@ -369,15 +524,18 @@ def refresh_subscription_job(sub_id: str):
             if not sub:
                 logger.warning("Subscription %s no longer exists; removing its scheduled job", sub_id)
                 srv.get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+                cancel_subscription_refresh_retry(sub_id)
                 return
 
             if not sub.get("enabled", True):
                 logger.info("Skipping scheduled refresh for disabled subscription %s", sub_id)
+                cancel_subscription_refresh_retry(sub_id)
                 return
 
             if sub.get("type") == "local":
                 logger.warning("Skipping scheduled refresh for local subscription %s", sub_id)
                 srv.get_scheduler().remove_job(f"sub_refresh_{sub_id}")
+                cancel_subscription_refresh_retry(sub_id)
                 return
 
             try:
@@ -440,6 +598,8 @@ def refresh_subscription_job(sub_id: str):
 
                 invalidate_stats_cache()
 
+                cancel_subscription_refresh_retry(sub_id)
+
                 logger.info("Scheduled refresh completed for subscription %s, got %s nodes", sub_id, node_count)
             except Exception as exc:
                 error_message = describe_refresh_error(exc)
@@ -450,6 +610,11 @@ def refresh_subscription_job(sub_id: str):
                     exc_info=True,
                 )
                 srv.record_refresh_failure(sub, exc, attempted_at)
+                retry_count, retry_at = _schedule_subscription_retry(sub, retry_attempt, exc)
+                srv.update_subscription_fields(
+                    sub_id,
+                    _retry_state_updates(retry_count, retry_at, exc if retry_at else None),
+                )
     except SubscriptionRefreshInProgress:
         logger.warning("Scheduled refresh skipped because subscription %s is already refreshing", sub_id)
         # A concurrent refresh is not a refresh failure.  Do not overwrite the
@@ -465,5 +630,10 @@ def refresh_subscription_job(sub_id: str):
         if current_subscription:
             try:
                 srv.record_refresh_failure(current_subscription, exc, attempted_at)
+                retry_count, retry_at = _schedule_subscription_retry(current_subscription, retry_attempt, exc)
+                srv.update_subscription_fields(
+                    sub_id,
+                    _retry_state_updates(retry_count, retry_at, exc if retry_at else None),
+                )
             except Exception:
                 logger.error("Failed to persist scheduled refresh failure for %s", sub_id, exc_info=True)

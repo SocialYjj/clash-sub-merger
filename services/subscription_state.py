@@ -10,6 +10,10 @@ from logger_config import SensitiveDataFilter, get_logger
 
 logger = get_logger(__name__)
 
+REFRESH_RETRY_COUNT_FIELD = "refresh_retry_count"
+REFRESH_RETRY_AT_FIELD = "refresh_retry_at"
+REFRESH_RETRY_ERROR_FIELD = "refresh_retry_error"
+
 
 def describe_refresh_error(exc: BaseException) -> str:
     """Return a bounded, credential-safe error suitable for persisted UI state."""
@@ -24,12 +28,22 @@ def describe_refresh_error(exc: BaseException) -> str:
 def get_next_update_timestamp(
     subscription_id: str,
     *,
+    subscription: Optional[dict] = None,
     cron_expr: Optional[str] = None,
     enabled: bool = True,
+    include_retry: bool = True,
 ) -> Optional[int]:
     """Read the registered next run, falling back to the cron expression."""
     if not enabled or not cron_expr:
         return None
+    try:
+        retry_count = int((subscription or {}).get(REFRESH_RETRY_COUNT_FIELD) or 0)
+        retry_at = int((subscription or {}).get(REFRESH_RETRY_AT_FIELD) or 0)
+    except (TypeError, ValueError):
+        retry_count = 0
+        retry_at = 0
+    if include_retry and retry_count > 0 and retry_at > 0 and retry_at >= int(time.time()):
+        return retry_at
     try:
         from scheduler_service import get_scheduler
 
@@ -56,6 +70,7 @@ def refresh_attempt_fields(subscription: dict, attempted_at: Optional[int] = Non
         "last_attempt": attempted_at,
         "next_update": get_next_update_timestamp(
             subscription.get("id", ""),
+            subscription=subscription,
             cron_expr=subscription.get("cron_expr"),
             enabled=subscription.get("enabled", True),
         ),
@@ -69,12 +84,23 @@ def refresh_success_fields(
     succeeded_at: Optional[int] = None,
 ) -> dict:
     succeeded_at = succeeded_at or int(time.time())
+    cron_next_update = get_next_update_timestamp(
+        subscription.get("id", ""),
+        subscription=subscription,
+        cron_expr=subscription.get("cron_expr"),
+        enabled=subscription.get("enabled", True),
+        include_retry=False,
+    )
     return {
-        **refresh_attempt_fields(subscription, attempted_at=attempted_at or succeeded_at),
+        "last_attempt": attempted_at or succeeded_at,
+        "next_update": cron_next_update,
         "last_success": succeeded_at,
         "last_update": succeeded_at,
         "last_error": None,
         "update_status": "success",
+        REFRESH_RETRY_COUNT_FIELD: 0,
+        REFRESH_RETRY_AT_FIELD: None,
+        REFRESH_RETRY_ERROR_FIELD: None,
     }
 
 

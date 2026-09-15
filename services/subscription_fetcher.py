@@ -23,7 +23,9 @@ logger = get_logger(__name__)
 class FetchError(Exception):
     """Base exception for fetch errors"""
 
-    pass
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class SubscriptionFetcher:
@@ -35,6 +37,8 @@ class SubscriptionFetcher:
 
     @staticmethod
     def _is_transient_error(exc: Exception) -> bool:
+        if isinstance(exc, FetchError):
+            return exc.retryable
         if isinstance(exc, httpx.HTTPStatusError):
             status_code = exc.response.status_code
             return status_code in {408, 429} or status_code >= 500
@@ -87,7 +91,10 @@ class SubscriptionFetcher:
                 failure_description = self._describe_error(exc)
                 should_retry = attempt_number < max_attempts and self._is_transient_error(exc)
                 if not should_retry:
-                    raise FetchError(f"{connection_name} subscription fetch failed: {failure_description}") from None
+                    raise FetchError(
+                        f"{connection_name} subscription fetch failed: {failure_description}",
+                        retryable=self._is_transient_error(exc),
+                    ) from None
 
                 retry_delay = AppConfig.SUBSCRIPTION_FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt_number - 1))
                 logger.warning(
@@ -150,10 +157,14 @@ class SubscriptionFetcher:
                         proxy_error = proxy_exception
                     else:
                         proxy_error = FetchError(
-                            f"Proxy subscription fetch failed: {self._describe_error(proxy_exception)}"
+                            f"Proxy subscription fetch failed: {self._describe_error(proxy_exception)}",
+                            retryable=self._is_transient_error(proxy_exception),
                         )
                     logger.error("Proxy subscription fetch failed: %s", proxy_error)
-                    raise FetchError(f"{direct_error}; {proxy_error}") from None
+                    raise FetchError(
+                        f"{direct_error}; {proxy_error}",
+                        retryable=direct_error.retryable or proxy_error.retryable,
+                    ) from None
 
             raise direct_error from None
 
@@ -183,7 +194,10 @@ class SubscriptionFetcher:
         content = self._extract_content(payload, headers)
         node_count = count_nodes(content)
         if node_count <= 0:
-            raise FetchError("Subscription response contains no valid nodes; existing data was kept")
+            raise FetchError(
+                "Subscription response contains no valid nodes; existing data was kept",
+                retryable=True,
+            )
         logger.info("Successfully fetched subscription, got %s nodes", node_count)
         return content, sub_info, node_count
 
@@ -203,18 +217,21 @@ class SubscriptionFetcher:
             raise FetchError("Subscription response is not valid UTF-8; existing data was kept") from None
 
         if not content:
-            raise FetchError("Subscription response is empty; existing data was kept")
+            raise FetchError("Subscription response is empty; existing data was kept", retryable=True)
 
         content_type = headers.get("content-type", "").lower()
         content_prefix = content[:2048].lstrip("\ufeff \t\r\n").lower()
         if content_prefix.startswith(("<!doctype html", "<html", "<body", "<head")):
-            raise FetchError("Subscription endpoint returned an HTML page; existing data was kept")
+            raise FetchError("Subscription endpoint returned an HTML page; existing data was kept", retryable=True)
 
         try:
             return parse_subscription_content(content)
         except Exception:
             if "text/html" in content_type:
-                raise FetchError("Subscription endpoint returned an HTML page; existing data was kept") from None
+                raise FetchError(
+                    "Subscription endpoint returned an HTML page; existing data was kept",
+                    retryable=True,
+                ) from None
             raise FetchError("Subscription response could not be parsed; existing data was kept") from None
 
 

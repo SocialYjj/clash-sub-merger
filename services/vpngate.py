@@ -264,6 +264,17 @@ def parse_vpngate_record(record: dict[str, str]) -> dict[str, Any]:
     auth = auth if auth in _ALLOWED_AUTH else None
     comp_lzo = (_get_directive(configuration, "comp-lzo") or "").strip().lower()
     comp_lzo = comp_lzo if comp_lzo in _ALLOWED_COMP_LZO else None
+    # VPN Gate profiles use either the older ``tls-auth`` static key or the
+    # newer ``tls-crypt``/``tls-crypt-v2`` forms.  Mihomo accepts all three,
+    # but the authentication key and its direction must be preserved exactly
+    # or the OpenVPN handshake is rejected.  These fields are mutually
+    # exclusive in a valid OpenVPN profile; retain only the block advertised
+    # by the source profile.
+    tls_auth = _get_block(configuration, "tls-auth")
+    key_direction = (_get_directive(configuration, "key-direction") or "").strip()
+    key_direction = key_direction if key_direction in {"0", "1"} else None
+    tls_crypt = _get_block(configuration, "tls-crypt")
+    tls_crypt_v2 = _get_block(configuration, "tls-crypt-v2")
     country_code = str(record.get("CountryShort") or "").strip().upper()
     node_id = _stable_node_id(record, server, port, proto)
 
@@ -294,9 +305,14 @@ def parse_vpngate_record(record: dict[str, str]) -> dict[str, Any]:
         "_vpngate_sessions": _safe_integer(record.get("NumVpnSessions")),
         "_vpngate_last_seen_at": int(time.time()),
     }
-    tls_crypt = _get_block(configuration, "tls-crypt")
-    if tls_crypt:
+    if tls_auth:
+        proxy["tls-auth"] = tls_auth
+        if key_direction:
+            proxy["key-direction"] = key_direction
+    elif tls_crypt:
         proxy["tls-crypt"] = tls_crypt
+    elif tls_crypt_v2:
+        proxy["tls-crypt-v2"] = tls_crypt_v2
     if cipher:
         proxy["cipher"] = cipher
     if data_ciphers:
