@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
-from helpers import atomic_write_text, list_subscription_contents
+from helpers import atomic_write_text, list_subscription_contents, load_subscription_yaml
 from logger_config import get_logger
 from services.country_grouper import CountryGrouper
 from services.name_transformer import NameTransformer
@@ -287,14 +287,17 @@ rule-providers:
 
         all_proxies = []
         used_names = set()
-
-        stored_sources = list_subscription_contents(self.yaml_dir)
-        if not stored_sources and not os.path.isdir(self.yaml_dir):
-            logger.error(f"Directory {self.yaml_dir} does not exist")
-            return []
-
-        files = sorted(stored_sources)
         excludes = ["myconfig.yaml", "myconfig_template.yaml"]
+
+        if self.file_aliases:
+            files = [f for f in self.file_aliases.keys() if f not in excludes]
+            stored_sources = {}
+        else:
+            stored_sources = list_subscription_contents(self.yaml_dir)
+            if not stored_sources and not os.path.isdir(self.yaml_dir):
+                logger.error(f"Directory {self.yaml_dir} does not exist")
+                return []
+            files = sorted(stored_sources)
 
         def sort_key(filename):
             if self.file_aliases:
@@ -317,19 +320,27 @@ rule-providers:
 
             default_name = os.path.splitext(file_name)[0]
             source_name = self.file_aliases.get(file_name, default_name)
+            source_id = self._source_id_from_filename(file_name)
 
             logger.info(f"Processing: {file_name}...")
 
+            config = None
             try:
-                content = stored_sources.get(file_name)
-                if content is None:
-                    file_path = os.path.join(self.yaml_dir, file_name)
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                config = SubscriptionParser.parse_content(content)
-            except Exception as e:
-                logger.warning(f"Cannot parse file {file_name}: {e}")
-                continue
+                config = load_subscription_yaml(source_id, self.yaml_dir, use_cache=True)
+            except Exception:
+                pass
+
+            if config is None or not isinstance(config, dict):
+                try:
+                    content = stored_sources.get(file_name)
+                    if content is None:
+                        file_path = os.path.join(self.yaml_dir, file_name)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                    config = SubscriptionParser.parse_content(content)
+                except Exception as e:
+                    logger.warning(f"Cannot parse file {file_name}: {e}")
+                    continue
 
             if not config or not isinstance(config, dict):
                 logger.warning(f"{file_name} has no valid content after parsing, skipped.")
@@ -339,8 +350,6 @@ rule-providers:
             if not proxies:
                 logger.info(f"{file_name} has no proxy nodes")
                 continue
-
-            source_id = self._source_id_from_filename(file_name)
 
             # Filter info banners and nodes that cannot be represented by the
             # selected output format. V2Ray/sing-box receive minimally valid

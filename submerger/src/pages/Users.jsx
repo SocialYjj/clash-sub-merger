@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import request, { isRequestCanceled } from '../utils/request';
-import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders } from 'lucide-react';
+import { Users as UsersIcon, Plus, Trash2, Copy, Key, ToggleLeft, ToggleRight, Edit2, Calendar, Clock, X, ChevronDown, ChevronRight, Check, RefreshCw, Shuffle, Settings, FileCode, Sliders, Search, UserCheck, UserX, AlertCircle } from 'lucide-react';
+
 import UserConfigEditor from '../components/UserConfigEditor';
 import { SkeletonHeader, SkeletonCardGrid } from '../components/Skeleton';
 
@@ -540,6 +541,43 @@ export default function Users({
     return template ? template.name : templateId;
   };
 
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+
+  const metrics = useMemo(() => {
+    const list = users || [];
+    const now = Date.now() / 1000;
+    const total = list.length;
+    const enabled = list.filter((u) => u.enabled !== false).length;
+    const disabled = list.filter((u) => u.enabled === false).length;
+    const expired = list.filter(
+      (u) => u.expire_time && u.expire_time > 0 && u.expire_time < now
+    ).length;
+    return { total, enabled, disabled, expired };
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    let list = users || [];
+    const now = Date.now() / 1000;
+    if (filterStatus === 'enabled') {
+      list = list.filter((u) => u.enabled !== false);
+    } else if (filterStatus === 'disabled') {
+      list = list.filter((u) => u.enabled === false);
+    } else if (filterStatus === 'expired') {
+      list = list.filter((u) => u.expire_time && u.expire_time > 0 && u.expire_time < now);
+    }
+
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        (u) =>
+          (u.name && u.name.toLowerCase().includes(q)) ||
+          (u.token && u.token.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [users, filterStatus, search]);
+
   const handleAdd = async () => {
     if (!newName.trim()) return;
     const expireTime = newExpire ? Math.floor(new Date(newExpire).getTime() / 1000) : 0;
@@ -576,177 +614,319 @@ export default function Users({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-ink">用户管理</h1>
-          <p className="text-ink-2 text-sm mt-1">管理订阅用户和节点分配</p>
+          <p className="text-ink-2 text-sm mt-1">管理独立订阅用户、Token 及专属节点分配</p>
         </div>
         <button
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-xl shadow-lg shadow-blue-500/20 hover:shadow-blue-500/30 transition-all font-medium"
         >
           <Plus size={18} />
           添加用户
         </button>
       </div>
 
+      {/* Top Metrics Bar */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-surface-2/60 backdrop-blur border border-line/50 rounded-2xl p-3.5 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+            <UsersIcon size={20} />
+          </div>
+          <div>
+            <div className="text-xs text-ink-3 font-medium">总用户数</div>
+            <div className="text-xl font-bold text-ink tabular-nums">{metrics.total}</div>
+          </div>
+        </div>
+        <div className="bg-surface-2/60 backdrop-blur border border-line/50 rounded-2xl p-3.5 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
+            <UserCheck size={20} />
+          </div>
+          <div>
+            <div className="text-xs text-ink-3 font-medium">正常启用</div>
+            <div className="text-xl font-bold text-emerald-400 tabular-nums">{metrics.enabled}</div>
+          </div>
+        </div>
+        <div className="bg-surface-2/60 backdrop-blur border border-line/50 rounded-2xl p-3.5 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-zinc-500/10 border border-zinc-500/20 flex items-center justify-center text-zinc-400 shrink-0">
+            <UserX size={20} />
+          </div>
+          <div>
+            <div className="text-xs text-ink-3 font-medium">已停用</div>
+            <div className="text-xl font-bold text-ink-2 tabular-nums">{metrics.disabled}</div>
+          </div>
+        </div>
+        <div className="bg-surface-2/60 backdrop-blur border border-line/50 rounded-2xl p-3.5 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+            <AlertCircle size={20} />
+          </div>
+          <div>
+            <div className="text-xs text-ink-3 font-medium">已过期</div>
+            <div className="text-xl font-bold text-amber-400 tabular-nums">{metrics.expired}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search & Status Filter Pills */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-surface-2/40 border border-line/40 p-2.5 rounded-2xl">
+        <div className="relative flex-1 max-w-md">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索用户名或 Token..."
+            className="w-full pl-9 pr-8 py-1.5 bg-surface-3/80 border border-line rounded-xl text-sm text-ink placeholder-ink-3 focus:outline-none focus:border-blue-500 transition-colors"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink text-xs p-1"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Status Pills */}
+        <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+          {[
+            { id: 'all', label: '全部', count: metrics.total },
+            { id: 'enabled', label: '启用中', count: metrics.enabled },
+            { id: 'disabled', label: '已禁用', count: metrics.disabled },
+            { id: 'expired', label: '已过期', count: metrics.expired },
+          ].map((pill) => {
+            const active = filterStatus === pill.id;
+            return (
+              <button
+                key={pill.id}
+                onClick={() => setFilterStatus(pill.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap ${
+                  active
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+                    : 'text-ink-2 hover:text-ink hover:bg-surface-3'
+                }`}
+              >
+                <span>{pill.label}</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full tabular-nums ${
+                    active ? 'bg-white/20 text-white' : 'bg-surface-4/60 text-ink-3'
+                  }`}
+                >
+                  {pill.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Users Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-        {users?.length > 0 ? (
-          users.map((user) => (
-            <div
-              key={user.id}
-              className="bg-ink/5 border border-line/50 rounded-2xl overflow-hidden hover:border-blue-500/30 transition-all hover:shadow-lg hover:shadow-blue-500/5"
-            >
-              {/* Header */}
-              <div className="p-4 border-b border-line/30">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${user.enabled !== false
-                    ? 'bg-gradient-to-br from-green-400 to-emerald-500 text-ink'
-                    : 'bg-surface-4 text-ink-2'
-                    }`}>
-                    {user.name.charAt(0).toUpperCase()}
+        {filteredUsers?.length > 0 ? (
+          filteredUsers.map((user) => {
+            const isUserEnabled = user.enabled !== false;
+            const isExpired = user.expire_time && user.expire_time !== 0 && new Date(user.expire_time * 1000) < new Date();
+            const initialLetter = (user.name || 'U').charAt(0).toUpperCase();
+
+            return (
+              <div
+                key={user.id}
+                className={`bg-surface-2/70 backdrop-blur-md border rounded-2xl overflow-hidden hover:border-blue-500/40 transition-all duration-300 hover:shadow-xl hover:shadow-blue-500/5 hover:-translate-y-0.5 flex flex-col justify-between ${
+                  !isUserEnabled ? 'opacity-70 border-line/40' : 'border-line/60'
+                }`}
+              >
+                {/* Header */}
+                <div className="p-4 border-b border-line/30 bg-surface-2/30">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {/* Avatar with status indicator */}
+                      <div className="relative shrink-0">
+                        <div
+                          className={`w-11 h-11 rounded-2xl flex items-center justify-center text-lg font-bold shadow-md transition-transform duration-300 ${
+                            isUserEnabled
+                              ? 'bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 text-white shadow-blue-500/20'
+                              : 'bg-surface-4 text-ink-3 shadow-none'
+                          }`}
+                        >
+                          {initialLetter}
+                        </div>
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-surface-2 ${
+                            isUserEnabled ? 'bg-emerald-400' : 'bg-zinc-500'
+                          }`}
+                        />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-ink text-base truncate leading-snug" title={user.name}>
+                          {user.name}
+                        </h3>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                              isUserEnabled
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
+                            }`}
+                          >
+                            {isUserEnabled ? '正常' : '已停用'}
+                          </span>
+                          {isExpired && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
+                              已过期
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-ink truncate">{user.name}</h3>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${user.enabled !== false
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-surface-4/20 text-ink-3'
-                      }`}>
-                      {user.enabled !== false ? '启用' : '禁用'}
+                </div>
+
+                {/* Info Section */}
+                <div className="p-4 space-y-2.5 flex-1 text-xs">
+                  {/* Token */}
+                  <div className="flex items-center justify-between bg-surface-3/40 rounded-xl px-2.5 py-1.5 border border-line/30">
+                    <span className="text-ink-3 flex items-center gap-1.5">
+                      <Key size={13} className="text-blue-400" /> Token
+                    </span>
+                    <span className="font-mono text-ink-2 bg-surface-2 px-1.5 py-0.5 rounded border border-line/30 max-w-[150px] truncate">
+                      {user.token || '****...'}
+                    </span>
+                  </div>
+
+                  {/* Expire Time */}
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-ink-3 flex items-center gap-1.5">
+                      <Calendar size={13} className="text-amber-400" /> 到期时间
+                    </span>
+                    <span className={`font-medium ${isExpired ? 'text-red-400' : 'text-ink-hi'}`}>
+                      {formatExpire(user.expire_time)}
+                    </span>
+                  </div>
+
+                  {/* Created At */}
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-ink-3 flex items-center gap-1.5">
+                      <Clock size={13} className="text-cyan-400" /> 创建时间
+                    </span>
+                    <span className="text-ink-2">
+                      {user.created_at ? new Date(user.created_at * 1000).toLocaleDateString('zh-CN') : '-'}
+                    </span>
+                  </div>
+
+                  {/* Template */}
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-ink-3 flex items-center gap-1.5">
+                      <FileCode size={13} className="text-purple-400" /> 使用模版
+                    </span>
+                    <span className="text-purple-400 font-medium truncate max-w-[140px]" title={getTemplateName(user.template_id)}>
+                      {getTemplateName(user.template_id)}
+                    </span>
+                  </div>
+
+                  {/* Allocations Info */}
+                  <div className="pt-2 border-t border-line/30 flex items-center justify-between px-1">
+                    <span className="text-ink-3">节点分配</span>
+                    <span className="text-blue-400 font-medium">
+                      {user.allocations && Object.keys(user.allocations).length > 0
+                        ? `${Object.keys(user.allocations).length} 个来源`
+                        : '全部节点'}
                     </span>
                   </div>
                 </div>
-              </div>
 
-              {/* Info Section */}
-              <div className="p-4 space-y-3">
-                {/* Token Preview */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-3 flex items-center gap-1">
-                    <Key size={12} /> Token
-                  </span>
-                  <span className="text-xs font-mono text-ink-2 bg-surface-2 px-2 py-0.5 rounded">
-                    {user.token || '****...'}
-                  </span>
-                </div>
-
-                {/* Expire Time */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-3 flex items-center gap-1">
-                    <Calendar size={12} /> 到期时间
-                  </span>
-                  <span className={`text-xs font-medium ${user.expire_time && user.expire_time !== 0 && new Date(user.expire_time * 1000) < new Date()
-                    ? 'text-red-400'
-                    : 'text-ink-hi'
-                    }`}>
-                    {formatExpire(user.expire_time)}
-                  </span>
-                </div>
-
-                {/* Created At */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-3 flex items-center gap-1">
-                    <Clock size={12} /> 创建时间
-                  </span>
-                  <span className="text-xs text-ink-2">
-                    {user.created_at ? new Date(user.created_at * 1000).toLocaleDateString('zh-CN') : '-'}
-                  </span>
-                </div>
-
-                {/* Template */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-3">使用模版</span>
-                  <span className="text-xs text-purple-400">
-                    {getTemplateName(user.template_id)}
-                  </span>
-                </div>
-
-                {/* Allocations Info - placeholder */}
-                <div className="pt-2 border-t border-line/30">
-                  <span className="text-xs text-ink-3">节点分配</span>
-                  <p className="text-sm text-blue-400 mt-1">
-                    {user.allocations && Object.keys(user.allocations).length > 0
-                      ? `${Object.keys(user.allocations).length} 个来源`
-                      : '未分配节点'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Actions Footer */}
-              <div className="px-4 py-3 bg-surface-2/30 border-t border-line/30 flex items-center justify-between">
-                <div className="flex items-center gap-1">
+                {/* Actions Footer */}
+                <div className="p-3 bg-surface-2/50 border-t border-line/30 flex items-center justify-between gap-2">
+                  {/* Primary Copy Button */}
                   <button
                     onClick={() => onCopyUrl(user)}
-                    className="p-2 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
-                    title="复制订阅地址"
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-600/15 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/30 rounded-xl font-medium text-xs transition-all shadow-sm active:scale-95"
+                    title="复制专属订阅地址"
                   >
-                    <Copy size={16} />
+                    <Copy size={14} />
+                    <span>复制订阅</span>
                   </button>
-                  <button
-                    onClick={() => onToggle(user.id, user.enabled !== false)}
-                    className={`p-2 rounded-lg transition-colors ${user.enabled !== false
-                      ? 'text-green-400 hover:bg-green-500/10'
-                      : 'text-ink-3 hover:bg-surface-3'
+
+                  {/* Action Icon Group */}
+                  <div className="flex items-center gap-0.5 bg-surface-3/50 p-0.5 rounded-xl border border-line/30">
+                    <button
+                      onClick={() => onToggle(user.id, isUserEnabled)}
+                      className={`p-1.5 rounded-lg transition-colors ${
+                        isUserEnabled ? 'text-emerald-400 hover:bg-emerald-500/15' : 'text-zinc-400 hover:bg-surface-4'
                       }`}
-                    title={user.enabled !== false ? '禁用' : '启用'}
-                  >
-                    {user.enabled !== false ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
-                  </button>
-                  <button
-                    onClick={() => setTokenUser(user)}
-                    className="p-2 text-ink-2 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-colors"
-                    title="重新生成Token"
-                  >
-                    <Key size={16} />
-                  </button>
-                  <button
-                    onClick={() => setEditingUser(user)}
-                    className="p-2 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
-                    title="编辑分配"
-                  >
-                    <Edit2 size={16} />
-                  </button>
-                  <button
-                    onClick={() => setConfigUser(user)}
-                    disabled={!user.template_id || user.template_id === 'builtin'}
-                    className={`p-2 rounded-lg transition-colors ${
-                      !user.template_id || user.template_id === 'builtin'
-                        ? 'text-ink-4 cursor-not-allowed'
-                        : 'text-ink-2 hover:text-green-400 hover:bg-green-500/10'
-                    }`}
-                    title={!user.template_id || user.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '配置节点'}
-                  >
-                    <Sliders size={16} />
-                  </button>
-                  <button
-                    onClick={() => setSettingsUser(user)}
-                    className="p-2 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
-                    title="用户设置"
-                  >
-                    <Settings size={16} />
-                  </button>
+                      title={isUserEnabled ? '禁用用户' : '启用用户'}
+                    >
+                      {isUserEnabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
+                    </button>
+                    <button
+                      onClick={() => setTokenUser(user)}
+                      className="p-1.5 text-ink-2 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors"
+                      title="重置/自定义 Token"
+                    >
+                      <Key size={14} />
+                    </button>
+                    <button
+                      onClick={() => setEditingUser(user)}
+                      className="p-1.5 text-ink-2 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
+                      title="编辑节点分配"
+                    >
+                      <Edit2 size={14} />
+                    </button>
+                    <button
+                      onClick={() => setConfigUser(user)}
+                      disabled={!user.template_id || user.template_id === 'builtin'}
+                      className={`p-1.5 rounded-lg transition-colors ${
+                        !user.template_id || user.template_id === 'builtin'
+                          ? 'text-ink-4 cursor-not-allowed opacity-40'
+                          : 'text-ink-2 hover:text-cyan-400 hover:bg-cyan-500/10'
+                      }`}
+                      title={!user.template_id || user.template_id === 'builtin' ? '内置模版不支持可视化编辑' : '可视化配置节点'}
+                    >
+                      <Sliders size={14} />
+                    </button>
+                    <button
+                      onClick={() => setSettingsUser(user)}
+                      className="p-1.5 text-ink-2 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                      title="用户设置与模版绑定"
+                    >
+                      <Settings size={14} />
+                    </button>
+                    <button
+                      onClick={() => onDelete(user.id)}
+                      className="p-1.5 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                      title="删除用户"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => onDelete(user.id)}
-                  className="p-2 text-ink-2 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                  title="删除"
-                >
-                  <Trash2 size={16} />
-                </button>
               </div>
-            </div>
-          ))
+            );
+          })
         ) : (
-          <div className="col-span-full bg-surface-2/50 border border-line rounded-xl p-12 text-center">
+          <div className="col-span-full bg-surface-2/50 border border-line rounded-2xl p-12 text-center">
             <UsersIcon size={48} className="mx-auto text-ink-4 mb-4" />
-            <p className="text-ink-2 mb-4">还没有添加任何用户</p>
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-lg transition-colors"
-            >
-              添加第一个用户
-            </button>
+            <p className="text-ink-2 mb-2 font-medium">
+              {search || filterStatus !== 'all' ? '未找到匹配的用户' : '还没有添加任何用户'}
+            </p>
+            {search || filterStatus !== 'all' ? (
+              <button
+                onClick={() => { setSearch(''); setFilterStatus('all'); }}
+                className="px-4 py-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              >
+                清除筛选条件
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-ink rounded-xl transition-colors font-medium text-sm"
+              >
+                添加第一个用户
+              </button>
+            )}
           </div>
         )}
       </div>
+
 
       {/* Add Modal */}
       {showAddModal && (

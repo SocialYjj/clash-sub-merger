@@ -4,7 +4,8 @@ Contains country keywords, names, and detection utilities
 """
 
 import re
-from typing import Dict, List, Optional
+from functools import lru_cache
+from typing import Dict, List, Optional, Tuple
 
 from geoip_service import GeoIPService
 
@@ -530,6 +531,78 @@ PLACEHOLDER_COUNTRY_MAP: Dict[str, str] = {
     "{{ES}}": "ES",
 }
 
+# Precompiled regexes for short Latin keywords in detect_country to eliminate
+# repeated re.search/re.escape compilation overhead on hot paths.
+_COMPILED_SHORT_KEYWORDS: Dict[str, Tuple[List[Tuple[str, re.Pattern]], List[str]]] = {}
+
+
+def _init_compiled_keywords() -> None:
+    if _COMPILED_SHORT_KEYWORDS:
+        return
+    for code, keywords in COUNTRY_KEYWORDS.items():
+        compiled_list = []
+        plain_list = []
+        for keyword in keywords:
+            kw_lower = keyword.lower()
+            if len(kw_lower) <= 3 and kw_lower.isascii() and kw_lower.isalpha():
+                pat = re.compile(r"(?<![a-z0-9.])" + re.escape(kw_lower) + r"(?![a-z0-9.])")
+                compiled_list.append((kw_lower, pat))
+            else:
+                plain_list.append(kw_lower)
+        _COMPILED_SHORT_KEYWORDS[code] = (compiled_list, plain_list)
+
+
+_init_compiled_keywords()
+
+
+@lru_cache(maxsize=8192)
+def _detect_country_cached(name: str) -> Optional[Tuple[str, str, str]]:
+    name_lower = name.lower()
+
+    # Priority 1: Check for flag emoji at start
+    if len(name) >= 2:
+        first_two = name[:2]
+        code = GeoIPService.flag_to_iso(first_two)
+        if code and len(code) == 2:
+            return (
+                COUNTRY_NAMES.get(code, code),
+                code,
+                GeoIPService.iso_to_flag(code),
+            )
+
+    # Priority 2: Check for any flag emoji
+    for i in range(len(name) - 1):
+        code = GeoIPService.flag_to_iso(name[i : i + 2])
+        if code and len(code) == 2:
+            return (
+                COUNTRY_NAMES.get(code, code),
+                code,
+                GeoIPService.iso_to_flag(code),
+            )
+
+    # Priority 3: Keyword matching (longest match wins)
+    best_match_code = None
+    max_len = 0
+
+    for code, (compiled_shorts, plain_words) in _COMPILED_SHORT_KEYWORDS.items():
+        for kw_lower, pat in compiled_shorts:
+            if pat.search(name_lower) and len(kw_lower) > max_len:
+                max_len = len(kw_lower)
+                best_match_code = code
+        for kw_lower in plain_words:
+            if kw_lower in name_lower and len(kw_lower) > max_len:
+                max_len = len(kw_lower)
+                best_match_code = code
+
+    if best_match_code:
+        return (
+            COUNTRY_NAMES.get(best_match_code, best_match_code),
+            best_match_code,
+            GeoIPService.iso_to_flag(best_match_code),
+        )
+
+    return None
+
 
 def detect_country(name: str) -> Optional[Dict[str, str]]:
     """
@@ -543,53 +616,53 @@ def detect_country(name: str) -> Optional[Dict[str, str]]:
     """
     if not name:
         return None
+    res = _detect_country_cached(name)
+    if res:
+        return {
+            "country": res[0],
+            "country_code": res[1],
+            "flag": res[2],
+        }
+    return None
 
-    name_lower = name.lower()
 
-    # Priority 1: Check for flag emoji at start
-    if len(name) >= 2:
-        first_two = name[:2]
-        code = GeoIPService.flag_to_iso(first_two)
+@lru_cache(maxsize=8192)
+def _extract_country_cached(node_name: str) -> Optional[Tuple[str, str, str]]:
+    # 1. Check for flag emoji first (two regional indicator symbols)
+    for i in range(len(node_name) - 1):
+        potential_flag = node_name[i : i + 2]
+        if not (
+            len(potential_flag) == 2
+            and 0x1F1E6 <= ord(potential_flag[0]) <= 0x1F1FF
+            and 0x1F1E6 <= ord(potential_flag[1]) <= 0x1F1FF
+        ):
+            continue
+        code = GeoIPService.flag_to_iso(potential_flag)
         if code and len(code) == 2:
-            return {
-                "country": COUNTRY_NAMES.get(code, code),
-                "country_code": code,
-                "flag": GeoIPService.iso_to_flag(code),
-            }
+            return (
+                COUNTRY_NAMES.get(code, code),
+                code,
+                GeoIPService.iso_to_flag(code),
+            )
 
-    # Priority 2: Check for any flag emoji
-    for i in range(len(name) - 1):
-        code = GeoIPService.flag_to_iso(name[i : i + 2])
-        if code and len(code) == 2:
-            return {
-                "country": COUNTRY_NAMES.get(code, code),
-                "country_code": code,
-                "flag": GeoIPService.iso_to_flag(code),
-            }
-
-    # Priority 3: Keyword matching (longest match wins)
+    # 2. Check for keywords (case-insensitive)
+    # Find the longest matching keyword to prioritize specific names (e.g. 'Antarctica' > 'CA')
+    name_lower = node_name.lower()
     best_match_code = None
     max_len = 0
 
     for code, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
-            keyword_lower = keyword.lower()
-            is_short_latin = len(keyword_lower) <= 3 and keyword_lower.isascii() and keyword_lower.isalpha()
-            if is_short_latin:
-                # Avoid matching ccTLD/domain fragments such as ".me", ".us", ".sg".
-                matched = re.search(r"(?<![a-z0-9.])" + re.escape(keyword_lower) + r"(?![a-z0-9.])", name_lower)
-            else:
-                matched = keyword_lower in name_lower
-            if matched and len(keyword_lower) > max_len:
-                max_len = len(keyword_lower)
+            if keyword in name_lower and len(keyword) > max_len:
+                max_len = len(keyword)
                 best_match_code = code
 
     if best_match_code:
-        return {
-            "country": COUNTRY_NAMES.get(best_match_code, best_match_code),
-            "country_code": best_match_code,
-            "flag": GeoIPService.iso_to_flag(best_match_code),
-        }
+        return (
+            COUNTRY_NAMES.get(best_match_code, best_match_code),
+            best_match_code,
+            GeoIPService.iso_to_flag(best_match_code),
+        )
 
     return None
 
@@ -606,42 +679,11 @@ def extract_country_from_name(node_name: str, server: str = None) -> Optional[Di
     """
     if not node_name:
         return None
-
-    # 1. Check for flag emoji first (two regional indicator symbols)
-    for i in range(len(node_name) - 1):
-        potential_flag = node_name[i : i + 2]
-        if not (
-            len(potential_flag) == 2
-            and 0x1F1E6 <= ord(potential_flag[0]) <= 0x1F1FF
-            and 0x1F1E6 <= ord(potential_flag[1]) <= 0x1F1FF
-        ):
-            continue
-        code = GeoIPService.flag_to_iso(potential_flag)
-        if code and len(code) == 2:
-            return {
-                "country": COUNTRY_NAMES.get(code, code),
-                "country_code": code,
-                "flag": GeoIPService.iso_to_flag(code),
-            }
-
-    # 2. Check for keywords (case-insensitive)
-    # Find the longest matching keyword to prioritize specific names (e.g. 'Antarctica' > 'CA')
-    name_lower = node_name.lower()
-    best_match_code = None
-    max_len = 0
-
-    for code, keywords in COUNTRY_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in name_lower:
-                if len(keyword) > max_len:
-                    max_len = len(keyword)
-                    best_match_code = code
-
-    if best_match_code:
+    res = _extract_country_cached(node_name)
+    if res:
         return {
-            "country": COUNTRY_NAMES.get(best_match_code, best_match_code),
-            "country_code": best_match_code,
-            "flag": GeoIPService.iso_to_flag(best_match_code),
+            "country": res[0],
+            "country_code": res[1],
+            "flag": res[2],
         }
-
     return None

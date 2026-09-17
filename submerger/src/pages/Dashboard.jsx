@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import request, { isRequestCanceled } from '../utils/request';
 import { SkeletonHeader, SkeletonStatGrid, SkeletonPanel, SkeletonRows } from '../components/Skeleton';
-import * as echarts from 'echarts';
+import echarts from '../utils/echarts';
 import { useTheme } from '../utils/theme';
 import {
   Server, Users, Router,
@@ -271,6 +271,8 @@ export default function Dashboard({ showToast }) {
     }
   };
 
+  const [trendDays, setTrendDays] = useState(14);
+
   // Process chart data
   const protocolData = Object.entries(overview.nodes.by_protocol || {})
     .map(([name, value]) => ({ name: name.toUpperCase(), value }))
@@ -283,6 +285,11 @@ export default function Dashboard({ showToast }) {
     flag: c.flag,
     value: c.count
   }));
+
+  const filteredHistory = useMemo(() => {
+    if (!trendDays || trendDays <= 0) return statsHistory;
+    return statsHistory.slice(-trendDays);
+  }, [statsHistory, trendDays]);
 
   if (loading) {
     return <DashboardSkeleton />;
@@ -324,7 +331,17 @@ export default function Dashboard({ showToast }) {
           subtext="可用节点"
           icon={Server}
           color="cyan"
-        />
+        >
+          {protocolData.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {protocolData.slice(0, 3).map((p) => (
+                <span key={p.name} className="text-[11px] px-1.5 py-0.5 rounded bg-surface-3/50 text-ink-2 font-mono">
+                  {p.name}: {p.value}
+                </span>
+              ))}
+            </div>
+          )}
+        </StatCard>
         <StatCard
           title="用户总数"
           value={overview.users.total}
@@ -340,9 +357,22 @@ export default function Dashboard({ showToast }) {
           color="orange"
         >
           {overview.best_node ? (
-            <p className="text-xs text-orange-400 truncate mt-2 font-medium" title={overview.best_node.name}>
-              {overview.best_node.name}
-            </p>
+            <div className="mt-2 flex items-center gap-1.5 min-w-0">
+              <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full border ${
+                overview.best_node.latency < 150
+                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                  : overview.best_node.latency < 300
+                  ? 'bg-green-500/15 text-green-400 border-green-500/30'
+                  : overview.best_node.latency < 600
+                  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                  : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+              }`}>
+                极速
+              </span>
+              <p className="text-xs text-ink-2 truncate font-medium flex-1" title={overview.best_node.name}>
+                {overview.best_node.name}
+              </p>
+            </div>
           ) : (
             <p className="text-xs text-ink-3 mt-2">暂无测速数据</p>
           )}
@@ -351,7 +381,7 @@ export default function Dashboard({ showToast }) {
 
       {/* Node Trend */}
       <div className="bg-surface-2/40 border border-line/50 rounded-2xl p-6 backdrop-blur-sm ring-1 ring-ink/5 overflow-hidden min-w-0">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-purple-500/20 rounded-lg text-purple-400">
               <TrendingUp size={18} />
@@ -359,14 +389,34 @@ export default function Dashboard({ showToast }) {
             <h3 className="text-lg font-bold text-ink">节点趋势</h3>
           </div>
           {statsHistory.length >= 2 && (
-            <span className="text-xs text-ink-3 bg-surface-3/50 px-2 py-1 rounded">近 {statsHistory.length} 天</span>
+            <div className="flex items-center gap-1 bg-surface-3/50 p-1 rounded-lg text-xs">
+              {[
+                { label: '7天', value: 7 },
+                { label: '14天', value: 14 },
+                { label: '30天', value: 30 },
+                { label: '全部', value: 0 },
+              ].map(({ label, value }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setTrendDays(value)}
+                  className={`px-2 py-0.5 rounded transition-all ${
+                    trendDays === value
+                      ? 'bg-blue-600 text-ink font-medium shadow-sm'
+                      : 'text-ink-2 hover:text-ink hover:bg-surface-4/40'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
-        {statsHistory.length < 2 ? (
+        {filteredHistory.length < 2 ? (
           <div className="text-center py-8 text-ink-3 text-sm">暂无数据</div>
         ) : (
-          <NodeTrendChart history={statsHistory} />
+          <NodeTrendChart history={filteredHistory} />
         )}
       </div>
 
@@ -393,22 +443,22 @@ export default function Dashboard({ showToast }) {
               return countryChartData.map((entry, index) => {
                 const percentage = ((entry.value / totalNodes) * 100).toFixed(1);
                 return (
-                  <div key={index} className="group">
+                  <div key={index} className="group p-2 rounded-xl -mx-2 hover:bg-surface-3/30 transition-colors">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-2xl">{entry.flag}</span>
-                        <span className="text-sm text-ink-hi font-medium">{entry.name}</span>
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-2xl drop-shadow-sm">{entry.flag}</span>
+                        <span className="text-sm text-ink-hi font-medium group-hover:text-ink transition-colors">{entry.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-ink-3">{percentage}%</span>
-                        <span className="text-xs font-mono text-ink-3 bg-surface-2 px-2 py-1 rounded">
+                        <span className="text-xs font-mono tabular-nums text-ink-3">{percentage}%</span>
+                        <span className="text-xs font-mono tabular-nums text-ink-2 bg-surface-3/60 px-2 py-0.5 rounded-md border border-line-soft">
                           {entry.value}
                         </span>
                       </div>
                     </div>
                     <div className="h-2 bg-surface-3/50 rounded-full overflow-hidden">
                       <div
-                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        className="h-full rounded-full transition-all duration-500 ease-out group-hover:brightness-110"
                         style={{
                           width: `${percentage}%`,
                           backgroundColor: COLORS[index % COLORS.length]
@@ -441,22 +491,22 @@ export default function Dashboard({ showToast }) {
                 const totalNodes = protocolData.reduce((sum, p) => sum + p.value, 0);
                 const percentage = totalNodes ? ((entry.value / totalNodes) * 100).toFixed(1) : 0;
                 return (
-                  <div key={index} className="group">
+                  <div key={index} className="group p-2 rounded-xl -mx-2 hover:bg-surface-3/30 transition-colors">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                        <span className="text-sm text-ink-hi font-medium">{entry.name}</span>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                        <span className="text-sm text-ink-hi font-medium group-hover:text-ink transition-colors">{entry.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-ink-3">{percentage}%</span>
-                        <span className="text-xs font-mono text-ink-3 bg-surface-2 px-2 py-1 rounded">
+                        <span className="text-xs font-mono tabular-nums text-ink-3">{percentage}%</span>
+                        <span className="text-xs font-mono tabular-nums text-ink-2 bg-surface-3/60 px-2 py-0.5 rounded-md border border-line-soft">
                           {entry.value}
                         </span>
                       </div>
                     </div>
                     <div className="h-2 bg-surface-3/50 rounded-full overflow-hidden">
                       <div
-                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        className="h-full rounded-full transition-all duration-500 ease-out group-hover:brightness-110"
                         style={{
                           width: `${percentage}%`,
                           backgroundColor: COLORS[index % COLORS.length]

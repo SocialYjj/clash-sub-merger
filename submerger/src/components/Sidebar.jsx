@@ -76,13 +76,16 @@ export default function Sidebar({ collapsed, setCollapsed, onLogout }) {
       <NavLink
         to={item.path}
         onClick={() => setMobileOpen(false)}
-        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group
+        className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group overflow-hidden
           ${isActive
-            ? 'bg-blue-500/10 text-blue-500'
+            ? 'bg-blue-500/10 text-blue-500 font-semibold shadow-sm'
             : 'text-ink-2 hover:bg-surface-2 hover:text-ink-hi'
           }`}
       >
-        <Icon size={20} className={`flex-shrink-0 ${isActive ? 'text-blue-500' : 'text-ink-3 group-hover:text-ink-hi'}`} />
+        {isActive && (
+          <span className="absolute left-0 top-2 bottom-2 w-1 bg-blue-500 rounded-r-full shadow-sm shadow-blue-500/50" />
+        )}
+        <Icon size={20} className={`flex-shrink-0 transition-transform group-hover:scale-105 ${isActive ? 'text-blue-500' : 'text-ink-3 group-hover:text-ink-hi'}`} />
         {!collapsed && (
           <span className="text-sm font-medium truncate">{item.label}</span>
         )}

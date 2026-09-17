@@ -18,7 +18,8 @@ export default function SubscriptionCard({
     onDragOver,
     onDrop,
     onDragEnd,
-    copyUrl
+    copyUrl,
+    isDraggable = true,
 }) {
     const traffic = getTrafficInfo(sub);
     const isRefreshing = refreshingIds?.has(sub.id) ?? false;
@@ -33,13 +34,14 @@ export default function SubscriptionCard({
 
     return (
         <div
-            draggable
-            onDragStart={(e) => onDragStart(e, index)}
-            onDragOver={(e) => onDragOver(e, index)}
-            onDrop={(e) => onDrop(e, index)}
+            draggable={isDraggable}
+            onDragStart={(e) => onDragStart?.(e, index)}
+            onDragOver={(e) => onDragOver?.(e, index)}
+            onDrop={(e) => onDrop?.(e, index)}
             onDragEnd={onDragEnd}
-            className={`group relative bg-surface-2 rounded-xl transition-all duration-300 hover:shadow-xl hover:shadow-black/20 cursor-move border-t-4 ${sub.enabled !== false ? 'border-t-emerald-500' : 'border-t-ink-3'
-                } ${isDragging ? 'opacity-50 scale-95' : ''} ${isDragOver ? 'ring-2 ring-blue-500' : ''}`}
+            className={`group relative bg-surface-2 rounded-2xl transition-all duration-300 hover:shadow-xl hover:shadow-black/20 border border-line/40 hover:border-line-strong/60 ring-1 ring-ink/5 border-t-4 ${
+                sub.enabled !== false ? 'border-t-emerald-500' : 'border-t-ink-4/40'
+            } ${isDragging ? 'opacity-50 scale-95' : ''} ${isDragOver ? 'ring-2 ring-blue-500 shadow-blue-500/10' : ''}`}
         >
             <div className="p-5 space-y-5">
                 {/* Header Section */}
@@ -90,7 +92,14 @@ export default function SubscriptionCard({
                         </div>
                     </div>
 
-                    <GripVertical className="text-ink-4 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing" size={20} />
+                    {isDraggable && (
+                        <div
+                            className="p-1 rounded-lg text-ink-4 hover:text-ink hover:bg-surface-3/60 transition-colors cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100"
+                            title="按住拖拽调整顺序"
+                        >
+                            <GripVertical size={18} />
+                        </div>
+                    )}
                 </div>
 
                 {/* Tags Row */}
@@ -115,9 +124,11 @@ export default function SubscriptionCard({
                 </div>
 
                 {sub.last_error && (
-                    <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300" title={sub.last_error}>
-                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                        <span className="break-words">{sub.last_error}</span>
+                    <div className="flex items-start gap-2 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-300" title={sub.last_error}>
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rose-400" />
+                        <span className="break-words line-clamp-2 hover:line-clamp-none transition-all cursor-default select-text">
+                            {sub.last_error}
+                        </span>
                     </div>
                 )}
 
@@ -205,72 +216,78 @@ export default function SubscriptionCard({
                 </div>
 
                 {/* Actions Bar */}
-                <div className="flex items-center justify-center gap-3 pt-2 border-t border-line/50">
+                <div className="flex items-center justify-center gap-2.5 pt-3 border-t border-line/40">
                     {/* Copy URL - Only for URL subscriptions */}
                     {!isLocal && (
                         <button
+                            type="button"
                             onClick={() => copyUrl(sub.url)}
-                            className="w-9 h-9 rounded-full flex items-center justify-center bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-colors"
+                            className="w-9 h-9 rounded-xl flex items-center justify-center bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border border-purple-500/20 hover:border-purple-500/40 transition-all hover:scale-105 active:scale-95"
                             title="复制链接"
                         >
-                            <Copy size={16} />
+                            <Copy size={15} />
                         </button>
                     )}
 
                     {/* Refresh - Only for URL subscriptions */}
                     {!isLocal && (
                         <button
+                            type="button"
                             onClick={() => onRefresh(sub.id)}
                             disabled={isRefreshing}
-                            className="w-9 h-9 rounded-full flex items-center justify-center bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                            className="w-9 h-9 rounded-xl flex items-center justify-center bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50"
                             title="更新订阅"
                         >
-                            <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
+                            <RefreshCw size={15} className={isRefreshing ? 'animate-spin' : ''} />
                         </button>
                     )}
 
                     {/* Schedule - Only for URL subscriptions */}
                     {!isLocal && (
                         <button
+                            type="button"
                             onClick={() => onSchedule(sub)}
-                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${sub.cron_expr
-                                ? 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
-                                : 'bg-surface-4/10 text-ink-2 hover:bg-surface-4/20'
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:scale-105 active:scale-95 ${sub.cron_expr
+                                ? 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40'
+                                : 'bg-surface-4/10 text-ink-2 hover:bg-surface-4/20 border border-line-soft'
                                 }`}
                             title="定时设置"
                         >
-                            <Clock size={16} />
+                            <Clock size={15} />
                         </button>
                     )}
 
                     {/* View nodes - Available for every subscription type */}
                     <button
+                        type="button"
                         onClick={(event) => {
                             event.stopPropagation();
                             onViewNodes(sub);
                         }}
-                        className="w-9 h-9 rounded-full flex items-center justify-center bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                        className="w-9 h-9 rounded-xl flex items-center justify-center bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 border border-cyan-500/20 hover:border-cyan-500/40 transition-all hover:scale-105 active:scale-95"
                         title="查看节点列表"
                     >
-                        <List size={16} />
+                        <List size={15} />
                     </button>
 
                     {/* Edit */}
                     <button
+                        type="button"
                         onClick={() => onEdit(sub)}
-                        className="w-9 h-9 rounded-full flex items-center justify-center bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
+                        className="w-9 h-9 rounded-xl flex items-center justify-center bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40 transition-all hover:scale-105 active:scale-95"
                         title="编辑"
                     >
-                        <Edit2 size={16} />
+                        <Edit2 size={15} />
                     </button>
 
                     {/* Delete */}
                     <button
+                        type="button"
                         onClick={() => onDelete(sub.id)}
-                        className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                        className="w-9 h-9 rounded-xl flex items-center justify-center bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 hover:border-rose-500/40 transition-all hover:scale-105 active:scale-95"
                         title="删除"
                     >
-                        <Trash2 size={16} />
+                        <Trash2 size={15} />
                     </button>
                 </div>
             </div>

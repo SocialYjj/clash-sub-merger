@@ -4,6 +4,7 @@ Group proxy nodes by country/region
 """
 
 import re
+from functools import lru_cache
 from typing import Dict, List, Optional
 
 from geoip_service import GeoIPService
@@ -387,8 +388,8 @@ class CountryGrouper:
         return "🔰 未知"
 
     @staticmethod
-    def identify_country(proxy_name: str, proxy_server: str = None) -> str:
-        """Identify country/region of proxy node."""
+    @lru_cache(maxsize=8192)
+    def _identify_country_cached(proxy_name: str) -> str:
         detected = detect_country(proxy_name)
         detected_group = CountryGrouper._country_from_detection_result(detected)
         if detected_group:
@@ -402,9 +403,17 @@ class CountryGrouper:
         return "🔰 未知"
 
     @staticmethod
+    def identify_country(proxy_name: str, proxy_server: str = None) -> str:
+        """Identify country/region of proxy node."""
+        if not proxy_name:
+            return "🔰 未知"
+        return CountryGrouper._identify_country_cached(proxy_name)
+
+    @staticmethod
     def group_by_country(proxies: List[dict]) -> Dict[str, List[str]]:
         """Group proxy nodes by country/region, return {country: [node_name_list]}"""
         groups: Dict[str, List[str]] = {}
+        seen: Dict[str, set] = {}
 
         for proxy in proxies:
             name = proxy.get("name", "")
@@ -417,7 +426,9 @@ class CountryGrouper:
 
             if country not in groups:
                 groups[country] = []
-            if name not in groups[country]:
+                seen[country] = set()
+            if name not in seen[country]:
+                seen[country].add(name)
                 groups[country].append(name)
 
         return groups

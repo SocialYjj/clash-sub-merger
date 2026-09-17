@@ -1736,31 +1736,41 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
         </button>
       </div>
 
-      {/* Stats */}
-      <div className="flex flex-wrap gap-3 text-sm flex-shrink-0">
-        <span className="text-ink-2">
-          共 <span className="text-ink font-medium">{filteredNodes.length}</span> 个节点
-          {(search || filterSource !== 'all' || filterCountry || filterIpSource || filterIpProperty || filterType !== 'all' || filterLatencyStatus !== 'all') &&
-            <span className="text-ink-3"> (筛选自 {allNodes.length} 个)</span>
-          }
-        </span>
-        <span className="text-ink-3">|</span>
-        <span className="text-ink-2">
-          已测试: <span className="text-blue-400">{testedCount}</span>
-        </span>
-        <span className="text-ink-2">
-          成功: <span className="text-green-400">{successCount}</span>
-        </span>
-        <span className="text-ink-2">
-          失败: <span className="text-red-400">{failedCount}</span>
-        </span>
+      {/* Stats Badges Bar */}
+      <div className="flex flex-wrap items-center gap-2 text-xs flex-shrink-0">
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-surface-2/80 border border-line/60 rounded-xl text-ink-2">
+          <span>节点总数:</span>
+          <span className="font-bold text-ink tabular-nums">{filteredNodes.length}</span>
+          {(search || filterSource !== 'all' || filterCountry || filterIpSource || filterIpProperty || filterType !== 'all' || filterLatencyStatus !== 'all') && (
+            <span className="text-ink-3">/ {allNodes.length}</span>
+          )}
+        </div>
+
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-400">
+          <span>已测试</span>
+          <span className="font-bold tabular-nums">{testedCount}</span>
+        </div>
+
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400">
+          <span>成功</span>
+          <span className="font-bold tabular-nums">{successCount}</span>
+        </div>
+
+        {failedCount > 0 && (
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400">
+            <span>失败</span>
+            <span className="font-bold tabular-nums">{failedCount}</span>
+          </div>
+        )}
+
         {selectedNodes.size > 0 && (
-          <>
-            <span className="text-ink-3">|</span>
-            <span className="text-blue-400">已选择 {selectedNodes.size} 个</span>
-          </>
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-purple-500/15 border border-purple-500/30 rounded-xl text-purple-300 font-medium">
+            <span>已选择</span>
+            <span className="font-bold tabular-nums">{selectedNodes.size}</span>
+          </div>
         )}
       </div>
+
       {/* Nodes Table */}
       <div className="bg-surface-2/50 border border-line rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
         {loadingNodes ? (

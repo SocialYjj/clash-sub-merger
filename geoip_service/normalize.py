@@ -6,6 +6,7 @@ Normalization helpers for GeoIP provider payloads, cached results and country
 
 import re
 import time
+from functools import lru_cache
 from typing import Dict, Optional
 
 import geoip_service as _PKG
@@ -255,6 +256,7 @@ def normalize_ippure_profile(data: dict, exit_ip: Optional[str] = None) -> Optio
     return {key: value for key, value in profile.items() if value is not None}
 
 
+@lru_cache(maxsize=4096)
 def normalize_country_name(country_name: str, iso_code: str = "") -> str:
     """Normalize provider output to the canonical Chinese country label."""
     source_text = str(country_name or "").strip()
@@ -299,6 +301,7 @@ class GeoIPService:
     """Static utility class for GeoIP-related functions (flag conversion, etc.)"""
 
     @staticmethod
+    @lru_cache(maxsize=512)
     def iso_to_flag(iso_code: str) -> str:
         """
         Convert ISO 3166-1 alpha-2 country code to flag emoji

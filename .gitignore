@@ -7,30 +7,47 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+htmlcov/
+coverage/
 
 # Local analysis / temporary working files
 .audit/
 .workbuddy/
+.zcode/
 .tmp_*/
 *.diff
+*.patch
+*.orig
+*.bak
+*~
 .tmp_*.txt
+.current_protocol_diff.txt
 
-# Node
+# Node & Frontend
 node_modules/
 submerger/node_modules/
 e2e/node_modules/
 e2e/test-results/
 e2e/playwright-report/
-
-# Build (Frontend)
+playwright-report/
+.playwright/
+test-results/
 submerger/dist/
 submerger/.vite/
+*.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Go binaries
+# Go binaries & builds
 speedtest/*.exe
 speedtest/*.exe~
+speedtest/speedtest
+speedtest/speedtest-build-test*
 
-# User Data & Secrets
+# User Data, Configs & Secrets
 data/
 !data/.gitkeep
 config.json
@@ -38,6 +55,20 @@ myconfig.yaml
 *.yaml
 !docker-compose.yml
 .env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.7z
+*.rar
 
 # Logs
 *.log
@@ -53,5 +84,3 @@ Thumbs.db
 
 # Misc
 uv.lock
-.zcode/
-.current_protocol_diff.txt

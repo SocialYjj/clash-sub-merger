@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { Plus, RefreshCw, Server } from 'lucide-react';
+import { useRef, useState, useMemo } from 'react';
+import { Plus, RefreshCw, Server, Search, X, ListFilter } from 'lucide-react';
 import request from '../utils/request';
 import { copyToClipboard } from '../utils/clipboard';
 import SubscriptionCard from '../components/SubscriptionCard';
@@ -38,6 +38,64 @@ export default function Subscriptions({
   // Drag and drop state
   const [draggedItem, setDraggedItem] = useState(null);
   const [dragOverItem, setDragOverItem] = useState(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Compute metrics
+  const metrics = useMemo(() => {
+    if (!Array.isArray(subscriptions)) {
+      return { total: 0, active: 0, disabled: 0, error: 0, local: 0, totalNodes: 0 };
+    }
+    let active = 0;
+    let disabled = 0;
+    let error = 0;
+    let local = 0;
+    let totalNodes = 0;
+
+    for (const sub of subscriptions) {
+      if (sub.enabled === false) {
+        disabled += 1;
+      } else {
+        active += 1;
+      }
+      if (sub.last_error && sub.enabled !== false) {
+        error += 1;
+      }
+      if (sub.type === 'local') {
+        local += 1;
+      }
+      totalNodes += sub.node_count || 0;
+    }
+    return {
+      total: subscriptions.length,
+      active,
+      disabled,
+      error,
+      local,
+      totalNodes,
+    };
+  }, [subscriptions]);
+
+  const filteredSubscriptions = useMemo(() => {
+    if (!Array.isArray(subscriptions)) return [];
+    return subscriptions.filter((sub) => {
+      if (statusFilter === 'active' && sub.enabled === false) return false;
+      if (statusFilter === 'disabled' && sub.enabled !== false) return false;
+      if (statusFilter === 'error' && (!sub.last_error || sub.enabled === false)) return false;
+      if (statusFilter === 'local' && sub.type !== 'local') return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const matchName = (sub.name || '').toLowerCase().includes(q);
+        const matchUrl = (sub.url || '').toLowerCase().includes(q);
+        return matchName || matchUrl;
+      }
+      return true;
+    });
+  }, [subscriptions, statusFilter, searchQuery]);
+
+  const isFiltering = statusFilter !== 'all' || searchQuery.trim() !== '';
 
   const openScheduleModal = (sub) => {
     setSelectedSub(sub);
@@ -163,7 +221,24 @@ export default function Subscriptions({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-ink">机场管理</h1>
-          <p className="text-ink-2 text-sm mt-1">管理你的订阅源</p>
+          <div className="flex flex-wrap items-center gap-2 mt-1.5">
+            <span className="text-xs text-ink-2">
+              共 <strong className="text-ink font-semibold">{metrics.total}</strong> 个订阅源
+            </span>
+            <span className="text-xs text-ink-4">•</span>
+            <span className="text-xs text-ink-2">
+              <strong className="text-ink font-semibold">{metrics.totalNodes}</strong> 个节点
+            </span>
+            {metrics.error > 0 && (
+              <>
+                <span className="text-xs text-ink-4">•</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                  {metrics.error} 个源异常
+                </span>
+              </>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           <button
@@ -184,30 +259,102 @@ export default function Subscriptions({
         </div>
       </div>
 
+      {/* Filter and Search Toolbar */}
+      {subscriptions?.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-2/40 border border-line/40 rounded-2xl p-2.5 backdrop-blur-sm">
+          {/* Status Tabs */}
+          <div className="flex flex-wrap items-center gap-1">
+            {[
+              { id: 'all', label: '全部', count: metrics.total },
+              { id: 'active', label: '已启用', count: metrics.active },
+              { id: 'disabled', label: '已停用', count: metrics.disabled },
+              { id: 'error', label: '异常', count: metrics.error, badgeColor: 'text-rose-400' },
+              { id: 'local', label: '本地', count: metrics.local },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStatusFilter(tab.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  statusFilter === tab.id
+                    ? 'bg-blue-600 text-ink shadow-sm'
+                    : 'text-ink-2 hover:text-ink hover:bg-surface-3/50'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono tabular-nums ${
+                  statusFilter === tab.id ? 'bg-white/20 text-ink' : (tab.badgeColor || 'bg-surface-3 text-ink-3')
+                }`}>
+                  {tab.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Search Input */}
+          <div className="relative w-full sm:w-64">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="搜索名称或链接..."
+              className="w-full pl-8 pr-7 py-1.5 bg-surface-3/40 border border-line-soft rounded-lg text-xs text-ink placeholder-ink-3 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink p-0.5 rounded-full"
+                title="清空"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Subscription Cards */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {subscriptions?.length > 0 ? (
-          subscriptions.map((sub, index) => (
-            <SubscriptionCard
-              key={sub.id}
-              sub={sub}
-              index={index}
-              refreshingIds={refreshingIds}
-              draggedItem={draggedItem}
-              dragOverItem={dragOverItem}
-              onToggle={onToggle}
-              onRefresh={handleRefreshSingle}
-              onDelete={onDelete}
-              onEdit={openEditModal}
-              onSchedule={openScheduleModal}
-              onViewNodes={openSubscriptionNodesModal}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onDragEnd={handleDragEnd}
-              copyUrl={copyUrl}
-            />
-          ))
+          filteredSubscriptions.length > 0 ? (
+            filteredSubscriptions.map((sub, index) => (
+              <SubscriptionCard
+                key={sub.id}
+                sub={sub}
+                index={index}
+                refreshingIds={refreshingIds}
+                draggedItem={draggedItem}
+                dragOverItem={dragOverItem}
+                onToggle={onToggle}
+                onRefresh={handleRefreshSingle}
+                onDelete={onDelete}
+                onEdit={openEditModal}
+                onSchedule={openScheduleModal}
+                onViewNodes={openSubscriptionNodesModal}
+                onDragStart={isFiltering ? undefined : handleDragStart}
+                onDragOver={isFiltering ? undefined : handleDragOver}
+                onDrop={isFiltering ? undefined : handleDrop}
+                onDragEnd={isFiltering ? undefined : handleDragEnd}
+                copyUrl={copyUrl}
+                isDraggable={!isFiltering}
+              />
+            ))
+          ) : (
+            <div className="col-span-full flex flex-col items-center justify-center py-16 bg-surface-2/20 border border-line/50 rounded-2xl text-center">
+              <ListFilter size={36} className="text-ink-4 mb-3" />
+              <h3 className="text-base font-semibold text-ink mb-1">未找到匹配的订阅源</h3>
+              <p className="text-xs text-ink-3 mb-4">没有满足当前搜索或状态条件的订阅</p>
+              <button
+                type="button"
+                onClick={() => { setSearchQuery(''); setStatusFilter('all'); }}
+                className="px-4 py-1.5 bg-surface-3 hover:bg-surface-4 text-ink text-xs font-medium rounded-lg transition-colors"
+              >
+                重置筛选条件
+              </button>
+            </div>
+          )
         ) : (
           <div className="col-span-full flex flex-col items-center justify-center py-20 bg-surface-2/30 border border-line dashed rounded-2xl">
             <div className="w-20 h-20 bg-surface-2 rounded-full flex items-center justify-center mb-6 text-ink-4">

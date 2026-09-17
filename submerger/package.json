@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "6.4.3",
+  "version": "6.4.4",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.cjs",
@@ -30,13 +30,11 @@
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
     "echarts": "^6.0.0",
-    "framer-motion": "^12.23.26",
     "lucide-react": "^0.562.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^8.3.0",
-    "react-window": "^2.2.5",
     "tailwind-merge": "^3.4.0"
   }
 }
