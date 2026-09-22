@@ -225,16 +225,16 @@ def find_node_by_reference(
     Returns:
         Transformed node dict or None if not found
     """
+    # VPN Gate dynamic nodes do not require loading or copying global configuration
+    if sub_id == VPNGATE_SOURCE_ID:
+        return find_vpngate_node(node_index, node_name, node_id)
+
     config = load_config()
 
     # Custom nodes
     if sub_id == "custom":
         custom_nodes = config.get("custom_nodes", [])
         return find_custom_node(custom_nodes, node_index, node_name, node_id)
-
-    # VPN Gate dynamic nodes
-    if sub_id == VPNGATE_SOURCE_ID:
-        return find_vpngate_node(node_index, node_name, node_id)
 
     # Subscription nodes
     return find_subscription_node(sub_id, node_index, node_name, yaml_source_dir, node_id)

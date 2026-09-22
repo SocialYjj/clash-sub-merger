@@ -562,6 +562,47 @@ class VpnGateChainIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(len(pool["proxies"]), 1)
 
+    def test_vpngate_memory_cache_prevents_redundant_storage_reads(self):
+        from services.vpngate import (
+            get_vpngate_node,
+            invalidate_vpngate_mem_cache,
+            list_vpngate_nodes,
+        )
+
+        invalidate_vpngate_mem_cache()
+        sample_node = parse_vpngate_record(_record(IP="203.0.113.88", HostName="vg-cache-test"))
+        test_payload = {
+            "nodes": [sample_node],
+            "last_attempt_at": 1780000000,
+            "last_success_at": 1780000000,
+            "last_error": None,
+        }
+
+        read_count = 0
+
+        def counting_read(namespace, default=None):
+            nonlocal read_count
+            read_count += 1
+            return {"payload": test_payload}
+
+        with patch("core.storage.read_cache_document_record", side_effect=counting_read):
+            # First read should query storage
+            nodes1 = list_vpngate_nodes()
+            self.assertEqual(len(nodes1), 1)
+            self.assertEqual(read_count, 1)
+
+            # Subsequent reads within TTL should reuse memory cache
+            for _ in range(50):
+                list_vpngate_nodes()
+                node = get_vpngate_node(sample_node["id"])
+                self.assertIsNotNone(node)
+            self.assertEqual(read_count, 1)
+
+            # Invalidation forces a new storage read
+            invalidate_vpngate_mem_cache()
+            list_vpngate_nodes()
+            self.assertEqual(read_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

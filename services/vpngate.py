@@ -48,6 +48,22 @@ _ALLOWED_CIPHERS = {
 _ALLOWED_AUTH = {"MD5", "SHA1", "SHA256", "SHA384", "SHA512"}
 _ALLOWED_COMP_LZO = {"yes", "no", "adaptive"}
 _REFRESH_LOCK = threading.RLock()
+_MEM_CACHE_LOCK = threading.Lock()
+_MEM_CACHE_PAYLOAD: dict[str, Any] | None = None
+_MEM_CACHE_NODES_BY_ID: dict[str, dict[str, Any]] | None = None
+_MEM_CACHE_EXPIRY: float = 0.0
+_MEM_CACHE_TTL_SECONDS: float = 30.0
+
+
+def invalidate_vpngate_mem_cache() -> None:
+    """Invalidate process-local in-memory cache for VPN Gate nodes."""
+    global _MEM_CACHE_PAYLOAD, _MEM_CACHE_NODES_BY_ID, _MEM_CACHE_EXPIRY
+    with _MEM_CACHE_LOCK:
+        _MEM_CACHE_PAYLOAD = None
+        _MEM_CACHE_NODES_BY_ID = None
+        _MEM_CACHE_EXPIRY = 0.0
+
+
 _NODE_TEST_METADATA_FIELDS = (
     "last_latency",
     "last_latency_time",
@@ -120,31 +136,51 @@ def get_vpngate_settings(config: dict | None = None) -> dict[str, Any]:
 
 
 def _get_cache_payload() -> dict[str, Any]:
-    record = storage.read_cache_document_record(VPNGATE_CACHE_NAMESPACE, default=None)
-    if not isinstance(record, dict):
-        return {
-            "nodes": [],
-            "last_attempt_at": None,
-            "last_success_at": None,
-            "last_error": None,
+    global _MEM_CACHE_PAYLOAD, _MEM_CACHE_NODES_BY_ID, _MEM_CACHE_EXPIRY
+    now = time.monotonic()
+    if _MEM_CACHE_PAYLOAD is not None and now < _MEM_CACHE_EXPIRY:
+        return _MEM_CACHE_PAYLOAD
+
+    with _MEM_CACHE_LOCK:
+        if _MEM_CACHE_PAYLOAD is not None and time.monotonic() < _MEM_CACHE_EXPIRY:
+            return _MEM_CACHE_PAYLOAD
+
+        record = storage.read_cache_document_record(VPNGATE_CACHE_NAMESPACE, default=None)
+        if not isinstance(record, dict):
+            empty_payload = {
+                "nodes": [],
+                "last_attempt_at": None,
+                "last_success_at": None,
+                "last_error": None,
+            }
+            _MEM_CACHE_PAYLOAD = empty_payload
+            _MEM_CACHE_NODES_BY_ID = {}
+            _MEM_CACHE_EXPIRY = time.monotonic() + _MEM_CACHE_TTL_SECONDS
+            return empty_payload
+
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list):
+            nodes = []
+        valid_nodes = [node for node in nodes if isinstance(node, dict)]
+        result = {
+            **payload,
+            "nodes": valid_nodes,
+            "last_attempt_at": payload.get("last_attempt_at"),
+            "last_success_at": payload.get("last_success_at"),
+            "last_error": payload.get("last_error"),
         }
-    payload = record.get("payload")
-    if not isinstance(payload, dict):
-        payload = {}
-    nodes = payload.get("nodes")
-    if not isinstance(nodes, list):
-        nodes = []
-    return {
-        **payload,
-        "nodes": [node for node in nodes if isinstance(node, dict)],
-        "last_attempt_at": payload.get("last_attempt_at"),
-        "last_success_at": payload.get("last_success_at"),
-        "last_error": payload.get("last_error"),
-    }
+        _MEM_CACHE_PAYLOAD = result
+        _MEM_CACHE_NODES_BY_ID = {str(n.get("id")): n for n in valid_nodes if isinstance(n, dict) and n.get("id")}
+        _MEM_CACHE_EXPIRY = time.monotonic() + _MEM_CACHE_TTL_SECONDS
+        return result
 
 
 def _write_cache_payload(payload: dict[str, Any]) -> None:
     storage.write_cache_document(VPNGATE_CACHE_NAMESPACE, payload, expires_at=None)
+    invalidate_vpngate_mem_cache()
 
 
 def _get_directive(configuration: str, directive: str) -> str | None:
@@ -482,6 +518,14 @@ def get_vpngate_node(node_id: str, *, include_stale: bool = False) -> dict[str, 
     normalized_id = str(node_id or "").strip()
     if not normalized_id:
         return None
+    _get_cache_payload()
+    if _MEM_CACHE_NODES_BY_ID is not None and normalized_id in _MEM_CACHE_NODES_BY_ID:
+        node = _MEM_CACHE_NODES_BY_ID[normalized_id]
+        if node.get("stale") and not include_stale:
+            return None
+        if node.get("enabled", True) is False and not include_stale:
+            return None
+        return dict(node)
     return next(
         (node for node in list_vpngate_nodes(include_stale=include_stale) if str(node.get("id")) == normalized_id),
         None,
