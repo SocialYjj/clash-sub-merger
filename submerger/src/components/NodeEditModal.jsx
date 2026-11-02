@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Save, Server } from 'lucide-react';
-import request from '../utils/request';
+import request, { formatApiErrorDetail } from '../utils/request';
 
 const API_BASE = '/api';
 
@@ -58,10 +58,14 @@ export function getTransportOptions(type) {
 }
 
 export function buildEditedNode(node, formData) {
+    // Must stay in sync with the backend immutability guard `_NODE_ADMIN_FIELDS`
+    // in api/nodes.py. Echoing any of these fields back in the payload makes
+    // PUT /custom-nodes/{id}/full fail with 422 "Node metadata fields cannot be
+    // changed", so an otherwise valid address edit would never be applied.
     const metadataFields = new Set([
         'id', 'link', 'enabled', 'display_name', 'index', 'last_latency',
         'last_latency_time', 'last_speed', 'last_peak_speed', 'last_speed_time',
-        'last_peak_speed_time', 'exit_ip', 'geoip', 'region', 'city',
+        'last_peak_speed_time', 'exit_ip', 'ip_profile', 'geoip', 'region', 'city',
         'sourceType', 'sourceName',
     ]);
     const nodeObj = Object.fromEntries(
@@ -371,7 +375,8 @@ export default function NodeEditModal({ node, onClose, onSave, showToast }) {
             if (onSave) await onSave();
             onClose();
         } catch (err) {
-            showToast?.('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
+            const detail = formatApiErrorDetail(err.response?.data?.detail);
+            showToast?.('更新失败: ' + (detail || err.message), 'error');
         } finally {
             setSaving(false);
         }

@@ -150,6 +150,42 @@ describe('NodeEditModal node serialization', () => {
     }
   });
 
+  it('never echoes backend-managed metadata that the update endpoint rejects', () => {
+    const node = {
+      name: 'US-tailscale',
+      type: 'vless',
+      server: '2001:550:a20::16c',
+      port: 10203,
+      uuid: baseForm.uuid,
+      enabled: true,
+      display_name: 'US-tailscale',
+      index: 3,
+      sourceType: 'custom',
+      exit_ip: '2001:550:a20::16c',
+      ip_profile: { exit_ip: '2001:550:a20::16c', fraud_score: 12, ip_source: 'native' },
+      geoip: { country: 'US' },
+      region: { code: 'US' },
+      city: 'Los Angeles',
+      last_latency: 210,
+      last_speed: 12.5,
+    };
+
+    const saved = buildEditedNode(node, {
+      ...baseForm,
+      server: '203.0.113.10',
+      port: 10203,
+    });
+
+    for (const field of [
+      'enabled', 'display_name', 'index', 'sourceType', 'exit_ip', 'ip_profile',
+      'geoip', 'region', 'city', 'last_latency', 'last_speed',
+    ]) {
+      expect(saved).not.toHaveProperty(field);
+    }
+    expect(saved.server).toBe('203.0.113.10');
+    expect(saved.port).toBe(10203);
+  });
+
   it('does not silently keep an unsupported transport for a protocol', () => {
     const saved = buildEditedNode(
       { name: 'Trojan', type: 'trojan', server: 'example.com', port: 443, password: 'secret' },

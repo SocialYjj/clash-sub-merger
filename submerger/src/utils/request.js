@@ -16,6 +16,47 @@ const isRequestCanceled = (error) => (
   error?.message === 'canceled'
 );
 
+const formatDetailItem = (item) => {
+  if (item === null || item === undefined) return '';
+  if (typeof item !== 'object') return String(item);
+  const message = item.msg || item.message || item.detail;
+  if (!message) {
+    try {
+      return JSON.stringify(item);
+    } catch {
+      return String(item);
+    }
+  }
+  const location = Array.isArray(item.loc)
+    ? item.loc.filter(part => part !== 'body' && part !== 'query' && part !== 'path').join('.')
+    : '';
+  return location ? `${location}: ${message}` : String(message);
+};
+
+/**
+ * Flatten a FastAPI `detail` payload into a human readable string.
+ *
+ * Request-validation failures (HTTP 422) carry an array of `{loc, msg, type}`
+ * objects. Callers concatenate `detail` straight into a toast, so an array or
+ * object used to render as "[object Object]" and hid the real reason.
+ */
+export function formatApiErrorDetail(detail) {
+  if (detail === null || detail === undefined || detail === '') return '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map(formatDetailItem).filter(Boolean).join('; ');
+  if (typeof detail === 'object') return formatDetailItem(detail);
+  return String(detail);
+}
+
+const normalizeErrorDetail = (error) => {
+  const data = error?.response?.data;
+  if (!data || typeof data !== 'object') return error;
+  if (data.detail === undefined || typeof data.detail === 'string') return error;
+  const detail = formatApiErrorDetail(data.detail);
+  if (detail) data.detail = detail;
+  return error;
+};
+
 // Create axios instance with retry logic
 const request = axios.create({
   timeout: 30000,
@@ -46,6 +87,8 @@ request.interceptors.response.use(
     if (isRequestCanceled(error)) {
       return Promise.reject(error);
     }
+
+    normalizeErrorDetail(error);
 
     // Handle an expired session, but never swallow login failures or turn
     // transport/5xx failures into a logout.
