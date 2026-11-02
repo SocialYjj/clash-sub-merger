@@ -666,8 +666,13 @@ def update_custom_node_full(node_id: str, data: UpdateNodeFull, _: bool = Depend
             if get_custom_node_id(node) == node_id:
                 updated = {"id": node_id, "link": node.get("link", "")}
                 updated.update(data.node)
-                if "enabled" not in updated and "enabled" in node:
-                    updated["enabled"] = node["enabled"]
+                # Management metadata is immutable through this endpoint (see
+                # _NODE_ADMIN_FIELDS), so carry the persisted values over.
+                # Replacing the record wholesale used to discard the node's
+                # test history (latency, IP profile, region) on every edit.
+                for field in _NODE_ADMIN_FIELDS:
+                    if field not in updated and field in node:
+                        updated[field] = node[field]
                 config["custom_nodes"][i] = updated
                 return dict(updated)
 

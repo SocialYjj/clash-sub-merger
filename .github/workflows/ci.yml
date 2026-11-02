@@ -10,9 +10,15 @@ permissions:
   contents: read
 
 jobs:
+  # The runner image is pinned on purpose: `ubuntu-latest` has rolled over to
+  # 26.04, while the actions/python-versions manifest only builds 3.12.11 for
+  # 22.04 and 24.04, so `python-version: 3.12.11` no longer resolves there.
+  # Returning to ubuntu-latest means either accepting a 3.12.x patch that the
+  # runtime image (python:3.12.11-slim-bookworm) does not ship, or bumping both
+  # together.
   python:
     name: Python tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -46,7 +52,7 @@ jobs:
 
   e2e:
     name: E2E smoke (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -101,7 +107,7 @@ jobs:
 
   go-speedtest:
     name: Go speedtest tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: speedtest
@@ -123,7 +129,7 @@ jobs:
 
   frontend:
     name: Frontend tests and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: submerger
