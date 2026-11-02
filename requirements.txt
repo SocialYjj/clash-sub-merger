@@ -7,7 +7,7 @@ httpx[socks]==0.28.1
 opencc-python-reimplemented==0.1.7
 slowapi==0.1.9
 pydantic==2.12.5
-filelock==3.25.1
+filelock==4.2.6
 prometheus-client==0.24.1
 aiofiles==25.1.0
 pycountry==24.6.1
