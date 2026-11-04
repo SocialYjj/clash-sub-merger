@@ -306,6 +306,13 @@ def normalize_alpn(proxy: dict) -> bool:
     return False
 
 
+def normalize_smux(proxy: dict) -> bool:
+    """Drop smux settings; mihomo rejects mux on XTLS Vision streams."""
+    if proxy.pop("smux", None) is not None:
+        return True
+    return False
+
+
 def normalize_proxy_list(proxies: Iterable[Any]) -> int:
     """Normalize compatibility fields in a proxy iterable in place."""
     changed = 0
@@ -320,6 +327,7 @@ def normalize_proxy_list(proxies: Iterable[Any]) -> int:
         node_changed = normalize_v2ray_transport_proxy(proxy) or node_changed
         node_changed = normalize_alpn(proxy) or node_changed
         node_changed = normalize_certificate_pin(proxy) or node_changed
+        node_changed = normalize_smux(proxy) or node_changed
         if node_changed:
             changed += 1
     return changed

@@ -102,9 +102,26 @@ jobs:
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+      # Trivy's installer resolves its download through get.trivy.dev, which is
+      # currently NXDOMAIN, so setup-trivy aborts before the scan even starts.
+      # Fetch the release tarball straight from GitHub and skip the action's own
+      # installer instead of blocking releases on that redirector.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: v0.70.0
+          TRIVY_ARCH: ${{ matrix.arch == 'amd64' && '64bit' || 'ARM64' }}
+        run: |
+          tarball="trivy_${TRIVY_VERSION#v}_Linux-${TRIVY_ARCH}.tar.gz"
+          curl -sSfL --retry 3 --retry-delay 2 \
+            "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${tarball}" \
+            -o /tmp/trivy.tar.gz
+          sudo tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+          trivy --version
+
       - name: Generate Trivy vulnerability report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          skip-setup-trivy: true
           image-ref: ${{ github.event_name == 'pull_request' && format('local/clash-sub-merger:{0}-{1}', github.sha, matrix.arch) || format('{0}@{1}', env.IMAGE_NAME, steps.platform.outputs.digest) }}
           format: 'sarif'
           output: 'trivy-results-${{ matrix.arch }}.sarif'
@@ -120,6 +137,7 @@ jobs:
       - name: Block fixable Critical and High vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          skip-setup-trivy: true
           image-ref: ${{ github.event_name == 'pull_request' && format('local/clash-sub-merger:{0}-{1}', github.sha, matrix.arch) || format('{0}@{1}', env.IMAGE_NAME, steps.platform.outputs.digest) }}
           format: 'table'
           severity: 'CRITICAL,HIGH'
