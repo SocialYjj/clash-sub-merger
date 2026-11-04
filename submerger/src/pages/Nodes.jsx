@@ -690,12 +690,16 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     if (a.sourceType === 'custom' && b.sourceType !== 'custom') return -1;
     if (a.sourceType !== 'custom' && b.sourceType === 'custom') return 1;
 
-    // Chain and pool entries are virtual nodes and stay before subscription
-    // nodes, while preserving their configured order within each source.
-    if (a.sourceType === 'chain' && !['chain', 'custom'].includes(b.sourceType)) return -1;
-    if (b.sourceType === 'chain' && !['chain', 'custom'].includes(a.sourceType)) return 1;
-    if (a.sourceType === 'node_pool' && b.sourceType === 'subscription') return -1;
-    if (a.sourceType === 'subscription' && b.sourceType === 'node_pool') return 1;
+    // Virtual entries (node pools and chains) stay before subscription and
+    // VPN Gate leaf nodes so management sections remain grouped: custom nodes
+    // first, then node pools, then proxy chains, then sourced nodes.
+    const isVirtualEntry = (node) => node.sourceType === 'node_pool' || node.sourceType === 'chain';
+    if (isVirtualEntry(a) && !isVirtualEntry(b)) return -1;
+    if (!isVirtualEntry(a) && isVirtualEntry(b)) return 1;
+
+    // Node pools are listed ahead of proxy chains.
+    if (a.sourceType === 'node_pool' && b.sourceType === 'chain') return -1;
+    if (a.sourceType === 'chain' && b.sourceType === 'node_pool') return 1;
 
     // If both are custom, keep original order (by idx)
     if (a.sourceType === 'custom' && b.sourceType === 'custom') {
@@ -1513,18 +1517,18 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                   自建节点
                 </button>
                 <button
-                  onClick={() => { setShowAddDropdown(false); openChainModal(); }}
-                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 transition-colors flex items-center gap-2"
-                >
-                  <Link2 size={16} />
-                  链式代理
-                </button>
-                <button
                   onClick={() => { setShowAddDropdown(false); openNodePoolModal(); }}
-                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 rounded-b-lg transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 transition-colors flex items-center gap-2"
                 >
                   <Settings size={16} />
                   节点池
+                </button>
+                <button
+                  onClick={() => { setShowAddDropdown(false); openChainModal(); }}
+                  className="w-full px-4 py-2.5 text-left text-ink hover:bg-surface-3 rounded-b-lg transition-colors flex items-center gap-2"
+                >
+                  <Link2 size={16} />
+                  链式代理
                 </button>
               </div>
             )}

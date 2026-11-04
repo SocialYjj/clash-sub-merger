@@ -39,7 +39,7 @@ from .export_renderers import (
     render_socks_response,
     render_v2ray_response,
 )
-from .pool_assembly import PoolContext, add_node_pool_groups, insert_pool_group
+from .pool_assembly import POOL_GROUP_KIND_NODE, PoolContext, add_node_pool_groups, insert_pool_group
 from .source_parsing import apply_template_proxy_groups, apply_user_allocations
 from .sources import (
     build_source_file_aliases,
@@ -507,7 +507,10 @@ def create_subscription_output_router(
                         group_cfg = {"name": group_name, "proxies": chain_member_names}
                         group_cfg.update(coerce_group_strategy(group_spec))
 
-                        insert_pool_group(group_cfg, pool_context)
+                        # Terminal group of a chain is an exit node pool, so it
+                        # belongs to the node-pool segment rather than the
+                        # chain (transit) pool segment.
+                        insert_pool_group(group_cfg, pool_context, kind=POOL_GROUP_KIND_NODE)
                         chain_proxy_names.append(group_name)
                         emitted_chain_reference_names[group_allocation_id] = group_name
                         if group_name not in pool_group_names:

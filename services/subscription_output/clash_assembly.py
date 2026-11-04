@@ -73,25 +73,30 @@ def _add_pool_groups_to_global(
     *,
     pool_group_names: list,
     node_pool_group_names: list,
+    node_segment_names: list | None = None,
 ) -> None:
     # Add generated pool groups to GLOBAL after fallback.  Both
     # configured node pools and legacy chain pools are selectable
     # groups; they should not be hidden from the built-in GLOBAL group.
-    all_pool_group_names = list(dict.fromkeys([*pool_group_names, *node_pool_group_names]))
+    # Mirror the proxy-groups order: node segment (node pools + chain exit
+    # pools) first, chain transit pools after.
+    all_pool_group_names = list(dict.fromkeys([*(node_segment_names or []), *node_pool_group_names, *pool_group_names]))
     if all_pool_group_names:
         for group in proxy_groups:
-            if group.get("name") == "GLOBAL":
-                proxies_list = list(group.get("proxies", []))
-                if "🔯 故障转移" in proxies_list:
-                    insert_idx = proxies_list.index("🔯 故障转移") + 1
-                else:
-                    insert_idx = len(proxies_list)
-                for name in all_pool_group_names:
-                    if name not in proxies_list:
-                        proxies_list.insert(insert_idx, name)
-                        insert_idx += 1
-                group["proxies"] = proxies_list
-                break
+            if group.get("name") != "GLOBAL":
+                continue
+            # Detach existing pool entries first so the rebuilt order is
+            # authoritative instead of inheriting the saved GLOBAL layout.
+            proxies_list = [n for n in group.get("proxies", []) if n not in all_pool_group_names]
+            if "🔯 故障转移" in proxies_list:
+                insert_idx = proxies_list.index("🔯 故障转移") + 1
+            else:
+                insert_idx = len(proxies_list)
+            for name in all_pool_group_names:
+                proxies_list.insert(insert_idx, name)
+                insert_idx += 1
+            group["proxies"] = proxies_list
+            break
 
 
 def _add_pool_groups_to_manual_select(proxy_groups: list, *, node_pool_group_names: list) -> None:
@@ -227,6 +232,14 @@ def finalize_group_layout(
         proxy_groups,
         pool_group_names=chain_ctx.pool.pool_group_names,
         node_pool_group_names=chain_ctx.pool.node_pool_group_names,
+        node_segment_names=chain_ctx.pool.node_segment_names,
+    )
+    # Chains are added before pools so that the pool entries, which are
+    # inserted right after REJECT, end up ahead of the chain entries.
+    _add_traffic_and_chains_to_manual_select(
+        proxy_groups,
+        traffic_info_names=traffic_info_names,
+        chain_proxy_names=chain_ctx.chain_proxy_names,
     )
     _add_pool_groups_to_manual_select(proxy_groups, node_pool_group_names=chain_ctx.pool.node_pool_group_names)
     proxies = _position_chain_proxies(
@@ -234,10 +247,5 @@ def finalize_group_layout(
         proxy_groups=proxy_groups,
         chain_proxies=chain_ctx.chain_proxies,
         chain_dependency_proxies=chain_ctx.chain_dependency_proxies,
-    )
-    _add_traffic_and_chains_to_manual_select(
-        proxy_groups,
-        traffic_info_names=traffic_info_names,
-        chain_proxy_names=chain_ctx.chain_proxy_names,
     )
     return proxies

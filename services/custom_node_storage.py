@@ -37,6 +37,13 @@ def write_custom_nodes_yaml(nodes: list[dict]) -> None:
             continue
         sanitized_proxy = ProxyFilter.sanitize_proxy(proxy)
         if sanitized_proxy and sanitized_proxy.get("type"):
+            # Keep the persisted node id alongside the protocol fields so that
+            # downstream identity lookups (node pools, allocations) can resolve
+            # this node. ``strip_node_metadata`` drops underscore-prefixed keys
+            # before anything is rendered to a client.
+            node_id = str(node.get("id") or "").strip()
+            if node_id:
+                sanitized_proxy["_node_id"] = node_id
             proxies.append(sanitized_proxy)
     save_subscription_yaml(
         "custom_nodes",

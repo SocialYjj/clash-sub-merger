@@ -123,10 +123,15 @@ def subscription_node_id_for_index(subscription_id: str, nodes: Sequence[dict], 
 
 def custom_node_id(node: dict) -> str:
     """Return the persisted custom-node ID, with a deterministic fallback."""
-    persisted_id = str((node or {}).get("id") or "").strip()
+    payload = node or {}
+    # Nodes loaded back from the derived custom-nodes YAML only carry the
+    # internal ``_node_id`` companion field, not the management ``id``.
+    persisted_id = str(payload.get("id") or payload.get("_node_id") or "").strip()
     if persisted_id:
         return persisted_id
-    return f"custom_{hashlib.sha256(json.dumps(_identity_payload(node or {}), sort_keys=True).encode('utf-8')).hexdigest()}"
+    return (
+        f"custom_{hashlib.sha256(json.dumps(_identity_payload(payload), sort_keys=True).encode('utf-8')).hexdigest()}"
+    )
 
 
 def virtual_node_id(source_id: str, name: str) -> str:

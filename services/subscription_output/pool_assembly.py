@@ -1,6 +1,6 @@
 """Proxy-group assembly helpers for node pools and chain pools."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from services.config_merger import ProxyGroupGenerator
@@ -15,6 +15,9 @@ class PoolContext:
     pool_group_names: list[str]  # emitted chain/transit pool group names
     node_pool_group_names: list[str]  # emitted node pool group names
     emitted_chain_reference_names: dict[str, str]  # stable reference id -> emitted name
+    # Groups already placed in the node-pool segment, used only for ordering.
+    # Chain exit pools live here without being selectable node pools.
+    node_segment_names: list[str] = field(default_factory=list)
 
 
 def is_allocated_proxy(
@@ -41,24 +44,52 @@ def is_allocated_proxy(
     ) in node_pool_member_keys
 
 
-def insert_pool_group(group_cfg: dict, ctx: PoolContext) -> None:
+POOL_GROUP_KIND_NODE = "node_pool"
+POOL_GROUP_KIND_CHAIN = "chain_pool"
+
+
+def insert_pool_group(
+    group_cfg: dict,
+    ctx: PoolContext,
+    *,
+    kind: str = POOL_GROUP_KIND_CHAIN,
+) -> None:
+    """Insert a generated group into the pool block that follows 故障转移.
+
+    The block keeps two ordered segments: node pools first, then chain pools.
+    ``kind`` selects which segment receives the new group, so chain pools are
+    never interleaved with node pools regardless of assembly order.
+    """
     group_name = group_cfg.get("name")
     if not group_name:
         return
     ctx.proxy_groups[:] = [g for g in ctx.proxy_groups if g.get("name") != group_name]
 
-    insert_idx = next((i for i, g in enumerate(ctx.proxy_groups) if g.get("name") == "🔯 故障转移"), -1)
-    if insert_idx == -1:
+    anchor = next((i for i, g in enumerate(ctx.proxy_groups) if g.get("name") == "🔯 故障转移"), -1)
+    if anchor == -1:
         country_names = set(ProxyGroupGenerator.COUNTRY_ORDER)
-        insert_idx = next(
+        start = next(
             (i for i, g in enumerate(ctx.proxy_groups) if g.get("name") in country_names), len(ctx.proxy_groups)
         )
     else:
-        insert_idx += 1
-        generated_pool_names = {*ctx.pool_group_names, *ctx.node_pool_group_names}
-        while insert_idx < len(ctx.proxy_groups) and ctx.proxy_groups[insert_idx].get("name") in generated_pool_names:
+        start = anchor + 1
+
+    generated_pool_names = {*ctx.pool_group_names, *ctx.node_pool_group_names, *ctx.node_segment_names}
+    end = start
+    while end < len(ctx.proxy_groups) and ctx.proxy_groups[end].get("name") in generated_pool_names:
+        end += 1
+
+    if kind == POOL_GROUP_KIND_NODE:
+        # Keep node-pool order stable and always ahead of chain pools.
+        insert_idx = start
+        while insert_idx < end and ctx.proxy_groups[insert_idx].get("name") in ctx.node_segment_names:
             insert_idx += 1
+    else:
+        insert_idx = end
+
     ctx.proxy_groups.insert(insert_idx, group_cfg)
+    if kind == POOL_GROUP_KIND_NODE and group_name not in ctx.node_segment_names:
+        ctx.node_segment_names.append(group_name)
 
 
 def add_node_pool_groups(
@@ -103,5 +134,5 @@ def add_node_pool_groups(
         group_cfg.update(pool_strategy_config(pool))
         if reference.name not in ctx.node_pool_group_names:
             ctx.node_pool_group_names.append(reference.name)
-        insert_pool_group(group_cfg, ctx)
+        insert_pool_group(group_cfg, ctx, kind=POOL_GROUP_KIND_NODE)
         ctx.emitted_chain_reference_names[reference.stable_id] = reference.name
