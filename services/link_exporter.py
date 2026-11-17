@@ -128,11 +128,10 @@ def _unsupported_v2ray_reason(proxy: dict) -> str | None:
             return "unsupported_hysteria2_tls_option"
         if _has_nonempty(proxy, "up", "down"):
             return "unsupported_bandwidth"
-        if _has_nonempty(proxy, "hop-interval"):
-            # v2rayN's current Hysteria2 URI parser only reads mport and has no
-            # hop-interval query key, so emitting the node would change hopping
-            # timing instead of preserving it.
-            return "unsupported_hysteria2_hop_interval"
+        # Port hopping is carried by ``mport``. ``hop-interval`` is a
+        # mihomo-only knob with no counterpart in the v2rayN/sing-box share
+        # link (the target client hops per connection), so omitting it does
+        # not change how the imported node behaves.
         if _has_nonempty(
             proxy,
             "cwnd",
@@ -291,7 +290,12 @@ def _unsupported_v2ray_reason(proxy: dict) -> str | None:
         congestion_controller = str(proxy.get("congestion-controller") or "").strip().lower()
         if congestion_controller and congestion_controller not in {"cubic", "new_reno", "bbr"}:
             return "unsupported_tuic_congestion_controller"
-        if _has_nonempty(proxy, "udp-relay-mode"):
+        # v2rayN's TUIC importer only reads ``congestion_control`` and
+        # ``allow_insecure`` and always runs the native UDP relay, so a native
+        # node imports with identical behaviour.  Any other relay mode would
+        # silently switch transport, so those stay unexportable.
+        udp_relay_mode = str(proxy.get("udp-relay-mode") or "").strip().lower()
+        if udp_relay_mode and udp_relay_mode != "native":
             return "unsupported_udp_relay_mode"
         if _has_nonempty(
             proxy,
@@ -312,7 +316,10 @@ def _unsupported_v2ray_reason(proxy: dict) -> str | None:
             "udp-over-stream",
             "udp-over-stream-version",
             "ip",
-            "fingerprint",
+            # ``fingerprint`` is the server certificate pin (mihomo semantics),
+            # not a uTLS fingerprint.  It is exported as ``pinSHA256`` below so
+            # clients that understand it keep pinning; v2rayN ignores the key,
+            # which is why such nodes also carry ``allow_insecure``.
             "certificate",
             "private-key",
             "ca",
@@ -984,7 +991,15 @@ def _proxy_to_link(proxy: dict) -> str:
                 params.append(f"sni={q(proxy['sni'])}")
             if proxy.get("alpn"):
                 params.append(f"alpn={q(stringify_list(proxy['alpn']))}")
-            if proxy.get("skip-cert-verify"):
+            insecure = bool(proxy.get("skip-cert-verify"))
+            certificate_pin = _certificate_pin(proxy, "fingerprint")
+            if certificate_pin:
+                # Keep the pin for clients that support it, but v2rayN's TUIC
+                # importer has no pin key and would reject the self-signed
+                # certificate, so the node also has to allow insecure TLS.
+                params.append(f"pinSHA256={q(certificate_pin)}")
+                insecure = True
+            if insecure:
                 params.append("allow_insecure=1")
                 params.append("insecure=1")
             if proxy.get("congestion-controller"):

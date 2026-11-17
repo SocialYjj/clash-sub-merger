@@ -335,7 +335,7 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_bandwidth")
 
-    def test_tuic_unsupported_udp_relay_mode_is_rejected(self):
+    def test_tuic_native_udp_relay_mode_is_exported(self):
         exported = export_proxy_link(
             {
                 "name": "tuic",
@@ -349,8 +349,49 @@ class LinkExporterTests(unittest.TestCase):
             }
         )
 
+        self.assertTrue(exported.link.startswith("tuic://"))
+        params = parse_qs(urlparse(exported.link).query)
+        self.assertEqual(params["udp_relay_mode"], ["native"])
+
+    def test_tuic_quic_udp_relay_mode_is_rejected(self):
+        exported = export_proxy_link(
+            {
+                "name": "tuic",
+                "type": "tuic",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "password": "secret",
+                "udp-relay-mode": "quic",
+            }
+        )
+
         self.assertEqual(exported.link, "")
         self.assertEqual(exported.reason, "unsupported_udp_relay_mode")
+
+    def test_tuic_certificate_pin_is_exported_with_insecure_fallback(self):
+        pin = "e30315f664a395e73ca512b9963f7927b3914902cf717efed80441de184c8220"
+        exported = export_proxy_link(
+            {
+                "name": "tuic pinned",
+                "type": "tuic",
+                "server": "example.com",
+                "port": 37777,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "password": "secret",
+                "sni": "www.bing.com",
+                "alpn": ["h3"],
+                "congestion-controller": "bbr",
+                "udp-relay-mode": "native",
+                "fingerprint": pin,
+            }
+        )
+
+        self.assertTrue(exported.link.startswith("tuic://"))
+        params = parse_qs(urlparse(exported.link).query)
+        self.assertEqual(params["pinSHA256"], [pin])
+        self.assertEqual(params["allow_insecure"], ["1"])
+        self.assertEqual(params["insecure"], ["1"])
 
     def test_vmess_with_custom_websocket_headers_is_not_silently_degraded(self):
         link = proxy_to_link(
@@ -1053,7 +1094,24 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(params["minPacketSize"], ["512"])
         self.assertEqual(params["maxPacketSize"], ["1200"])
 
-    def test_hysteria2_hop_and_runtime_tuning_are_rejected(self):
+    def test_hysteria2_hop_interval_is_exported_through_mport(self):
+        exported = export_proxy_link(
+            {
+                "name": "hy2 hopping",
+                "type": "hysteria2",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "ports": "20000-20500",
+                "hop-interval": "30",
+            }
+        )
+
+        self.assertTrue(exported.link.startswith("hysteria2://"))
+        params = parse_qs(urlparse(exported.link).query)
+        self.assertEqual(params["mport"], ["20000-20500"])
+
+    def test_hysteria2_runtime_tuning_is_rejected(self):
         base = {
             "name": "hy2",
             "type": "hysteria2",
@@ -1062,7 +1120,6 @@ class LinkExporterTests(unittest.TestCase):
             "password": "secret",
         }
         cases = (
-            ("hop-interval", "10s", "unsupported_hysteria2_hop_interval"),
             ("cwnd", 64, "unsupported_hysteria2_tuning"),
             ("bbr-profile", "aggressive", "unsupported_hysteria2_tuning"),
             ("udp-mtu", 1200, "unsupported_hysteria2_tuning"),
