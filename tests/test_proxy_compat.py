@@ -135,6 +135,81 @@ class ProxyCompatTests(unittest.TestCase):
         self.assertEqual(changed, 1)
         self.assertEqual(proxy["network"], "ws")
 
+    def test_normalize_subscription_data_opts_reality_nodes_into_mlkem(self):
+        vless = {
+            "name": "reality",
+            "type": "vless",
+            "server": "example.com",
+            "port": 443,
+            "tls": True,
+            "reality-opts": {"public-key": "public-key", "short-id": "6b33f269"},
+        }
+        trojan = {
+            "name": "reality-trojan",
+            "type": "trojan",
+            "server": "example.com",
+            "port": 443,
+            "tls": True,
+            "reality-opts": {"public-key": "public-key"},
+        }
+        data = {"proxies": [vless, trojan]}
+
+        changed = normalize_subscription_data(data)
+
+        self.assertEqual(changed, 2)
+        self.assertIs(vless["reality-opts"]["support-x25519mlkem768"], True)
+        self.assertIs(trojan["reality-opts"]["support-x25519mlkem768"], True)
+        # Second pass is a no-op, so repeated imports do not churn the config.
+        self.assertEqual(normalize_subscription_data(data), 0)
+
+    def test_normalize_subscription_data_keeps_explicit_mlkem_opt_out(self):
+        proxy = {
+            "name": "reality-legacy",
+            "type": "vless",
+            "server": "example.com",
+            "port": 443,
+            "tls": True,
+            "reality-opts": {
+                "public-key": "public-key",
+                "support-x25519mlkem768": False,
+            },
+        }
+        data = {"proxies": [proxy]}
+
+        self.assertEqual(normalize_subscription_data(data), 0)
+        self.assertIs(proxy["reality-opts"]["support-x25519mlkem768"], False)
+
+    def test_normalize_reality_mlkem_skips_nodes_without_usable_reality(self):
+        proxies = [
+            {
+                "name": "plain-tls",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "tls": True,
+            },
+            {
+                "name": "no-key",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "tls": True,
+                "reality-opts": {"short-id": "6b33f269"},
+            },
+            {
+                "name": "vmess-reality",
+                "type": "vmess",
+                "server": "example.com",
+                "port": 443,
+                "reality-opts": {"public-key": "public-key"},
+            },
+        ]
+        data = {"proxies": proxies}
+
+        self.assertEqual(normalize_subscription_data(data), 0)
+        for proxy in proxies:
+            self.assertNotIn("support-x25519mlkem768", proxy.get("reality-opts") or {})
+
 
 class CoreDatabaseCompatibilityTests(unittest.TestCase):
     def test_load_config_normalizes_xhttp_nodes_and_returns_deepcopy(self):

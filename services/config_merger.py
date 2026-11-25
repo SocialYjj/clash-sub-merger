@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from core.proxy_compat import normalize_proxy_list
 from helpers import atomic_write_text, list_subscription_contents, load_subscription_yaml
 from logger_config import get_logger
 from services.country_grouper import CountryGrouper
@@ -417,6 +418,11 @@ rule-providers:
             if not proxies:
                 logger.info(f"{file_name} has no proxy nodes")
                 continue
+
+            # Re-run compatibility migrations at the output boundary: a source
+            # that was stored before a migration shipped would otherwise keep
+            # emitting stale fields until its next refresh or edit.
+            normalize_proxy_list(proxies)
 
             # Filter info banners and nodes that cannot be represented by the
             # selected output format. V2Ray/sing-box receive minimally valid

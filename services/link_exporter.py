@@ -21,8 +21,22 @@ class LinkExportResult:
     reason: str | None = None
 
 
+# Mihomo reality-opts keys that the exporter can carry into a share link.
+_REALITY_OPTION_KEYS = frozenset({"public-key", "short-id", "support-x25519mlkem768", "spider-x"})
+
+
 def _has_nonempty(proxy: dict, *keys: str) -> bool:
     return any(proxy.get(key) not in (None, "", [], {}) for key in keys)
+
+
+def _reality_mlkem_enabled(reality_opts: object) -> bool:
+    """Return whether a node opted into the X25519MLKEM768 key share."""
+    if not isinstance(reality_opts, dict):
+        return False
+    value = reality_opts.get("support-x25519mlkem768")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _certificate_pin(proxy: dict, *fallback_fields: str) -> object:
@@ -373,7 +387,7 @@ def _unsupported_v2ray_reason(proxy: dict) -> str | None:
         if proxy_type in {"vless", "trojan"} and reality_opts is not None:
             if not isinstance(reality_opts, dict) or not reality_opts:
                 return "invalid_reality_options"
-            if set(reality_opts) - {"public-key", "short-id", "spider-x"}:
+            if set(reality_opts) - _REALITY_OPTION_KEYS:
                 return "unsupported_reality_option"
             if not str(reality_opts.get("public-key") or "").strip():
                 return "missing_reality_public_key"
@@ -472,7 +486,7 @@ def export_proxy_link(proxy: dict) -> LinkExportResult:
     structural_reason = ProxyFilter.get_structural_invalid_reason(normalized_proxy)
     if structural_reason == "unsupported-reality-option":
         reality_opts = normalized_proxy.get("reality-opts")
-        if not (isinstance(reality_opts, dict) and set(reality_opts) <= {"public-key", "short-id", "spider-x"}):
+        if not (isinstance(reality_opts, dict) and set(reality_opts) <= _REALITY_OPTION_KEYS):
             return LinkExportResult("", structural_reason.replace("-", "_"))
     elif structural_reason:
         return LinkExportResult("", structural_reason.replace("-", "_"))
@@ -523,6 +537,8 @@ def _proxy_to_link(proxy: dict) -> str:
                 params.append(f"sid={q(reality_opts['short-id'])}")
             if reality_opts.get("spider-x"):
                 params.append(f"spx={q(reality_opts['spider-x'])}")
+            if _reality_mlkem_enabled(reality_opts):
+                params.append("support-x25519mlkem768=true")
         elif proxy.get("tls") or default_tls:
             params.append("security=tls")
 
@@ -763,6 +779,8 @@ def _proxy_to_link(proxy: dict) -> str:
                         params.append(f"sid={q(proxy['reality-opts']['short-id'])}")
                     if proxy["reality-opts"].get("spider-x"):
                         params.append(f"spx={q(proxy['reality-opts']['spider-x'])}")
+                    if _reality_mlkem_enabled(proxy["reality-opts"]):
+                        params.append("support-x25519mlkem768=true")
                 else:
                     params.append("security=tls")
             sni = proxy.get("servername") or proxy.get("sni")

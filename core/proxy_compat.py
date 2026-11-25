@@ -313,6 +313,35 @@ def normalize_smux(proxy: dict) -> bool:
     return False
 
 
+def normalize_reality_mlkem(proxy: dict) -> bool:
+    """Opt REALITY nodes into the X25519MLKEM768 key share.
+
+    Mihomo strips the hybrid post-quantum key share from the ClientHello by
+    default, so that REALITY servers older than Xray 26.9 keep handshaking.
+    Xray 26.9 and newer reject exactly that ClientHello, which surfaces as
+    ``REALITY authentication failed``.  Opting in is safe in both directions:
+    a 26.6 server was verified to accept the hybrid offer as well.  An explicit
+    ``false`` is preserved so a node can still opt out.
+    """
+    if not isinstance(proxy, dict):
+        return False
+
+    proxy_type = str(proxy.get("type", "") or "").strip().lower()
+    if proxy_type not in {"vless", "trojan"}:
+        return False
+
+    reality_opts = proxy.get("reality-opts")
+    if not isinstance(reality_opts, dict) or not reality_opts:
+        return False
+    if "support-x25519mlkem768" in reality_opts:
+        return False
+    if not str(reality_opts.get("public-key") or "").strip():
+        return False
+
+    reality_opts["support-x25519mlkem768"] = True
+    return True
+
+
 def normalize_proxy_list(proxies: Iterable[Any]) -> int:
     """Normalize compatibility fields in a proxy iterable in place."""
     changed = 0
@@ -327,6 +356,7 @@ def normalize_proxy_list(proxies: Iterable[Any]) -> int:
         node_changed = normalize_v2ray_transport_proxy(proxy) or node_changed
         node_changed = normalize_alpn(proxy) or node_changed
         node_changed = normalize_certificate_pin(proxy) or node_changed
+        node_changed = normalize_reality_mlkem(proxy) or node_changed
         node_changed = normalize_smux(proxy) or node_changed
         if node_changed:
             changed += 1

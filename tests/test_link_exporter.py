@@ -73,6 +73,52 @@ class LinkExporterTests(unittest.TestCase):
         self.assertEqual(params["pbk"], ["abc+def/ghi="])
         self.assertEqual(params["sid"], ["sid+/="])
 
+    def test_vless_reality_mlkem_opt_in_is_exported(self):
+        link = proxy_to_link(
+            {
+                "name": "reality-mlkem",
+                "type": "vless",
+                "server": "example.com",
+                "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "network": "tcp",
+                "tls": True,
+                "reality-opts": {
+                    "public-key": "public-key",
+                    "short-id": "6b33f269",
+                    "support-x25519mlkem768": True,
+                },
+            }
+        )
+
+        self.assertTrue(link.startswith("vless://"))
+        params = parse_qs(urlparse(link).query)
+        self.assertEqual(params["security"], ["reality"])
+        self.assertEqual(params["support-x25519mlkem768"], ["true"])
+
+    def test_trojan_reality_mlkem_opt_out_stays_out_of_the_link(self):
+        link = proxy_to_link(
+            {
+                "name": "reality-plain",
+                "type": "trojan",
+                "server": "example.com",
+                "port": 443,
+                "password": "secret",
+                "network": "tcp",
+                "tls": True,
+                "reality-opts": {
+                    "public-key": "public-key",
+                    "short-id": "6b33f269",
+                    "support-x25519mlkem768": False,
+                },
+            }
+        )
+
+        self.assertTrue(link.startswith("trojan://"))
+        params = parse_qs(urlparse(link).query)
+        self.assertEqual(params["security"], ["reality"])
+        self.assertNotIn("support-x25519mlkem768", params)
+
     def test_hysteria2_obfs_password_is_url_encoded(self):
         link = proxy_to_link(
             {
@@ -1344,10 +1390,6 @@ class LinkExporterTests(unittest.TestCase):
             ({"reality-opts": {}}, "invalid_reality_options"),
             ({"reality-opts": {"short-id": "abcd"}}, "missing_reality_public_key"),
             ({"tls": False, "reality-opts": {"public-key": "public-key"}}, "reality_without_tls"),
-            (
-                {"reality-opts": {"public-key": "public-key", "support-x25519mlkem768": True}},
-                "unsupported_reality_option",
-            ),
         )
         for fields, expected_reason in cases:
             with self.subTest(fields=fields):
