@@ -86,6 +86,8 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
   const [showBatchTestMenu, setShowBatchTestMenu] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
   const [customOrderMap, setCustomOrderMap] = useState({});
+  const [chainOrderMap, setChainOrderMap] = useState({});
+  const [poolOrderMap, setPoolOrderMap] = useState({});
 
   // GeoIP API selection for region detection
   const [geoipApis, setGeoipApis] = useState([]);
@@ -1170,6 +1172,71 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
     }
   };
 
+  const applyNumericOrder = async ({ items, orderMap, endpoint, successMessage, errorMessage, onApplied }) => {
+    const list = items || [];
+    if (list.length < 2) return;
+
+    const entries = list.map((item, idx) => {
+      const parsed = parseInt(orderMap[item.id], 10);
+      const order = Number.isFinite(parsed) && parsed > 0 ? parsed : idx + 1;
+      return { id: item.id, order, idx };
+    }).filter(entry => entry.id);
+
+    if (entries.length < 2) return;
+
+    entries.sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return a.idx - b.idx;
+    });
+
+    const desiredOrder = entries.map(entry => entry.id);
+    const currentOrder = list.map(item => item.id).filter(Boolean);
+
+    if (currentOrder.length === desiredOrder.length && currentOrder.every((id, i) => id === desiredOrder[i])) {
+      return;
+    }
+
+    try {
+      await request.put(`${API_BASE}${endpoint}`, { order: desiredOrder });
+      await onApplied?.();
+      showToast?.(successMessage, 'success');
+    } catch (err) {
+      showToast?.(err.response?.data?.detail || errorMessage, 'error');
+    }
+  };
+
+  const updateChainOrderValue = (chainId, value) => {
+    setChainOrderMap(prev => ({
+      ...prev,
+      [chainId]: value
+    }));
+  };
+
+  const applyChainOrder = () => applyNumericOrder({
+    items: proxyChains || [],
+    orderMap: chainOrderMap,
+    endpoint: '/proxy-chains/reorder',
+    successMessage: '链式代理排序已更新',
+    errorMessage: '链式代理排序失败',
+    onApplied: () => fetchProxyChains(),
+  });
+
+  const updatePoolOrderValue = (poolId, value) => {
+    setPoolOrderMap(prev => ({
+      ...prev,
+      [poolId]: value
+    }));
+  };
+
+  const applyPoolOrder = () => applyNumericOrder({
+    items: nodePools || [],
+    orderMap: poolOrderMap,
+    endpoint: '/node-pools/reorder',
+    successMessage: '节点池排序已更新',
+    errorMessage: '节点池排序失败',
+    onApplied: () => fetchNodePools(),
+  });
+
   // Refresh all nodes
   const refreshAllNodes = async () => {
     setLoadingNodes(true);
@@ -1901,8 +1968,49 @@ export default function Nodes({ subscriptions, customNodes, onRefreshCustomNodes
                                 {node.idx + 1}
                               </span>
                             )}
-                            {(node.sourceType === 'chain' || isNodePool) && (
+                            {node.sourceType === 'chain' && node.chainId && (
+                              <input
+                                type="number"
+                                min={1}
+                                value={chainOrderMap[node.chainId] ?? ''}
+                                placeholder={node.idx + 1}
+                                onChange={(e) => updateChainOrderValue(node.chainId, e.target.value)}
+                                onBlur={applyChainOrder}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    applyChainOrder();
+                                  }
+                                }}
+                                className="w-10 px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 text-xs font-mono border border-blue-500/30 focus:outline-none focus:border-blue-400"
+                                title="链式代理序号，修改后自动按序排列"
+                              />
+                            )}
+                            {node.sourceType === 'chain' && !node.chainId && (
                               <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-blue-500/20 text-blue-400 text-xs font-bold">
+                                {node.idx + 1}
+                              </span>
+                            )}
+                            {isNodePool && node.poolId && (
+                              <input
+                                type="number"
+                                min={1}
+                                value={poolOrderMap[node.poolId] ?? ''}
+                                placeholder={node.idx + 1}
+                                onChange={(e) => updatePoolOrderValue(node.poolId, e.target.value)}
+                                onBlur={applyPoolOrder}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    applyPoolOrder();
+                                  }
+                                }}
+                                className="w-10 px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-xs font-mono border border-emerald-500/30 focus:outline-none focus:border-emerald-400"
+                                title="节点池序号，修改后自动按序排列"
+                              />
+                            )}
+                            {isNodePool && !node.poolId && (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold">
                                 {node.idx + 1}
                               </span>
                             )}
